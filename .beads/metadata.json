@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "raster",
+  "project_id": "d8578d76-e13d-4045-9889-f9f7257c537f"
+}
