@@ -72,3 +72,5 @@
 # - github.token    → use GITHUB_TOKEN env var instead
 
 sync.remote: "https://github.com/rmstdope/raster.git"
+export:
+    auto: false
