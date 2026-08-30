@@ -3,6 +3,7 @@ members = [
     "crates/raster-assets",
     "crates/raster-diag",
     "crates/raster-emu",
+    "crates/raster-syntax",
     "crates/rasterc",
 ]
 resolver = "2"
