@@ -26,6 +26,12 @@ fn renders_a_deterministic_rgba_frame_from_an_in_memory_ines_rom() {
         NonZeroU32::new(2).expect("two is non-zero"),
     )
     .expect("the NROM should load and render");
+    let repeated_frame = render_after_frames(
+        "loop.nes",
+        &nrom(),
+        NonZeroU32::new(2).expect("two is non-zero"),
+    )
+    .expect("the NROM should render repeatedly");
 
     assert_eq!(frame.as_rgba().len(), FRAME_BYTES);
     assert!(frame
@@ -34,6 +40,7 @@ fn renders_a_deterministic_rgba_frame_from_an_in_memory_ines_rom() {
         .skip(3)
         .step_by(4)
         .all(|&alpha| alpha == 0xFF));
+    assert_eq!(frame, repeated_frame);
 }
 
 #[test]
