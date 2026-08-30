@@ -121,7 +121,7 @@ impl<'a> Parser<'a> {
                 if !is_assembly {
                     self.error_here("`employs` is only valid on `asm fn`");
                 }
-                employs = self.employs_list();
+                employs.extend(self.employs_list());
             } else {
                 break;
             }
@@ -953,7 +953,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-const PREFIX_PRECEDENCE: u8 = 12;
+const PREFIX_PRECEDENCE: u8 = 13;
 
 fn infix_precedence(operator: crate::Operator) -> Option<u8> {
     Some(match operator {
@@ -973,8 +973,9 @@ fn infix_precedence(operator: crate::Operator) -> Option<u8> {
         | crate::Operator::LessEqual
         | crate::Operator::Greater
         | crate::Operator::GreaterEqual => 9,
-        crate::Operator::Plus | crate::Operator::Minus => 10,
-        crate::Operator::Star | crate::Operator::Slash | crate::Operator::Percent => 11,
+        crate::Operator::ShiftLeft | crate::Operator::ShiftRight => 10,
+        crate::Operator::Plus | crate::Operator::Minus => 11,
+        crate::Operator::Star | crate::Operator::Slash | crate::Operator::Percent => 12,
         crate::Operator::Tilde
         | crate::Operator::Bang
         | crate::Operator::Arrow

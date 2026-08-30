@@ -269,6 +269,8 @@ pub enum Operator {
     LessEqual,
     Greater,
     GreaterEqual,
+    ShiftLeft,
+    ShiftRight,
     EqualEqual,
     BangEqual,
     AmpersandAmpersand,

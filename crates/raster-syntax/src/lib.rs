@@ -12,7 +12,7 @@ mod tests {
 
     #[test]
     fn lexer_recognizes_mvp_tokens_and_spans() {
-        let source = "// setup\ncycles(<= 28) pad { ppu.mask = $1E | bars[line] }";
+        let source = "// setup\ncycles(<= 28) pad { ppu.mask = $1E | bars[line] << 1 >> 2 }";
         let tokens = lex(source);
         let kinds: Vec<_> = tokens.iter().map(|token| &token.value).collect();
 
@@ -36,6 +36,10 @@ mod tests {
                 &TokenKind::Punctuation(Punctuation::LeftBracket),
                 &TokenKind::Identifier("line".into()),
                 &TokenKind::Punctuation(Punctuation::RightBracket),
+                &TokenKind::Operator(Operator::ShiftLeft),
+                &TokenKind::Number("1".into()),
+                &TokenKind::Operator(Operator::ShiftRight),
+                &TokenKind::Number("2".into()),
                 &TokenKind::Punctuation(Punctuation::RightBrace),
                 &TokenKind::End,
             ]
@@ -293,6 +297,7 @@ mod tests {
                 loop { sync exact }
                 cycles(20) label { return }
                 emit("text", 'x', true, false)
+                result = value << 1 >> 2
             }
         "#;
 
@@ -403,6 +408,34 @@ mod tests {
                              Spanned { value: Expression::Boolean(false), .. }]
                                 if text == "text" && character == "x"))
         ));
+        let Statement::Expression(value) = &statements[6].value else {
+            panic!("expected a shift expression");
+        };
+        let Expression::Infix {
+            operator: assign,
+            right: shifted_right,
+            ..
+        } = &value.value
+        else {
+            panic!("expected an assignment");
+        };
+        assert_eq!(assign.value, Operator::Assign);
+        let Expression::Infix {
+            left: shifted_left,
+            operator: right_shift,
+            right: two,
+        } = &shifted_right.value
+        else {
+            panic!("expected a right shift");
+        };
+        assert_eq!(right_shift.value, Operator::ShiftRight);
+        assert!(matches!(&two.value, Expression::Number(number) if number == "2"));
+        assert!(matches!(
+            &shifted_left.value,
+            Expression::Infix { operator, right, .. }
+                if operator.value == Operator::ShiftLeft
+                    && matches!(&right.value, Expression::Number(number) if number == "1")
+        ));
     }
 
     #[test]
@@ -493,7 +526,7 @@ mod tests {
     #[test]
     fn parser_retains_wait_modes_and_assembly_employs() {
         let source = r#"
-            unsafe asm fn upload() employs(vram_state, oam_state) cycles(<= 1400) {}
+            unsafe asm fn upload() employs(vram_state, oam_state) employs(audio_state) cycles(<= 1400) {}
             main {
                 wait vblank
                 wait cycles(1234)
@@ -511,7 +544,7 @@ mod tests {
                 .iter()
                 .map(|group| group.value.as_str())
                 .collect::<Vec<_>>(),
-            ["vram_state", "oam_state"]
+            ["vram_state", "oam_state", "audio_state"]
         );
 
         let Item::Main(main) = &program.items[1].value else {
