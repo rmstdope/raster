@@ -1,0 +1,90 @@
+use raster_link::{
+    m1_solid_backdrop_rom, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE, MMC3_FIXED_BANK_START,
+    MMC3_PRG_ROM_SIZE,
+};
+use std::{
+    fs,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+fn fixed_bank(rom: &[u8]) -> &[u8] {
+    let offset = INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - MMC3_FIXED_BANK_SIZE;
+    &rom[offset..]
+}
+
+fn vector(rom: &[u8], address: u16) -> u16 {
+    let offset = (address - MMC3_FIXED_BANK_START) as usize;
+    u16::from_le_bytes(fixed_bank(rom)[offset..offset + 2].try_into().unwrap())
+}
+
+#[test]
+fn uses_the_fixed_bank_reset_and_interrupt_vectors() {
+    let rom = m1_solid_backdrop_rom();
+
+    assert_eq!(vector(&rom, 0xfffa), 0xe033);
+    assert_eq!(vector(&rom, 0xfffc), 0xe000);
+    assert_eq!(vector(&rom, 0xfffe), 0xe033);
+    assert_eq!(fixed_bank(&rom)[0x33], 0x40);
+}
+
+#[test]
+fn initializes_before_writing_the_blue_universal_backdrop() {
+    let rom = m1_solid_backdrop_rom();
+    let program = fixed_bank(&rom);
+
+    let first_poll = [0x2c, 0x02, 0x20, 0x10, 0xfb];
+    let setup = [
+        0x78, 0xd8, 0xa2, 0x40, 0x8e, 0x17, 0x40, 0xa2, 0xff, 0x9a, 0xe8, 0x8e, 0x00, 0x20, 0x8e,
+        0x01, 0x20, 0x8e, 0x10, 0x40,
+    ];
+    let palette_write = [
+        0x2c, 0x02, 0x20, 0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20, 0xa9, 0x12,
+        0x8d, 0x07, 0x20,
+    ];
+
+    assert_eq!(&program[..setup.len()], setup);
+    assert_eq!(
+        &program[setup.len()..setup.len() + first_poll.len()],
+        first_poll
+    );
+    assert_eq!(
+        &program[setup.len() + first_poll.len()..setup.len() + first_poll.len() * 2],
+        first_poll
+    );
+    assert_eq!(
+        &program[setup.len() + first_poll.len() * 2
+            ..setup.len() + first_poll.len() * 2 + palette_write.len()],
+        palette_write
+    );
+
+    let second_poll_end = setup.len() + first_poll.len() * 2;
+    assert!(!program[..second_poll_end]
+        .windows(3)
+        .any(|instruction| instruction == [0x8d, 0x06, 0x20] || instruction == [0x8d, 0x07, 0x20]));
+}
+
+#[test]
+fn binary_writes_the_rom_and_requires_an_output_path() {
+    let executable = env!("CARGO_BIN_EXE_m1_solid_backdrop");
+    let path = std::env::temp_dir().join(format!(
+        "m1-solid-backdrop-{}-{}.nes",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+
+    let output = Command::new(executable).arg(&path).output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read(&path).unwrap(), m1_solid_backdrop_rom());
+    fs::remove_file(&path).unwrap();
+
+    let output = Command::new(executable).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"Usage: m1_solid_backdrop <OUTPUT.nes>\n");
+}

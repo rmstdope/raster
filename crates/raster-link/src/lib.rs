@@ -5,6 +5,10 @@ pub const MMC3_FIXED_BANK_START: u16 = 0xe000;
 
 const INES_PRG_ROM_BANK_SIZE: usize = 16 * 1024;
 
+mod m1;
+
+pub use m1::m1_solid_backdrop_rom;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InterruptVectors {
     pub nmi: u16,
