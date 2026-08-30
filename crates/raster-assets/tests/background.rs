@@ -24,6 +24,20 @@ fn png(width: u32, height: u32, pixels: Vec<[u8; 4]>) -> Vec<u8> {
     output
 }
 
+fn rgb_png(width: u32, height: u32, pixels: Vec<[u8; 3]>) -> Vec<u8> {
+    assert_eq!(pixels.len(), (width * height) as usize);
+
+    let mut output = Vec::new();
+    let mut encoder = png::Encoder::new(&mut output, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let bytes = pixels.into_iter().flatten().collect::<Vec<_>>();
+    writer.write_image_data(&bytes).unwrap();
+    drop(writer);
+    output
+}
+
 fn image(width: u32, height: u32, colour: [u8; 4]) -> Vec<[u8; 4]> {
     vec![colour; (width * height) as usize]
 }
@@ -41,6 +55,14 @@ fn maps_opaque_pixels_to_the_nearest_fceux_entry_and_transparent_pixels_to_0f() 
     assert_eq!(background.pixels()[0], 0x00);
     assert_eq!(background.pixels()[1], 0x01);
     assert_eq!(background.pixels()[2], TRANSPARENT_COLOUR);
+}
+
+#[test]
+fn maps_rgb_png_pixels_as_fully_opaque() {
+    let background =
+        decode_background(Cursor::new(rgb_png(8, 8, vec![[0x00, 0x00, 0xfc]; 64]))).unwrap();
+
+    assert!(background.pixels().iter().all(|colour| *colour == 0x01));
 }
 
 #[test]
