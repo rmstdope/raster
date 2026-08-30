@@ -153,3 +153,44 @@ fn rejects_semantically_invalid_mvp_fixture_with_all_errors() {
         );
     }
 }
+
+#[test]
+fn validates_function_bounds_employs_and_integer_contexts() {
+    let diagnostics = errors(
+        r#"
+            group state { var line: u8 }
+            var dynamic: u8
+            fn timer() cycles(dynamic) {}
+            unsafe asm fn upload() employs(missing_group) {}
+            fn byte() -> u8 { return 256 }
+            fn takes_byte(value: u8) {}
+            main {
+                var byte: u8 = 256
+                byte = 256
+                takes_byte(256)
+                var table: [2]u8
+                var index: u8 = 0
+                table[index] = byte
+            }
+        "#,
+    );
+    for expected in [
+        "cycle bound must be a compile-time constant",
+        "unknown name `missing_group`",
+        "integer literal overflows u8",
+    ] {
+        assert!(
+            diagnostics.iter().any(|message| message.contains(expected)),
+            "expected `{expected}` in {diagnostics:?}"
+        );
+    }
+
+    let program = parse(
+        r#"
+            group state { var line: u8 }
+            unsafe asm fn upload() employs(state) {}
+        "#,
+    )
+    .expect("group fixture should parse");
+    assert!(analyze(&program).is_ok());
+}

@@ -32,6 +32,7 @@ enum ValueType {
 enum SymbolKind {
     Constant(Option<u32>),
     Variable,
+    Group,
     Function(Vec<ValueType>, ValueType),
     Namespace,
 }
@@ -149,10 +150,10 @@ impl Analyzer {
             .as_ref()
             .map(|annotation| self.resolve_type_without_errors(annotation))
             .unwrap_or(ValueType::Unknown);
-        let kind = if declaration.kind == Keyword::Const {
-            SymbolKind::Constant(None)
-        } else {
-            SymbolKind::Variable
+        let kind = match declaration.kind {
+            Keyword::Const => SymbolKind::Constant(None),
+            Keyword::Group => SymbolKind::Group,
+            _ => SymbolKind::Variable,
         };
         self.declare(
             name,
@@ -202,9 +203,19 @@ impl Analyzer {
     }
 
     fn check_function(&mut self, function: &Function) {
+        if let Some(spec) = &function.cycle_spec {
+            self.check_cycle_bound(&spec.bound);
+        }
+        for group in &function.employs {
+            match self.lookup(&group.value).map(|symbol| symbol.kind.clone()) {
+                Some(SymbolKind::Group) => {}
+                Some(_) => self.error(group.span, format!("`{}` is not a group", group.value)),
+                None => self.error(group.span, format!("unknown name `{}`", group.value)),
+            }
+        }
         self.enter_scope();
         for parameter in &function.parameters {
-            let value_type = self.resolve_type(&parameter.type_annotation);
+            let value_type = self.resolve_type_without_errors(&parameter.type_annotation);
             self.declare(
                 &parameter.name,
                 Symbol {
@@ -265,11 +276,11 @@ impl Analyzer {
 
     fn check_block_statements(&mut self, block: &Block) {
         for statement in &block.statements {
-            self.check_statement(&statement.value);
+            self.check_statement(&statement.value, statement.span);
         }
     }
 
-    fn check_statement(&mut self, statement: &Statement) {
+    fn check_statement(&mut self, statement: &Statement, statement_span: Span) {
         match statement {
             Statement::Declaration(declaration) => {
                 self.declare_declaration(declaration);
@@ -316,42 +327,21 @@ impl Analyzer {
                 self.leave_scope();
             }
             Statement::Cycles { spec, body, .. } => {
-                match &spec.bound {
-                    CycleBound::Exact(value) | CycleBound::AtMost(value) => {
-                        if self.require_static(value, "cycle bound") == Some(0) {
-                            self.error(value.span, "cycle bound must be greater than zero");
-                        }
-                    }
-                    CycleBound::Inferred(_) => {}
-                }
+                self.check_cycle_bound(&spec.bound);
                 self.check_block(body);
             }
             Statement::Wait(Wait::Cycles(value) | Wait::Scanline(value)) => {
                 self.require_static(value, "wait bound");
             }
             Statement::Return(value) => match value {
-                Some(value) => {
-                    if self.return_type == ValueType::Bool
-                        && matches!(
-                            value.value,
-                            Expression::Number(_) | Expression::Character(_)
-                        )
-                    {
-                        self.error(
-                            value.span,
-                            "return expression does not match function return type",
-                        );
-                    } else {
-                        self.require_type(
-                            value,
-                            self.return_type.clone(),
-                            "return expression does not match function return type",
-                        );
-                    }
-                }
+                Some(value) => self.require_type(
+                    value,
+                    self.return_type.clone(),
+                    "return expression does not match function return type",
+                ),
                 None if self.return_type != ValueType::Void => {
                     self.error(
-                        Span::default(),
+                        statement_span,
                         "return expression is required for this function",
                     );
                 }
@@ -378,8 +368,8 @@ impl Analyzer {
         if let Some(initializer) = &declaration.initializer {
             let value_type = self.expression_type(initializer);
             if let Some(declared_type) = &declared_type {
-                self.ensure_compatible(
-                    initializer.span,
+                self.ensure_expression_compatible(
+                    initializer,
                     declared_type,
                     &value_type,
                     "initializer type does not match declaration type",
@@ -467,7 +457,13 @@ impl Analyzer {
             },
             // Integer literals acquire their concrete type from the surrounding
             // declaration, parameter, or operation.
-            Expression::Number(_) | Expression::Character(_) => ValueType::Unknown,
+            Expression::Number(value) => {
+                if parse_number(value).is_none() {
+                    self.error(expression.span, "invalid numeric literal");
+                }
+                ValueType::Unknown
+            }
+            Expression::Character(_) => ValueType::Unknown,
             Expression::Boolean(_) => ValueType::Bool,
             Expression::String(_) => ValueType::Unknown,
             Expression::Prefix { operator, operand } => {
@@ -501,7 +497,8 @@ impl Analyzer {
             Expression::Call { callee, arguments } => self.call_type(callee, arguments),
             Expression::Index { base, index } => {
                 let base_type = self.expression_type(base);
-                self.require_type(index, ValueType::U16, "array index must be an integer");
+                let index_type = self.expression_type(index);
+                self.require_integer(index.span, &index_type, "array index must be an integer");
                 match base_type {
                     ValueType::Array(element, _) => *element,
                     ValueType::Unknown => ValueType::Unknown,
@@ -561,8 +558,8 @@ impl Analyzer {
             let left_type = self.expression_type(left);
             let right_type = self.expression_type(right);
             self.ensure_assignable(left);
-            self.ensure_compatible(
-                operator.span,
+            self.ensure_expression_compatible(
+                right,
                 &left_type,
                 &right_type,
                 "assignment operands must have compatible types",
@@ -653,8 +650,8 @@ impl Analyzer {
         }
         for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
             let argument_type = self.expression_type(argument);
-            self.ensure_compatible(
-                argument.span,
+            self.ensure_expression_compatible(
+                argument,
                 parameter,
                 &argument_type,
                 "call argument type does not match parameter type",
@@ -694,7 +691,7 @@ impl Analyzer {
         message: &str,
     ) {
         let actual = self.expression_type(expression);
-        self.ensure_compatible(expression.span, &expected, &actual, message);
+        self.ensure_expression_compatible(expression, &expected, &actual, message);
     }
 
     fn require_integer(&mut self, span: Span, value_type: &ValueType, message: &str) {
@@ -715,6 +712,44 @@ impl Analyzer {
     ) {
         if *expected != ValueType::Unknown && *actual != ValueType::Unknown && expected != actual {
             self.error(span, message);
+        }
+    }
+
+    fn ensure_expression_compatible(
+        &mut self,
+        expression: &Spanned<Expression>,
+        expected: &ValueType,
+        actual: &ValueType,
+        message: &str,
+    ) {
+        if let Expression::Number(value) = &expression.value {
+            match (parse_number(value), expected) {
+                (Some(value), ValueType::U8) if value > u8::MAX as u32 => {
+                    self.error(expression.span, "integer literal overflows u8");
+                    return;
+                }
+                (Some(value), ValueType::U16) if value > u16::MAX as u32 => {
+                    self.error(expression.span, "integer literal overflows u16");
+                    return;
+                }
+                (_, ValueType::Bool | ValueType::Void | ValueType::Array(_, _)) => {
+                    self.error(expression.span, message);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        self.ensure_compatible(expression.span, expected, actual, message);
+    }
+
+    fn check_cycle_bound(&mut self, bound: &CycleBound) {
+        match bound {
+            CycleBound::Exact(value) | CycleBound::AtMost(value) => {
+                if self.require_static(value, "cycle bound") == Some(0) {
+                    self.error(value.span, "cycle bound must be greater than zero");
+                }
+            }
+            CycleBound::Inferred(_) => {}
         }
     }
 
