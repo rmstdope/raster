@@ -154,3 +154,17 @@ fn rejects_the_fifth_distinct_background_subpalette() {
         Err(BackgroundEncodeError::TooManyPalettes { palette_count: 5 })
     );
 }
+
+#[test]
+fn rejects_an_attribute_region_with_four_nontransparent_colours() {
+    let mut pixels = vec![COLOURS[1]; 16 * 16];
+    for (index, colour) in COLOURS[2..5].iter().enumerate() {
+        pixels[index] = *colour;
+    }
+    let background = decode_background(Cursor::new(png(16, 16, pixels))).unwrap();
+
+    assert_eq!(
+        encode_background(&background),
+        Err(BackgroundEncodeError::TooManyColours { colour_count: 4 })
+    );
+}

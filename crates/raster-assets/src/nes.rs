@@ -1,7 +1,7 @@
-use crate::{IndexedBackground, TRANSPARENT_COLOUR};
+use crate::{IndexedBackground, MAX_TILES_HIGH, MAX_TILES_WIDE, TRANSPARENT_COLOUR};
 
-pub const NAMETABLE_WIDTH_TILES: usize = 32;
-pub const NAMETABLE_HEIGHT_TILES: usize = 30;
+pub const NAMETABLE_WIDTH_TILES: usize = MAX_TILES_WIDE as usize;
+pub const NAMETABLE_HEIGHT_TILES: usize = MAX_TILES_HIGH as usize;
 pub const NAMETABLE_BYTES: usize = NAMETABLE_WIDTH_TILES * NAMETABLE_HEIGHT_TILES;
 pub const ATTRIBUTE_TABLE_BYTES: usize = 64;
 pub const BACKGROUND_SUBPALETTE_COUNT: usize = 4;
@@ -39,6 +39,7 @@ impl NesBackground {
 pub enum BackgroundEncodeError {
     TooManyTiles { tile_count: usize },
     TooManyPalettes { palette_count: u8 },
+    TooManyColours { colour_count: u8 },
 }
 
 pub fn encode_background(
@@ -48,14 +49,16 @@ pub fn encode_background(
     let mut region_palette_ids = [[0; 16]; 16];
     for (region_y, palette_ids) in region_palette_ids.iter_mut().enumerate() {
         for (region_x, palette_id) in palette_ids.iter_mut().enumerate() {
-            let record = canonical_palette(background, region_x, region_y);
+            let record = canonical_palette(background, region_x, region_y)?;
             let id = if record == [TRANSPARENT_COLOUR; BACKGROUND_SUBPALETTE_BYTES] {
                 0
             } else if let Some(id) = palette_records.iter().position(|known| *known == record) {
                 id
             } else {
                 if palette_records.len() == BACKGROUND_SUBPALETTE_COUNT {
-                    return Err(BackgroundEncodeError::TooManyPalettes { palette_count: 5 });
+                    return Err(BackgroundEncodeError::TooManyPalettes {
+                        palette_count: (palette_records.len() + 1) as u8,
+                    });
                 }
                 palette_records.push(record);
                 palette_records.len() - 1
@@ -86,7 +89,9 @@ pub fn encode_background(
                 index
             } else {
                 if chr_tiles.len() == 256 {
-                    return Err(BackgroundEncodeError::TooManyTiles { tile_count: 257 });
+                    return Err(BackgroundEncodeError::TooManyTiles {
+                        tile_count: chr_tiles.len() + 1,
+                    });
                 }
                 chr_tiles.push(tile);
                 chr_tiles.len() - 1
@@ -109,7 +114,11 @@ pub fn encode_background(
     })
 }
 
-fn canonical_palette(background: &IndexedBackground, region_x: usize, region_y: usize) -> [u8; 4] {
+fn canonical_palette(
+    background: &IndexedBackground,
+    region_x: usize,
+    region_y: usize,
+) -> Result<[u8; 4], BackgroundEncodeError> {
     let width = background.width_tiles() as usize * 8;
     let height = background.height_tiles() as usize * 8;
     let mut present = [false; 64];
@@ -128,11 +137,21 @@ fn canonical_palette(background: &IndexedBackground, region_x: usize, region_y: 
     let mut slot = 1;
     for (colour, is_present) in present.iter().enumerate() {
         if *is_present && colour as u8 != TRANSPARENT_COLOUR {
+            if slot == BACKGROUND_SUBPALETTE_BYTES {
+                let colour_count = present
+                    .iter()
+                    .enumerate()
+                    .filter(|(colour, is_present)| {
+                        **is_present && *colour as u8 != TRANSPARENT_COLOUR
+                    })
+                    .count() as u8;
+                return Err(BackgroundEncodeError::TooManyColours { colour_count });
+            }
             palette[slot] = colour as u8;
             slot += 1;
         }
     }
-    palette
+    Ok(palette)
 }
 
 fn encode_tile(
