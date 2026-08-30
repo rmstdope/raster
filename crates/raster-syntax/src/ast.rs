@@ -48,46 +48,159 @@ pub struct Block {
     pub span: Span,
 }
 
+pub type Identifier = Spanned<String>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Type {
+    Name(Identifier),
+    Array {
+        length: Box<Spanned<Expression>>,
+        element: Box<Spanned<Type>>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Expression {
+    Name(Identifier),
+    Number(String),
+    String(String),
+    Character(String),
+    Boolean(bool),
+    Prefix {
+        operator: Spanned<Operator>,
+        operand: Box<Spanned<Expression>>,
+    },
+    Infix {
+        left: Box<Spanned<Expression>>,
+        operator: Spanned<Operator>,
+        right: Box<Spanned<Expression>>,
+    },
+    Call {
+        callee: Box<Spanned<Expression>>,
+        arguments: Vec<Spanned<Expression>>,
+    },
+    Index {
+        base: Box<Spanned<Expression>>,
+        index: Box<Spanned<Expression>>,
+    },
+    Member {
+        base: Box<Spanned<Expression>>,
+        member: Identifier,
+    },
+    Range {
+        start: Box<Spanned<Expression>>,
+        end: Box<Spanned<Expression>>,
+    },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Declaration {
     pub kind: Keyword,
-    pub name: Option<String>,
+    pub name: Option<Identifier>,
+    pub type_annotation: Option<Spanned<Type>>,
+    pub storage: Option<Identifier>,
+    pub initializer: Option<Spanned<Expression>>,
     pub body: Option<Block>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Parameter {
+    pub name: Identifier,
+    pub type_annotation: Spanned<Type>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Function {
-    pub name: String,
+    pub name: Identifier,
+    pub parameters: Vec<Parameter>,
+    pub return_type: Option<Spanned<Type>>,
+    pub cycle_spec: Option<CycleSpec>,
+    pub storage: Option<Identifier>,
+    pub employs: Vec<Identifier>,
     pub body: Block,
     pub is_assembly: bool,
     pub is_unsafe: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CycleSpec {
+    pub bound: CycleBound,
+    pub pad: bool,
+    pub interruptible: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CycleBound {
+    Exact(Spanned<Expression>),
+    AtMost(Spanned<Expression>),
+    Inferred(Span),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
-    pub name: String,
+    pub name: Identifier,
+    pub strategy: Option<Identifier>,
     pub events: Vec<Spanned<FrameEvent>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FramePosition {
+    Vblank(Span),
+    Scanline(Spanned<Expression>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrameEvent {
-    At(Block),
-    Every(Block),
+    At {
+        position: FramePosition,
+        body: Block,
+    },
+    Every {
+        interval: Spanned<Expression>,
+        from: Spanned<Expression>,
+        to: Spanned<Expression>,
+        body: Block,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Wait {
+    Vblank(Span),
+    Cycles(Spanned<Expression>),
+    Scanline(Spanned<Expression>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Statement {
     Declaration(Declaration),
     Block(Block),
-    If(Block),
-    While(Block),
-    For(Block),
+    If {
+        condition: Spanned<Expression>,
+        then_body: Block,
+        else_body: Option<Block>,
+    },
+    While {
+        condition: Spanned<Expression>,
+        body: Block,
+    },
+    For {
+        binding: Identifier,
+        range: Spanned<Expression>,
+        step: Option<Spanned<Expression>>,
+        body: Block,
+    },
     Loop(Block),
-    Cycles(Block),
-    Return,
+    Cycles {
+        spec: CycleSpec,
+        label: Option<Identifier>,
+        body: Block,
+    },
+    Wait(Wait),
+    Sync(Identifier),
+    Return(Option<Spanned<Expression>>),
     Break,
     Continue,
-    Expression,
+    Expression(Spanned<Expression>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -156,6 +269,8 @@ pub enum Operator {
     LessEqual,
     Greater,
     GreaterEqual,
+    ShiftLeft,
+    ShiftRight,
     EqualEqual,
     BangEqual,
     AmpersandAmpersand,
