@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/raster-6502",
     "crates/raster-assets",
     "crates/raster-diag",
     "crates/raster-emu",

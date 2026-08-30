@@ -1,4 +1,9 @@
 use crate::{emit_mmc3_ines, InterruptVectors, MMC3_FIXED_BANK_START};
+use raster_6502::{
+    assemble,
+    AddressingMode::{Absolute, Immediate, Implied, Relative},
+    Instruction,
+};
 
 const PPU_CONTROL: u16 = 0x2000;
 const PPU_MASK: u16 = 0x2001;
@@ -24,64 +29,133 @@ const fn fixed_bank_address(offset: usize) -> u16 {
     MMC3_FIXED_BANK_START + offset as u16
 }
 
-const RESET_PROGRAM: &[u8] = &[
-    0x78, // SEI
-    0xd8, // CLD
-    0xa2,
-    0x40, // LDX #$40
-    0x8e,
-    APU_FRAME_COUNTER as u8,
-    (APU_FRAME_COUNTER >> 8) as u8, // STX $4017
-    0xa2,
-    0xff, // LDX #$FF
-    0x9a, // TXS
-    0xe8, // INX
-    0x8e,
-    PPU_CONTROL as u8,
-    (PPU_CONTROL >> 8) as u8, // STX $2000
-    0x8e,
-    PPU_MASK as u8,
-    (PPU_MASK >> 8) as u8, // STX $2001
-    0x8e,
-    APU_DMC_CONTROL as u8,
-    (APU_DMC_CONTROL >> 8) as u8, // STX $4010
-    0x2c,
-    PPU_STATUS as u8,
-    (PPU_STATUS >> 8) as u8, // BIT $2002
-    0x10,
-    relative_branch(FIRST_VBLANK_POLL_OFFSET + 5, FIRST_VBLANK_POLL_OFFSET), // BPL first poll
-    0x2c,
-    PPU_STATUS as u8,
-    (PPU_STATUS >> 8) as u8, // BIT $2002
-    0x10,
-    relative_branch(SECOND_VBLANK_POLL_OFFSET + 5, SECOND_VBLANK_POLL_OFFSET), // BPL second poll
-    0x2c,
-    PPU_STATUS as u8,
-    (PPU_STATUS >> 8) as u8, // BIT $2002 resets the address latch
-    0xa9,
-    0x3f, // LDA #$3F
-    0x8d,
-    PPU_ADDRESS as u8,
-    (PPU_ADDRESS >> 8) as u8, // STA $2006
-    0xa9,
-    0x00, // LDA #$00
-    0x8d,
-    PPU_ADDRESS as u8,
-    (PPU_ADDRESS >> 8) as u8, // STA $2006
-    0xa9,
-    0x12, // LDA #$12
-    0x8d,
-    PPU_DATA as u8,
-    (PPU_DATA >> 8) as u8, // STA $2007
-    0x4c,
-    fixed_bank_address(IDLE_LOOP_OFFSET) as u8,
-    (fixed_bank_address(IDLE_LOOP_OFFSET) >> 8) as u8, // JMP to itself
-    0x40,                                              // RTI
+const RESET_PROGRAM: &[Instruction] = &[
+    Instruction {
+        opcode: 0x78,
+        mode: Implied,
+        operand: None,
+    },
+    Instruction {
+        opcode: 0xd8,
+        mode: Implied,
+        operand: None,
+    },
+    Instruction {
+        opcode: 0xa2,
+        mode: Immediate,
+        operand: Some(0x40),
+    },
+    Instruction {
+        opcode: 0x8e,
+        mode: Absolute,
+        operand: Some(APU_FRAME_COUNTER),
+    },
+    Instruction {
+        opcode: 0xa2,
+        mode: Immediate,
+        operand: Some(0xff),
+    },
+    Instruction {
+        opcode: 0x9a,
+        mode: Implied,
+        operand: None,
+    },
+    Instruction {
+        opcode: 0xe8,
+        mode: Implied,
+        operand: None,
+    },
+    Instruction {
+        opcode: 0x8e,
+        mode: Absolute,
+        operand: Some(PPU_CONTROL),
+    },
+    Instruction {
+        opcode: 0x8e,
+        mode: Absolute,
+        operand: Some(PPU_MASK),
+    },
+    Instruction {
+        opcode: 0x8e,
+        mode: Absolute,
+        operand: Some(APU_DMC_CONTROL),
+    },
+    Instruction {
+        opcode: 0x2c,
+        mode: Absolute,
+        operand: Some(PPU_STATUS),
+    },
+    Instruction {
+        opcode: 0x10,
+        mode: Relative,
+        operand: Some(
+            relative_branch(FIRST_VBLANK_POLL_OFFSET + 5, FIRST_VBLANK_POLL_OFFSET) as u16,
+        ),
+    },
+    Instruction {
+        opcode: 0x2c,
+        mode: Absolute,
+        operand: Some(PPU_STATUS),
+    },
+    Instruction {
+        opcode: 0x10,
+        mode: Relative,
+        operand: Some(
+            relative_branch(SECOND_VBLANK_POLL_OFFSET + 5, SECOND_VBLANK_POLL_OFFSET) as u16,
+        ),
+    },
+    Instruction {
+        opcode: 0x2c,
+        mode: Absolute,
+        operand: Some(PPU_STATUS),
+    },
+    Instruction {
+        opcode: 0xa9,
+        mode: Immediate,
+        operand: Some(0x3f),
+    },
+    Instruction {
+        opcode: 0x8d,
+        mode: Absolute,
+        operand: Some(PPU_ADDRESS),
+    },
+    Instruction {
+        opcode: 0xa9,
+        mode: Immediate,
+        operand: Some(0x00),
+    },
+    Instruction {
+        opcode: 0x8d,
+        mode: Absolute,
+        operand: Some(PPU_ADDRESS),
+    },
+    Instruction {
+        opcode: 0xa9,
+        mode: Immediate,
+        operand: Some(0x12),
+    },
+    Instruction {
+        opcode: 0x8d,
+        mode: Absolute,
+        operand: Some(PPU_DATA),
+    },
+    Instruction {
+        opcode: 0x4c,
+        mode: Absolute,
+        operand: Some(fixed_bank_address(IDLE_LOOP_OFFSET)),
+    },
+    Instruction {
+        opcode: 0x40,
+        mode: Implied,
+        operand: None,
+    },
 ];
 
 pub fn m1_solid_backdrop_rom() -> Vec<u8> {
+    let reset_program =
+        assemble(RESET_PROGRAM, true).expect("the fixed M1 reset program must be legal 6502");
     emit_mmc3_ines(
-        RESET_PROGRAM,
+        &reset_program,
         InterruptVectors {
             nmi: fixed_bank_address(RTI_OFFSET),
             reset: fixed_bank_address(0),
