@@ -65,6 +65,28 @@ fn initializes_before_writing_the_blue_universal_backdrop() {
 }
 
 #[test]
+fn hand_built_mmc3_rom_is_byte_identical_after_assembler_migration() {
+    let mut expected = vec![0xff; INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE];
+    expected[..INES_HEADER_SIZE].copy_from_slice(&[
+        b'N', b'E', b'S', 0x1a, 2, 0, 0x40, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+
+    let fixed_bank_offset = INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - MMC3_FIXED_BANK_SIZE;
+    let reset_program = [
+        0x78, 0xd8, 0xa2, 0x40, 0x8e, 0x17, 0x40, 0xa2, 0xff, 0x9a, 0xe8, 0x8e, 0x00, 0x20, 0x8e,
+        0x01, 0x20, 0x8e, 0x10, 0x40, 0x2c, 0x02, 0x20, 0x10, 0xfb, 0x2c, 0x02, 0x20, 0x10, 0xfb,
+        0x2c, 0x02, 0x20, 0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20, 0xa9, 0x12,
+        0x8d, 0x07, 0x20, 0x4c, 0x30, 0xe0, 0x40,
+    ];
+    expected[fixed_bank_offset..fixed_bank_offset + reset_program.len()]
+        .copy_from_slice(&reset_program);
+    expected[INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - 6..]
+        .copy_from_slice(&[0x33, 0xe0, 0x00, 0xe0, 0x33, 0xe0]);
+
+    assert_eq!(m1_solid_backdrop_rom(), expected);
+}
+
+#[test]
 fn binary_writes_the_rom_and_requires_an_output_path() {
     let executable = env!("CARGO_BIN_EXE_m1_solid_backdrop");
     let path = std::env::temp_dir().join(format!(

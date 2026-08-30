@@ -299,6 +299,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
+name = "raster-6502"
+version = "0.1.0"
+
+[[package]]
 name = "raster-assets"
 version = "0.1.0"
 dependencies = [
@@ -319,6 +323,9 @@ dependencies = [
 [[package]]
 name = "raster-link"
 version = "0.1.0"
+dependencies = [
+ "raster-6502",
+]
 
 [[package]]
 name = "raster-syntax"
