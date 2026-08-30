@@ -156,6 +156,9 @@ impl<'a> Parser<'a> {
 
     fn declaration(&mut self, kind: Keyword) -> Declaration {
         let name = self.take_identifier();
+        if name.is_none() && matches!(self.peek().value, TokenKind::Keyword(Keyword::Main)) {
+            self.error_here("reserved keyword `main` cannot be a declaration name");
+        }
         let body = if self.skip_to_block_or_statement_end() {
             Some(self.required_block("expected declaration body"))
         } else {
