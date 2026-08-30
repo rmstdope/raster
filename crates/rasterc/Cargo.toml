@@ -1,0 +1,10 @@
+[package]
+name = "rasterc"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+raster-diag = { path = "../raster-diag" }
