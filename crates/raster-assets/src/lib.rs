@@ -1,5 +1,13 @@
 use std::io::Read;
 
+mod nes;
+
+pub use nes::{
+    encode_background, BackgroundEncodeError, NesBackground, ATTRIBUTE_TABLE_BYTES,
+    BACKGROUND_PALETTE_BYTES, BACKGROUND_SUBPALETTE_BYTES, BACKGROUND_SUBPALETTE_COUNT,
+    NAMETABLE_BYTES, NAMETABLE_HEIGHT_TILES, NAMETABLE_WIDTH_TILES,
+};
+
 pub const TILE_WIDTH: u32 = 8;
 pub const TILE_HEIGHT: u32 = 8;
 pub const MAX_TILES_WIDE: u32 = 32;
