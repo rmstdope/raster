@@ -60,6 +60,80 @@ mod tests {
             .unwrap();
         let program = parse(example).expect("the MVP example should parse");
         assert_eq!(program.items.len(), 7);
+
+        let Item::Declaration(group) = &program.items[3].value else {
+            panic!("expected the raster group");
+        };
+        assert_eq!(
+            group.name.as_ref().map(|name| name.value.as_str()),
+            Some("raster")
+        );
+        let group_body = group.body.as_ref().expect("group body");
+        assert!(matches!(
+            &group_body.statements[0].value,
+            Statement::Declaration(Declaration {
+                type_annotation: Some(annotation),
+                storage: Some(storage),
+                ..
+            }) if matches!(&annotation.value, Type::Array { length, element }
+                if matches!(&length.value, Expression::Number(value) if value == "240")
+                    && matches!(&element.value, Type::Name(name) if name.value == "u8"))
+                && storage.value == "bss"
+        ));
+
+        let Item::Function(init) = &program.items[4].value else {
+            panic!("expected init function");
+        };
+        assert_eq!(init.name.value, "init");
+        assert!(matches!(
+            &init.body.statements[4].value,
+            Statement::Expression(value)
+                if matches!(&value.value, Expression::Call { callee, arguments }
+                    if matches!(&callee.value, Expression::Name(name) if name.value == "load_palette")
+                        && arguments.len() == 1)
+        ));
+        assert!(matches!(
+            &init.body.statements[6].value,
+            Statement::For { binding, range, body, .. }
+                if binding.value == "i"
+                    && matches!(&range.value, Expression::Range { start, end }
+                        if matches!(&start.value, Expression::Number(value) if value == "0")
+                            && matches!(&end.value, Expression::Number(value) if value == "240"))
+                    && matches!(&body.statements[0].value, Statement::Expression(_))
+        ));
+
+        let Item::Frame(frame) = &program.items[5].value else {
+            panic!("expected main frame");
+        };
+        assert_eq!(frame.name.value, "main");
+        assert_eq!(
+            frame
+                .strategy
+                .as_ref()
+                .map(|strategy| strategy.value.as_str()),
+            Some("irq")
+        );
+        assert!(matches!(
+            &frame.events[0].value,
+            FrameEvent::Every { interval, from, to, body }
+                if matches!(&interval.value, Expression::Number(value) if value == "1")
+                    && matches!(&from.value, Expression::Number(value) if value == "0")
+                    && matches!(&to.value, Expression::Number(value) if value == "239")
+                    && matches!(&body.statements[0].value, Statement::Cycles { spec, .. }
+                        if spec.pad
+                            && matches!(&spec.bound, CycleBound::AtMost(value)
+                                if matches!(&value.value, Expression::Number(number) if number == "28")))
+        ));
+
+        let Item::Main(main) = &program.items[6].value else {
+            panic!("expected main block");
+        };
+        assert!(matches!(
+            &main.statements[1].value,
+            Statement::Loop(body)
+                if matches!(&body.statements[..], [Spanned { value: Statement::Wait(_), .. }, Spanned { value: Statement::Sync(name), .. }]
+                    if name.value == "exact")
+        ));
     }
 
     #[test]
@@ -107,5 +181,387 @@ mod tests {
         assert!(parse("unsafe fn helper() {}").is_err());
         assert!(parse("frame main {}").is_ok());
         assert!(parse("const main: u8 = 1").is_err());
+    }
+
+    #[test]
+    fn parser_retains_declaration_and_function_signatures() {
+        let source = r#"
+            const LIMIT: u8 = 4
+            var counter: [LIMIT]u8 in zp
+            group state { var line: u8 }
+            fn render(x: u8, y: u16) -> void cycles(<= 20) pad interruptible { return }
+            unsafe asm fn upload(data: u8) -> void employs(state) cycles(?) {}
+        "#;
+
+        let program = parse(source).expect("the declarations and signatures should parse");
+
+        let Item::Declaration(limit) = &program.items[0].value else {
+            panic!("expected a declaration");
+        };
+        assert_eq!(limit.kind, Keyword::Const);
+        let limit_name = limit.name.as_ref().expect("const name");
+        assert_eq!(limit_name.value, "LIMIT");
+        assert_eq!(
+            limit_name.span,
+            Span::new(
+                source.find("LIMIT").unwrap() as u32,
+                source.find("LIMIT").unwrap() as u32 + 5
+            )
+        );
+        assert!(matches!(
+            limit.type_annotation.as_ref().map(|annotation| &annotation.value),
+            Some(Type::Name(name)) if name.value == "u8"
+        ));
+        assert!(matches!(
+            limit.initializer.as_ref().map(|initializer| &initializer.value),
+            Some(Expression::Number(value)) if value == "4"
+        ));
+
+        let Item::Declaration(counter) = &program.items[1].value else {
+            panic!("expected a declaration");
+        };
+        assert!(matches!(
+            counter.type_annotation.as_ref().map(|annotation| &annotation.value),
+            Some(Type::Array { length, element })
+                if matches!(&length.value, Expression::Name(name) if name.value == "LIMIT")
+                    && matches!(&element.value, Type::Name(name) if name.value == "u8")
+        ));
+        assert_eq!(
+            counter
+                .storage
+                .as_ref()
+                .map(|storage| storage.value.as_str()),
+            Some("zp")
+        );
+
+        let Item::Declaration(group) = &program.items[2].value else {
+            panic!("expected a group declaration");
+        };
+        let group_body = group.body.as_ref().expect("group body");
+        assert!(matches!(
+            group_body.statements.as_slice(),
+            [Spanned { value: Statement::Declaration(Declaration { name: Some(name), .. }), .. }]
+                if name.value == "line"
+        ));
+
+        let Item::Function(render) = &program.items[3].value else {
+            panic!("expected a function");
+        };
+        assert_eq!(render.name.value, "render");
+        assert_eq!(
+            render
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.value.as_str())
+                .collect::<Vec<_>>(),
+            ["x", "y"]
+        );
+        assert!(matches!(
+            render.return_type.as_ref().map(|annotation| &annotation.value),
+            Some(Type::Name(name)) if name.value == "void"
+        ));
+        assert!(matches!(
+            render.cycle_spec.as_ref().map(|spec| &spec.bound),
+            Some(CycleBound::AtMost(value)) if matches!(&value.value, Expression::Number(number) if number == "20")
+        ));
+        assert!(
+            render
+                .cycle_spec
+                .as_ref()
+                .is_some_and(|spec| spec.pad && spec.interruptible)
+        );
+
+        let Item::Function(upload) = &program.items[4].value else {
+            panic!("expected an assembly function");
+        };
+        assert_eq!(upload.name.value, "upload");
+        assert!(upload.is_assembly);
+        assert!(upload.is_unsafe);
+        assert!(matches!(
+            upload.cycle_spec.as_ref().map(|spec| &spec.bound),
+            Some(CycleBound::Inferred(_))
+        ));
+    }
+
+    #[test]
+    fn parser_retains_expression_precedence_and_statement_payloads() {
+        let source = r#"
+            fn render() {
+                ppu.mask = $1E | raster.bars[line]
+                if ready && !done { return ppu.mask } else { while count < 3 { count += 1 } }
+                for i in 0..240 step 4 { wait i + 1 }
+                loop { sync exact }
+                cycles(20) label { return }
+                emit("text", 'x', true, false)
+            }
+        "#;
+
+        let program = parse(source).expect("the statement payloads should parse");
+        let Item::Function(function) = &program.items[0].value else {
+            panic!("expected a function");
+        };
+        let statements = &function.body.statements;
+
+        let Statement::Expression(assignment) = &statements[0].value else {
+            panic!("expected an expression statement");
+        };
+        let Expression::Infix {
+            left,
+            operator,
+            right,
+        } = &assignment.value
+        else {
+            panic!("expected an assignment");
+        };
+        assert_eq!(operator.value, Operator::Assign);
+        assert!(matches!(&left.value, Expression::Member { member, .. } if member.value == "mask"));
+        let Expression::Infix {
+            operator: pipe,
+            right: indexed,
+            ..
+        } = &right.value
+        else {
+            panic!("expected a bitwise-or expression");
+        };
+        assert_eq!(pipe.value, Operator::Pipe);
+        assert!(matches!(
+            &indexed.value,
+            Expression::Index { base, index }
+                if matches!(&base.value, Expression::Member { member, .. } if member.value == "bars")
+                    && matches!(&index.value, Expression::Name(name) if name.value == "line")
+        ));
+
+        let Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } = &statements[1].value
+        else {
+            panic!("expected an if statement");
+        };
+        assert!(matches!(
+            &condition.value,
+            Expression::Infix { operator, right, .. }
+                if operator.value == Operator::AmpersandAmpersand
+                    && matches!(&right.value, Expression::Prefix { operator, .. } if operator.value == Operator::Bang)
+        ));
+        assert!(matches!(
+            &then_body.statements[0].value,
+            Statement::Return(Some(value))
+                if matches!(&value.value, Expression::Member { member, .. } if member.value == "mask")
+        ));
+        let else_body = else_body.as_ref().expect("else body");
+        assert!(matches!(
+            &else_body.statements[0].value,
+            Statement::While { condition, body }
+                if matches!(&condition.value, Expression::Infix { operator, .. } if operator.value == Operator::Less)
+                    && matches!(&body.statements[0].value, Statement::Expression(_))
+        ));
+
+        let Statement::For {
+            binding,
+            range,
+            step,
+            body,
+        } = &statements[2].value
+        else {
+            panic!("expected a for statement");
+        };
+        assert_eq!(binding.value, "i");
+        assert!(matches!(&range.value, Expression::Range { .. }));
+        assert!(matches!(
+            step.as_ref().map(|step| &step.value),
+            Some(Expression::Number(number)) if number == "4"
+        ));
+        assert!(matches!(
+            &body.statements[0].value,
+            Statement::Wait(Wait::Cycles(value))
+                if matches!(&value.value, Expression::Infix { operator, .. } if operator.value == Operator::Plus)
+        ));
+
+        assert!(matches!(
+            &statements[3].value,
+            Statement::Loop(body)
+                if matches!(&body.statements[0].value, Statement::Sync(name) if name.value == "exact")
+        ));
+        assert!(matches!(
+            &statements[4].value,
+            Statement::Cycles { spec, label: Some(label), body }
+                if label.value == "label"
+                    && matches!(&spec.bound, CycleBound::Exact(value) if matches!(&value.value, Expression::Number(number) if number == "20"))
+                    && matches!(&body.statements[0].value, Statement::Return(None))
+        ));
+        assert!(matches!(
+            &statements[5].value,
+            Statement::Expression(value)
+                if matches!(&value.value, Expression::Call { callee, arguments }
+                    if matches!(&callee.value, Expression::Name(name) if name.value == "emit")
+                        && matches!(arguments.as_slice(),
+                            [Spanned { value: Expression::String(text), .. },
+                             Spanned { value: Expression::Character(character), .. },
+                             Spanned { value: Expression::Boolean(true), .. },
+                             Spanned { value: Expression::Boolean(false), .. }]
+                                if text == "text" && character == "x"))
+        ));
+    }
+
+    #[test]
+    fn parser_retains_frame_schedule_and_timing_bounds() {
+        let source = r#"
+            fn timed() cycles(42) pad interruptible {}
+            fn inferred() cycles(?) {}
+            main { cycles(<= LIMIT) label { wait cycles(3) } }
+            frame display using irq {
+                at scanline split + 1 { wait vblank }
+                at vblank { sync exact }
+                every interval scanlines from start to end {
+                    cycles(<= 28) pad { ppu.mask = 1 }
+                }
+            }
+        "#;
+
+        let program = parse(source).expect("timing annotations and frames should parse");
+        let Item::Function(timed) = &program.items[0].value else {
+            panic!("expected a timed function");
+        };
+        assert!(matches!(
+            timed.cycle_spec.as_ref().map(|spec| &spec.bound),
+            Some(CycleBound::Exact(value)) if matches!(&value.value, Expression::Number(number) if number == "42")
+        ));
+        assert!(
+            timed
+                .cycle_spec
+                .as_ref()
+                .is_some_and(|spec| spec.pad && spec.interruptible)
+        );
+
+        let Item::Function(inferred) = &program.items[1].value else {
+            panic!("expected an inferred function");
+        };
+        assert!(matches!(
+            inferred.cycle_spec.as_ref().map(|spec| &spec.bound),
+            Some(CycleBound::Inferred(span))
+                if *span == Span::new(source.find('?').unwrap() as u32, source.find('?').unwrap() as u32 + 1)
+        ));
+
+        let Item::Main(main) = &program.items[2].value else {
+            panic!("expected main");
+        };
+        assert!(matches!(
+            &main.statements[0].value,
+            Statement::Cycles { spec, label: Some(label), body }
+                if label.value == "label"
+                    && matches!(&spec.bound, CycleBound::AtMost(value) if matches!(&value.value, Expression::Name(name) if name.value == "LIMIT"))
+                    && matches!(&body.statements[0].value, Statement::Wait(Wait::Cycles(value))
+                        if matches!(&value.value, Expression::Number(number) if number == "3"))
+        ));
+
+        let Item::Frame(frame) = &program.items[3].value else {
+            panic!("expected a frame");
+        };
+        assert_eq!(frame.name.value, "display");
+        assert_eq!(
+            frame
+                .strategy
+                .as_ref()
+                .map(|strategy| strategy.value.as_str()),
+            Some("irq")
+        );
+        assert!(matches!(
+            &frame.events[0].value,
+            FrameEvent::At { position: FramePosition::Scanline(position), body }
+                if matches!(&position.value, Expression::Infix { operator, .. } if operator.value == Operator::Plus)
+                    && matches!(&body.statements[0].value, Statement::Wait(Wait::Vblank(_)))
+        ));
+        assert!(matches!(
+            &frame.events[1].value,
+            FrameEvent::At { position: FramePosition::Vblank(span), body }
+                if *span == Span::new(source.rfind("vblank").unwrap() as u32, source.rfind("vblank").unwrap() as u32 + 6)
+                    && matches!(&body.statements[0].value, Statement::Sync(name) if name.value == "exact")
+        ));
+        assert!(matches!(
+            &frame.events[2].value,
+            FrameEvent::Every { interval, from, to, body }
+                if matches!(&interval.value, Expression::Name(name) if name.value == "interval")
+                    && matches!(&from.value, Expression::Name(name) if name.value == "start")
+                    && matches!(&to.value, Expression::Name(name) if name.value == "end")
+                    && matches!(&body.statements[0].value, Statement::Cycles { spec, .. }
+                        if matches!(&spec.bound, CycleBound::AtMost(value) if matches!(&value.value, Expression::Number(number) if number == "28")))
+        ));
+    }
+
+    #[test]
+    fn parser_retains_wait_modes_and_assembly_employs() {
+        let source = r#"
+            unsafe asm fn upload() employs(vram_state, oam_state) cycles(<= 1400) {}
+            main {
+                wait vblank
+                wait cycles(1234)
+                wait scanline 96
+            }
+        "#;
+
+        let program = parse(source).expect("wait modes and assembly employs should parse");
+        let Item::Function(upload) = &program.items[0].value else {
+            panic!("expected an assembly function");
+        };
+        assert_eq!(
+            upload
+                .employs
+                .iter()
+                .map(|group| group.value.as_str())
+                .collect::<Vec<_>>(),
+            ["vram_state", "oam_state"]
+        );
+
+        let Item::Main(main) = &program.items[1].value else {
+            panic!("expected main");
+        };
+        assert!(matches!(
+            &main.statements[0].value,
+            Statement::Wait(Wait::Vblank(span)) if *span == Span::new(
+                source.find("vblank").unwrap() as u32,
+                source.find("vblank").unwrap() as u32 + 6
+            )
+        ));
+        assert!(matches!(
+            &main.statements[1].value,
+            Statement::Wait(Wait::Cycles(value))
+                if matches!(&value.value, Expression::Number(number) if number == "1234")
+        ));
+        assert!(matches!(
+            &main.statements[2].value,
+            Statement::Wait(Wait::Scanline(value))
+                if matches!(&value.value, Expression::Number(number) if number == "96")
+        ));
+    }
+
+    #[test]
+    fn parser_reports_multiple_errors_after_structured_parse_failures() {
+        let source = r#"
+            const broken: [size u8 = 1
+            fn bad(value: ) -> {
+                ppu.mask = (1 +
+                if { return )
+            }
+            frame broken using {
+                at scanline { }
+                every scanlines from to { }
+            }
+        "#;
+
+        let errors = parse(source).expect_err("malformed structured input must fail");
+        assert!(
+            errors.len() >= 4,
+            "expected independent structured errors, got {errors:#?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("type") || error.message.contains("expression"))
+        );
+        assert!(errors.iter().all(
+            |error| error.span.start <= error.span.end && error.span.end <= source.len() as u32
+        ));
     }
 }
