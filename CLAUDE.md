@@ -2,9 +2,18 @@
 
 ## The project
 
-raster is a high-level programming language for writing timing-critical NES ROMs. Its users are
-NES developers; a change is working when the language toolchain correctly builds their ROMs while
-preserving the timing guarantees its source constructs express.
+raster is a compiler CLI for NES software developers building timing-critical NES ROMs. A change is
+working when the toolchain correctly builds their ROMs while preserving the timing guarantees its
+source constructs express.
+
+Raster runs locally from source on macOS, Linux, and Windows. Maintainers create downloadable GitHub
+releases by setting tags; generated ROMs and intermediate assets stay outside the source repository.
+Already-installed Raster has no runtime service dependency.
+
+Developers write a `.raster` file, run `rasterc`, and test the resulting ROM in an emulator. No input
+prints usage and exits nonzero; invalid source produces concise, actionable source-spanned diagnostics.
+The terminal interface is keyboard-first, has no authentication or persistent state, communicates no
+meaning by colour alone, and feels fast, streamlined, and tech.
 
 ## Four Eye Principle
 
@@ -29,6 +38,7 @@ after that use `bd dolt pull` and `bd dolt push`.
 
 - Work is delivered in small increments that stand on their own.
 - Code is written test-first.
+- The full pull-request gate is `cargo fmt --check && cargo clippy -- -D warnings && cargo test`.
 - Prefer the simple design; say so when you decline a more general one.
 
 ## Where the project declares its facts
