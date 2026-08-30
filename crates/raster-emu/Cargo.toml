@@ -1,0 +1,10 @@
+[package]
+name = "raster-emu"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tetanes-core = "=0.15.0"
