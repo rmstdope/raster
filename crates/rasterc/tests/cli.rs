@@ -1,5 +1,5 @@
 use std::{
-    io::Cursor,
+    io::{Cursor, Error, ErrorKind, Write},
     path::PathBuf,
     process::{Command, Stdio},
 };
@@ -76,4 +76,24 @@ fn invalid_at_input_reports_a_source_spanned_diagnostic() {
             fixture("invalid-at.raster").display()
         )
     );
+}
+
+#[test]
+fn broken_pipe_ends_without_a_panic() {
+    let mut stdout = Cursor::new(Vec::new());
+    let mut stderr = BrokenPipe;
+
+    assert_eq!(run(Vec::new(), &mut stdout, &mut stderr), Err(0));
+}
+
+struct BrokenPipe;
+
+impl Write for BrokenPipe {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        Err(Error::from(ErrorKind::BrokenPipe))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

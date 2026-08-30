@@ -7,6 +7,6 @@ fn main() -> ExitCode {
         &mut std::io::stderr(),
     ) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(code) => ExitCode::from(code as u8),
+        Err(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
     }
 }
