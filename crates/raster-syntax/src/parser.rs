@@ -51,7 +51,7 @@ impl<'a> Parser<'a> {
         let item = match self.peek().value {
             TokenKind::Keyword(Keyword::Target) => {
                 self.advance();
-                self.expect_identifier("expected target name");
+                self.expect_name("nes", "expected `nes` after `target`");
                 Item::Target(self.required_block("expected `{` after target"))
             }
             TokenKind::Keyword(Keyword::Import) => {
@@ -93,12 +93,10 @@ impl<'a> Parser<'a> {
     }
 
     fn function(&mut self) -> Function {
-        let mut assembly = false;
-        if self.match_keyword(Keyword::Unsafe) {
-            assembly = true;
-        }
-        if self.match_keyword(Keyword::Asm) {
-            assembly = true;
+        let is_unsafe = self.match_keyword(Keyword::Unsafe);
+        let is_assembly = self.match_keyword(Keyword::Asm);
+        if is_unsafe && !is_assembly {
+            self.error_here("`unsafe` is only valid before `asm fn`");
         }
         self.expect_keyword(Keyword::Fn, "expected `fn`");
         let name = self
@@ -108,15 +106,22 @@ impl<'a> Parser<'a> {
         Function {
             name,
             body: self.required_block("expected function body"),
-            is_assembly: assembly,
+            is_assembly,
+            is_unsafe,
         }
     }
 
     fn frame(&mut self) -> Frame {
         self.advance();
-        let name = self
-            .expect_identifier("expected frame name")
-            .unwrap_or_default();
+        let name = match self.peek().value.clone() {
+            TokenKind::Keyword(Keyword::Main) => {
+                self.advance();
+                "main".into()
+            }
+            _ => self
+                .expect_identifier("expected frame name")
+                .unwrap_or_default(),
+        };
         self.skip_to_block();
         self.expect_left_brace("expected `{` after frame header");
         let mut events = Vec::new();
@@ -366,12 +371,6 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Some(value)
             }
-            // `main` names both the entry item and the conventional frame in the
-            // MVP example, despite otherwise being a reserved word.
-            TokenKind::Keyword(Keyword::Main) => {
-                self.advance();
-                Some("main".into())
-            }
             _ => None,
         }
     }
@@ -382,6 +381,14 @@ impl<'a> Parser<'a> {
             self.error_here(message);
         }
         value
+    }
+
+    fn expect_name(&mut self, expected: &str, message: &str) {
+        if matches!(&self.peek().value, TokenKind::Identifier(value) if value == expected) {
+            self.advance();
+        } else {
+            self.error_here(message);
+        }
     }
 
     fn take_string(&mut self, message: &str) -> Option<String> {

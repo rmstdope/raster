@@ -60,6 +60,7 @@ pub struct Function {
     pub name: String,
     pub body: Block,
     pub is_assembly: bool,
+    pub is_unsafe: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

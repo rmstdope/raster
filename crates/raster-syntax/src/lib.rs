@@ -47,7 +47,10 @@ mod tests {
 
     #[test]
     fn parser_accepts_the_complete_mvp_example() {
-        let source = include_str!("../../../../../../docs/raster-language-spec.md");
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/raster-language-spec.md"
+        ));
         let example = source
             .split("## 13. Complete example — the MVP demo")
             .nth(1)
@@ -96,5 +99,13 @@ mod tests {
 
         let result = parse(source);
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn parser_enforces_reserved_target_and_unsafe_grammar() {
+        assert!(parse("target famicom {}").is_err());
+        assert!(parse("unsafe fn helper() {}").is_err());
+        assert!(parse("frame main {}").is_ok());
+        assert!(parse("const main: u8 = 1").is_err());
     }
 }
