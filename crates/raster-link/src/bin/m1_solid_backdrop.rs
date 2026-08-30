@@ -1,9 +1,9 @@
-use std::{env, fs, process};
+use std::{env, fs, path::PathBuf, process};
 
 fn main() {
     let mut arguments = env::args_os();
     let _program = arguments.next();
-    let Some(output_path) = arguments.next() else {
+    let Some(output_path) = arguments.next().map(PathBuf::from) else {
         usage_and_exit();
     };
 
