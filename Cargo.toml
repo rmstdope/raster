@@ -4,6 +4,7 @@ members = [
     "crates/raster-diag",
     "crates/raster-emu",
     "crates/raster-syntax",
+    "crates/raster-sema",
     "crates/raster-link",
     "crates/rasterc",
 ]

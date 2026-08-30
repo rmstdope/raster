@@ -321,6 +321,13 @@ name = "raster-link"
 version = "0.1.0"
 
 [[package]]
+name = "raster-sema"
+version = "0.1.0"
+dependencies = [
+ "raster-syntax",
+]
+
+[[package]]
 name = "raster-syntax"
 version = "0.1.0"
 
