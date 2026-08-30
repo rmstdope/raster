@@ -317,6 +317,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "raster-link"
+version = "0.1.0"
+
+[[package]]
 name = "raster-syntax"
 version = "0.1.0"
 
