@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{io::Cursor, num::NonZeroU32};
 
 use raster_assets::{
     decode_background, encode_background, IndexedBackground, NesBackground, TRANSPARENT_COLOUR,
@@ -7,6 +7,8 @@ use raster_link::{
     m5_background_rom, BackgroundData, LinkedRom, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
     MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
 };
+
+use raster_emu::{render_after_frames, FRAME_PIXELS, FRAME_WIDTH};
 
 const JMP_ABSOLUTE: u8 = 0x4c;
 
@@ -181,4 +183,40 @@ fn ships_the_encoded_background_in_the_fixed_bank() {
          halt {halt}, palettes {palettes}, CHR {chr}, nametable {nametable}, \
          attributes {attributes}",
     );
+}
+
+#[test]
+fn renders_the_source_png_entry_for_entry() {
+    let (indexed, _, rom) = linked_fixture();
+
+    // The reset runtime waits two vblanks and the upload costs most of another
+    // frame, so the fourth is the first complete one. The program then halts
+    // with rendering on, so every frame from there is identical.
+    let frame = render_after_frames(
+        "m5-background.nes",
+        &rom.image,
+        NonZeroU32::new(8).expect("eight is not zero"),
+    )
+    .expect("the ROM renders");
+
+    let rendered = frame.as_indices();
+    let differing: Vec<usize> = indexed
+        .pixels()
+        .iter()
+        .zip(rendered.iter())
+        .enumerate()
+        .filter(|(_, (source, shown))| u16::from(**source) != **shown)
+        .map(|(index, _)| index)
+        .collect();
+    if let Some(&index) = differing.first() {
+        panic!(
+            "{} of {FRAME_PIXELS} pixels differ; first at ({}, {}): \
+             source entry {:#04x}, rendered {:#05x}",
+            differing.len(),
+            index % FRAME_WIDTH,
+            index / FRAME_WIDTH,
+            indexed.pixels()[index],
+            rendered[index],
+        );
+    }
 }
