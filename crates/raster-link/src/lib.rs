@@ -103,6 +103,12 @@ pub fn link_fixed_bank(
     Ok((bytes, labels))
 }
 
+/// Link a program that already contains its own reset sequence.
+///
+/// **Prefer [`link_mmc3_program`]**, which supplies the shared reset runtime and
+/// the MMC3 bank layout. A ROM linked here enters `entry_points.reset` with
+/// interrupts enabled, no stack pointer, a cold PPU and undefined mapper
+/// registers — which an emulator forgives and hardware does not.
 pub fn link_mmc3_ines(
     program: &RelocatableProgram,
     entry_points: EntryPoints,
@@ -311,6 +317,9 @@ pub fn emit_mmc3_ines(
     }
 
     let mut image = vec![0xff; INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE];
+    // Byte 6 is `0x40`: mapper 4's low nibble, with the mirroring bit clear. The
+    // bit is not the authority — MMC3 controls mirroring through $A000, which the
+    // reset runtime programs — so do not read this as the ROM's mirroring.
     let prg_rom_banks = (MMC3_PRG_ROM_SIZE / INES_PRG_ROM_BANK_SIZE) as u8;
     image[..INES_HEADER_SIZE].copy_from_slice(&[
         b'N',

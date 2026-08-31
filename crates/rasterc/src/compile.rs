@@ -6,7 +6,7 @@
 use raster_codegen::{generate, CodegenError};
 use raster_diag::{Diagnostic, Span};
 use raster_ir::lower;
-use raster_link::{link_mmc3_program, InterruptVectors, LinkError, MMC3_FIXED_BANK_CODE_SIZE};
+use raster_link::{link_mmc3_program, InterruptVectors, LinkError};
 use raster_sema::analyze;
 use raster_syntax::parse;
 
@@ -100,10 +100,10 @@ fn codegen_diagnostic(error: CodegenError, source: &str) -> Diagnostic {
 
 fn link_diagnostic(error: LinkError) -> Diagnostic {
     match error {
-        LinkError::FixedBankTooLarge { actual, .. } => {
+        LinkError::FixedBankTooLarge { actual, maximum } => {
             Diagnostic::without_span("the program does not fit the MMC3 fixed bank")
                 .with_note(format!(
-                    "{actual} bytes of code, and $E000-$FFFF holds {MMC3_FIXED_BANK_CODE_SIZE}"
+                    "{actual} bytes of code, and $E000-$FFFF holds {maximum}"
                 ))
                 .with_note(
                     "PRG bank switching is not supported yet, so all code lives\n\

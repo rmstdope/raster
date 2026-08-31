@@ -106,7 +106,7 @@ fn compile(
 ) -> Result<(), i32> {
     // Reachable as `rasterc demo.nes`, and it would destroy the author's source.
     // Refuse before compiling rather than after.
-    if output == input {
+    if names_the_same_file(input, output) {
         write(
             stderr,
             &format!("error: refusing to overwrite the input file {input}\n"),
@@ -130,8 +130,9 @@ fn compile(
         }
     };
 
-    // The ROM is complete in memory before anything is written, so a failed
-    // write never leaves a partial file behind.
+    // The ROM is complete in memory before the write begins, so a diagnostic is
+    // never half a ROM. A write that fails part-way still leaves a partial file,
+    // which is the filesystem's to report and the author's to overwrite.
     if let Err(error) = fs::write(output, &rom.image) {
         write(
             stderr,
@@ -141,6 +142,42 @@ fn compile(
     }
 
     write(stdout, &report::summary(input, output, &rom))
+}
+
+/// Whether `output` names the file `input` was read from.
+///
+/// A string comparison sees only an exact match, and the destruction this rule
+/// exists to prevent is reachable by `-o ./demo.raster`, through a symlink, or on
+/// a case-insensitive filesystem by `-o DEMO.raster`. Whenever the output already
+/// exists the filesystem is the authority; an output that does not exist yet can
+/// destroy nothing.
+fn names_the_same_file(input: &str, output: &str) -> bool {
+    if input == output {
+        return true;
+    }
+    if let (Ok(input), Ok(output)) = (fs::canonicalize(input), fs::canonicalize(output)) {
+        if input == output {
+            return true;
+        }
+    }
+    same_inode(input, output)
+}
+
+/// `canonicalize` resolves `.`, `..` and symlinks but does not correct case, so
+/// on a case-insensitive filesystem two spellings of one file still differ.
+#[cfg(unix)]
+fn same_inode(input: &str, output: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    match (fs::metadata(input), fs::metadata(output)) {
+        (Ok(input), Ok(output)) => input.dev() == output.dev() && input.ino() == output.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_inode(_input: &str, _output: &str) -> bool {
+    false
 }
 
 fn write(writer: &mut dyn Write, text: &str) -> Result<(), i32> {

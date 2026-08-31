@@ -3,29 +3,12 @@ use std::{
     io::{Cursor, Error, ErrorKind, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use rasterc::run;
 
-/// A directory of this test's own, so parallel tests never share an output path.
-fn scratch_directory(label: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "rasterc-{label}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    fs::create_dir_all(&path).expect("the scratch directory is creatable");
-    path
-}
-
-fn demo_source() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/mvp/demo.raster");
-    fs::read_to_string(path).expect("the demo example is readable")
-}
+mod common;
+use common::{demo_source, Scratch};
 
 fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
     let mut stdout = Cursor::new(Vec::new());
@@ -156,9 +139,9 @@ impl Write for BrokenPipe {
 
 #[test]
 fn writes_the_rom_beside_the_input() {
-    let directory = scratch_directory("beside");
-    let input = directory.join("demo.raster");
-    let output = directory.join("demo.nes");
+    let directory = Scratch::new("beside");
+    let input = directory.path().join("demo.raster");
+    let output = directory.path().join("demo.nes");
     fs::write(&input, demo_source()).unwrap();
 
     let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
@@ -178,9 +161,9 @@ fn accepts_the_output_flag_before_and_after_the_input() {
         ["-o", "rom.nes", "demo.raster"],
         ["demo.raster", "-o", "rom.nes"],
     ] {
-        let directory = scratch_directory("flag");
-        let input = directory.join("demo.raster");
-        let output = directory.join("rom.nes");
+        let directory = Scratch::new("flag");
+        let input = directory.path().join("demo.raster");
+        let output = directory.path().join("rom.nes");
         fs::write(&input, demo_source()).unwrap();
 
         let arguments = arguments
@@ -249,9 +232,9 @@ fn a_second_positional_is_a_usage_error() {
 
 #[test]
 fn overwrites_an_existing_rom_without_comment() {
-    let directory = scratch_directory("overwrite");
-    let input = directory.join("demo.raster");
-    let output = directory.join("demo.nes");
+    let directory = Scratch::new("overwrite");
+    let input = directory.path().join("demo.raster");
+    let output = directory.path().join("demo.nes");
     fs::write(&input, demo_source()).unwrap();
     fs::write(&output, b"stale").unwrap();
 
@@ -268,9 +251,9 @@ fn overwrites_an_existing_rom_without_comment() {
 
 #[test]
 fn a_missing_parent_directory_is_an_error_rather_than_a_new_tree() {
-    let directory = scratch_directory("missing");
-    let input = directory.join("demo.raster");
-    let output = directory.join("build").join("demo.nes");
+    let directory = Scratch::new("missing");
+    let input = directory.path().join("demo.raster");
+    let output = directory.path().join("build").join("demo.nes");
     fs::write(&input, demo_source()).unwrap();
 
     let (result, stdout, stderr) = run_capturing(vec![
@@ -285,13 +268,13 @@ fn a_missing_parent_directory_is_an_error_rather_than_a_new_tree() {
         stderr.starts_with(&format!("error: could not write {}: ", output.display())),
         "unexpected stderr: {stderr}"
     );
-    assert!(!directory.join("build").exists());
+    assert!(!directory.path().join("build").exists());
 }
 
 #[test]
 fn refuses_to_overwrite_its_own_input() {
-    let directory = scratch_directory("selfwrite");
-    let input = directory.join("demo.nes");
+    let directory = Scratch::new("selfwrite");
+    let input = directory.path().join("demo.nes");
     fs::write(&input, demo_source()).unwrap();
 
     let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
@@ -307,4 +290,76 @@ fn refuses_to_overwrite_its_own_input() {
     );
     // Refused before compiling, so the source is untouched.
     assert_eq!(fs::read_to_string(&input).unwrap(), demo_source());
+}
+
+#[test]
+fn refuses_to_overwrite_its_own_input_under_another_spelling() {
+    let directory = Scratch::new("samefile");
+    let input = directory.path().join("demo.raster");
+    fs::write(&input, demo_source()).unwrap();
+    // The same file, named through `.`: a string comparison does not see it, and
+    // the author's source is what gets destroyed.
+    let output = directory.path().join(".").join("demo.raster");
+
+    let (result, stdout, stderr) = run_capturing(vec![
+        input.display().to_string(),
+        "-o".to_owned(),
+        output.display().to_string(),
+    ]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        format!(
+            "error: refusing to overwrite the input file {}\n",
+            input.display()
+        )
+    );
+    assert_eq!(fs::read_to_string(&input).unwrap(), demo_source());
+}
+
+#[test]
+fn reports_several_errors_separated_by_a_blank_line_and_a_count() {
+    let directory = Scratch::new("errors");
+    let input = directory.path().join("bad.raster");
+    fs::write(
+        &input,
+        "frame display { at vblank {} }\nmain {\n    cycles(2) {}\n    wait vblank\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "error: `frame` blocks are not supported yet\n",
+                " --> {path}:1:1\n",
+                "  |\n",
+                "1 | frame display {{ at vblank {{}} }}\n",
+                "  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `frame` blocks are not supported yet\n",
+                "  = note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
+                "          arithmetic and `ppu.*` / `mmc3.*` register writes\n",
+                "\n",
+                "error: `cycles` blocks are not supported yet\n",
+                " --> {path}:3:5\n",
+                "  |\n",
+                "3 |     cycles(2) {{}}\n",
+                "  |     ^^^^^^^^^^^^ `cycles` blocks are not supported yet\n",
+                "\n",
+                "error: `wait` statements are not supported yet\n",
+                " --> {path}:4:5\n",
+                "  |\n",
+                "4 |     wait vblank\n",
+                "  |     ^^^^^^^^^^^ `wait` statements are not supported yet\n",
+                "\n",
+                "error: could not compile {path} (3 errors)\n"
+            ),
+            path = input.display()
+        )
+    );
 }

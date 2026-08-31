@@ -70,6 +70,11 @@ impl Diagnostic {
 
     /// A diagnostic about the compilation rather than about a place in the
     /// source.
+    ///
+    /// The label mirrors the message, as it does for every diagnostic this
+    /// compiler builds. `render` does not draw a label without a span, but a
+    /// field that disagrees with the message would be a trap for whatever reads
+    /// it next.
     pub fn without_span(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {

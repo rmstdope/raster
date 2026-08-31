@@ -1,12 +1,10 @@
-use std::{num::NonZeroU32, path::PathBuf};
+use std::num::NonZeroU32;
 
 use raster_emu::{render_after_frames, FRAME_HEIGHT, FRAME_WIDTH};
 use rasterc::compile_source;
 
-fn demo_source() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/mvp/demo.raster");
-    std::fs::read_to_string(path).expect("the demo example is readable")
-}
+mod common;
+use common::demo_source;
 
 fn pixel(pixels: &[u8], x: usize, y: usize) -> [u8; 4] {
     let offset = (y * FRAME_WIDTH + x) * 4;
