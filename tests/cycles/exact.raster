@@ -1,7 +1,8 @@
-// A region that meets an exact budget with no padding at all.
+// A region that meets an exact budget with no padding at all: five cycles of work and the nine
+// the compiler's own interrupt masking costs.
 main {
     var value: u8 = 0
-    cycles(5) {
+    cycles(14) {
         value = 1
     }
 }

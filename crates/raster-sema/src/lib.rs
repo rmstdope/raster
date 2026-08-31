@@ -51,8 +51,6 @@ struct Analyzer {
     return_type: ValueType,
     /// Whether each enclosing timed region carries `pad`, innermost last.
     timed_regions: Vec<bool>,
-    /// Which functions carry a cycle annotation, and so may be called from a timed region.
-    annotated_functions: HashMap<String, bool>,
 }
 
 pub fn analyze(program: &Program) -> Result<TypedProgram, Vec<SemanticError>> {
@@ -91,7 +89,6 @@ impl Analyzer {
             constants: BTreeMap::new(),
             return_type: ValueType::Void,
             timed_regions: Vec::new(),
-            annotated_functions: HashMap::new(),
         }
     }
 
@@ -172,8 +169,6 @@ impl Analyzer {
     }
 
     fn declare_function(&mut self, function: &Function) {
-        self.annotated_functions
-            .insert(function.name.value.clone(), function.cycle_spec.is_some());
         let parameters = function
             .parameters
             .iter()
@@ -292,11 +287,7 @@ impl Analyzer {
         for (index, statement) in block.statements.iter().enumerate() {
             if let Statement::Cycles { spec, body, .. } = &statement.value
                 && writes_ppu_register(body)
-                && !is_sync_exact(
-                    index
-                        .checked_sub(1)
-                        .map(|previous| &block.statements[previous]),
-                )
+                && !block.statements[..index].iter().any(is_sync_exact)
             {
                 self.error(
                     spec.span,
@@ -312,10 +303,10 @@ impl Analyzer {
         !self.timed_regions.is_empty()
     }
 
-    /// Reject an expression a timed region cannot be charged for unless it is a known constant.
-    fn require_static_in_timed_region(&mut self, expression: &Spanned<Expression>, message: &str) {
-        if self.in_timed_region() && self.evaluate_constant(expression).is_none() {
-            self.error(expression.span, message.to_owned());
+    /// Refuse something whose cost a straight-line region cannot charge.
+    fn reject_in_timed_region(&mut self, span: Span, message: &str) {
+        if self.in_timed_region() {
+            self.error(span, message.to_owned());
         }
     }
 
@@ -357,8 +348,7 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.error(
                         statement_span,
-                        "a `while` loop's trip count cannot be proven inside a timed region; \
-                         use `for` over a constant range",
+                        "a `while` loop's trip count cannot be proven inside a timed region",
                     );
                 }
                 self.require_type(condition, ValueType::Bool, "condition must have type bool");
@@ -370,6 +360,13 @@ impl Analyzer {
                 step,
                 body,
             } => {
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "a `for` loop inside a timed region compiles to a loop whose cost is not \
+                         yet proven, because the region is costed as straight-line code",
+                    );
+                }
                 self.require_range(range, "for range");
                 if let Some(step) = step
                     && self.require_static(step, "for step") == Some(0)
@@ -411,6 +408,14 @@ impl Analyzer {
             }
             Statement::Wait(Wait::Cycles(value)) => {
                 self.require_static(value, "wait bound");
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "`wait cycles` inside a timed region spends its cycles in a loop, which \
+                         the region's straight-line cost model cannot yet charge; widen the \
+                         budget and let `pad` fill it instead",
+                    );
+                }
             }
             Statement::Return(value) => match value {
                 Some(value) => self.require_type(
@@ -438,6 +443,13 @@ impl Analyzer {
                 }
             }
             Statement::Sync(strategy) => {
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "`sync exact` waits an unpredictable number of cycles, so it belongs \
+                         before a timed region rather than inside one",
+                    );
+                }
                 if strategy.value != "exact" {
                     self.error(
                         strategy.span,
@@ -664,23 +676,17 @@ impl Analyzer {
         let left_type = self.expression_type(left);
         let right_type = self.expression_type(right);
         match operator.value {
-            Operator::Star => self.require_static_in_timed_region(
-                right,
-                "multiplication inside a timed region needs a compile-time constant multiplier",
+            // Each of these lowers to a `DEX`/`BNE` loop over one of its operands, so its cost
+            // is a loop's cost however constant the operands are. A straight-line region would
+            // charge a single pass: `v * 3` was predicted at 38 cycles and spends 69.
+            Operator::Star | Operator::Slash | Operator::Percent => self.reject_in_timed_region(
+                operator.span,
+                "multiplication, division and remainder inside a timed region compile to loops \
+                 whose cost is not yet proven",
             ),
-            Operator::Slash | Operator::Percent => {
-                self.require_static_in_timed_region(
-                    left,
-                    "division inside a timed region needs compile-time constant operands",
-                );
-                self.require_static_in_timed_region(
-                    right,
-                    "division inside a timed region needs compile-time constant operands",
-                );
-            }
-            Operator::ShiftLeft | Operator::ShiftRight => self.require_static_in_timed_region(
-                right,
-                "a shift inside a timed region needs a compile-time constant shift count",
+            Operator::ShiftLeft | Operator::ShiftRight => self.reject_in_timed_region(
+                operator.span,
+                "a shift inside a timed region compiles to a loop whose cost is not yet proven",
             ),
             _ => {}
         }
@@ -753,11 +759,15 @@ impl Analyzer {
             self.error(callee.span, format!("`{}` is not a function", name.value));
             return ValueType::Unknown;
         };
-        if self.in_timed_region() && self.annotated_functions.get(&name.value) != Some(&true) {
+        // `lower` refuses a function that carries a cycle annotation, so demanding one here would
+        // ask for the very thing the compiler then rejects. A call's cost is the callee's, and
+        // nothing measures a callee yet.
+        if self.in_timed_region() {
             self.error(
                 name.span,
                 format!(
-                    "`{}` must carry a cycle annotation to be called inside a timed region",
+                    "`{}` cannot be called inside a timed region yet: a call's cost is the \
+                     callee's, and no function's cost is measured yet",
                     name.value
                 ),
             );
@@ -1040,6 +1050,11 @@ fn is_ppu_register_write(expression: &Spanned<Expression>) -> bool {
     matches!(&base.value, Expression::Name(name) if name.value == "ppu")
 }
 
-fn is_sync_exact(statement: Option<&Spanned<Statement>>) -> bool {
-    matches!(statement, Some(statement) if matches!(&statement.value, Statement::Sync(strategy) if strategy.value == "exact"))
+/// Whether a statement is `sync exact`.
+///
+/// The guard looks for one anywhere earlier in the same block rather than immediately before the
+/// region: `sync exact` followed by a variable assignment and then the region is the same
+/// de-jitter, and refusing it would send the author looking for a rule that is not there.
+fn is_sync_exact(statement: &Spanned<Statement>) -> bool {
+    matches!(&statement.value, Statement::Sync(strategy) if strategy.value == "exact")
 }

@@ -218,8 +218,8 @@ fn rejects_unprovable_timed_region() {
         "unbounded loop",
         "`while` loop",
         "branch arms",
-        "`helper` must carry a cycle annotation",
-        "multiplication",
+        "`helper` cannot be called inside a timed region yet",
+        "multiplication, division and remainder",
         "`wait vblank`",
     ] {
         assert!(
@@ -233,16 +233,11 @@ fn rejects_unprovable_timed_region() {
 fn accepts_a_provable_timed_region() {
     let program = parse(
         r#"
-            const LIMIT: u8 = 4
-            fn shade() cycles(6) { }
             var count: u8
             main {
                 sync exact
                 cycles(100) pad {
-                    shade()
-                    count = count * 2
-                    for i in 0..LIMIT { count = count + 1 }
-                    wait cycles(20)
+                    count = count + 1
                     ppu.mask = count
                 }
             }
@@ -304,4 +299,61 @@ fn rejects_a_report_region_without_a_label() {
             .any(|message| message.contains("`cycles(?)` needs a label")),
         "got {diagnostics:?}"
     );
+}
+
+/// Every construct that lowers to a loop the region's straight-line cost model would charge a
+/// single pass. Each of these compiled clean before, and each was mistimed by hundreds of cycles.
+#[test]
+fn rejects_every_construct_a_straight_line_region_cannot_charge() {
+    let cases = [
+        (
+            "for i in 0..10 { total = total + 1 }",
+            "`for` loop inside a timed region",
+        ),
+        (
+            "total = total * 3",
+            "multiplication, division and remainder",
+        ),
+        (
+            "total = total / 3",
+            "multiplication, division and remainder",
+        ),
+        (
+            "total = total % 3",
+            "multiplication, division and remainder",
+        ),
+        ("total = total << 3", "shift inside a timed region"),
+        ("total = total >> 3", "shift inside a timed region"),
+        ("sync exact", "belongs before a timed region"),
+        ("wait cycles(20)", "spends its cycles in a loop"),
+        ("helper()", "cannot be called inside a timed region yet"),
+    ];
+
+    for (statement, expected) in cases {
+        let diagnostics = errors(&format!(
+            "fn helper() cycles(6) {{ }}\nvar total: u8\nmain {{ cycles(76) {{ {statement} }} }}"
+        ));
+        assert!(
+            diagnostics.iter().any(|message| message.contains(expected)),
+            "expected a diagnostic mentioning {expected} for `{statement}`, got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn sync_exact_need_not_sit_immediately_before_the_region_it_guards() {
+    let program = parse(
+        r#"
+            var count: u8
+            main {
+                sync exact
+                count = 1
+                cycles(100) pad {
+                    ppu.mask = count
+                }
+            }
+        "#,
+    )
+    .expect("fixture should parse");
+    analyze(&program).expect("a `sync exact` earlier in the block still guards the region");
 }

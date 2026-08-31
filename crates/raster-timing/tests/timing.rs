@@ -237,58 +237,15 @@ fn an_upper_bound_with_pad_is_filled_to_its_bound() {
     assert_eq!(cost_of(&report.padding), 8);
 }
 
-/// The runtime cost of a synthesized delay, counting each `DEX`/`BNE` loop's iterations.
-///
-/// A flat sum cannot describe a loop, so this walks the sequence the way the CPU does: an
-/// immediate load into X or Y sets the iteration count, and the backward branch that closes the
-/// loop is taken for every iteration but the last.
-fn executed_cost(instructions: &[Instruction]) -> u32 {
-    fn immediate(instruction: &Instruction) -> u32 {
-        match instruction
-            .operand
-            .expect("an immediate carries an operand")
-        {
-            0 => 256,
-            value => u32::from(value),
-        }
-    }
-
-    let mut total = 0;
-    let mut index = 0;
-    while index < instructions.len() {
-        let instruction = &instructions[index];
-        // `LDY #m` opens an outer loop, `LDX #n` an inner one.
-        if instruction.opcode == 0xa0 {
-            let outer = immediate(instruction);
-            let inner = immediate(&instructions[index + 1]);
-            // LDY, then per outer pass: LDX, the inner loop, DEY, BNE.
-            total += 2 + outer * (2 + inner_loop_cost(inner) + 2 + 2) + (outer - 1);
-            index += 6;
-        } else if instruction.opcode == 0xa2 {
-            total += 2 + inner_loop_cost(immediate(instruction));
-            index += 3;
-        } else {
-            total += cost_of(std::slice::from_ref(instruction));
-            index += 1;
-        }
-    }
-    total
-}
-
-/// `DEX` (two) plus `BNE` (three when taken, two on the final pass), for `n` iterations.
-fn inner_loop_cost(iterations: u32) -> u32 {
-    iterations * 4 + (iterations - 1)
-}
-
 #[test]
 fn delay_for_two_cycles_and_large_budget_has_exact_cost() {
     for requested in [
-        2, 3, 4, 5, 6, 7, 8, 20, 100, 1281, 1282, 1288, 29780, 100_000,
+        2, 3, 4, 5, 6, 7, 8, 20, 100, 1792, 1793, 1800, 29780, 100_000,
     ] {
-        let delay = raster_timing::synthesize_delay(requested, false)
+        let plan = raster_timing::plan_delay(requested, false)
             .unwrap_or_else(|_| panic!("a delay of {requested} cycles is synthesizable"));
         assert_eq!(
-            executed_cost(&delay),
+            raster_timing::delay_cycles(&plan),
             requested,
             "delay of {requested} cycles"
         );
@@ -299,10 +256,10 @@ fn delay_for_two_cycles_and_large_budget_has_exact_cost() {
 fn every_delay_in_a_representative_range_costs_exactly_what_was_asked() {
     for requested in 2..600 {
         for legal_isa in [true, false] {
-            let delay = raster_timing::synthesize_delay(requested, legal_isa)
+            let plan = raster_timing::plan_delay(requested, legal_isa)
                 .unwrap_or_else(|_| panic!("a delay of {requested} cycles is synthesizable"));
             assert_eq!(
-                executed_cost(&delay),
+                raster_timing::delay_cycles(&plan),
                 requested,
                 "delay of {requested} cycles, legal_isa = {legal_isa}"
             );
@@ -314,7 +271,7 @@ fn every_delay_in_a_representative_range_costs_exactly_what_was_asked() {
 fn a_delay_below_two_cycles_is_rejected() {
     for requested in [0, 1] {
         assert_eq!(
-            raster_timing::synthesize_delay(requested, false),
+            raster_timing::plan_delay(requested, false),
             Err(TimingError::DelayTooShort {
                 requested_cycles: requested
             })
@@ -323,11 +280,32 @@ fn a_delay_below_two_cycles_is_rejected() {
 }
 
 #[test]
-fn a_long_delay_stays_a_handful_of_instructions() {
-    let delay = raster_timing::synthesize_delay(29780, false).expect("a frame-length delay");
+fn a_long_delay_stays_a_handful_of_steps() {
+    let plan = raster_timing::plan_delay(29780, false).expect("a frame-length delay");
     assert!(
-        delay.len() <= 12,
-        "a frame-length delay is {} instructions",
-        delay.len()
+        plan.len() <= 3,
+        "a frame-length delay is {} steps",
+        plan.len()
     );
+}
+
+/// A counted loop takes its branch exactly once, whatever its iteration count. That is the whole
+/// reason it closes on a `JMP`: a `DEX`/`BNE` loop takes its branch on every pass but the last, and
+/// each taken branch carries a page-crossing penalty nothing at this level can prove away.
+#[test]
+fn a_counted_loop_takes_its_branch_once_however_long_it_runs() {
+    for iterations in [1, 2, 37, 256] {
+        let step = raster_timing::DelayStep::Loop {
+            outer: None,
+            inner: iterations,
+        };
+        // `LDX` 2, then per pass `DEX` 2 and `BEQ` 2, plus `JMP` 3 on every pass but the last,
+        // plus the one cycle the single taken branch costs.
+        let expected = 2 + iterations * 4 + (iterations - 1) * 3 + 1;
+        assert_eq!(
+            raster_timing::delay_cycles(std::slice::from_ref(&step)),
+            expected,
+            "a loop of {iterations} iterations"
+        );
+    }
 }

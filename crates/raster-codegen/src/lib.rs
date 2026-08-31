@@ -10,7 +10,7 @@ use raster_ir::{
 };
 use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind};
 use raster_syntax::Span;
-use raster_timing::{analyze, synthesize_delay, TimedRegion, TimingError};
+use raster_timing::{analyze, plan_delay, DelayStep, TimedRegion, TimingError};
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
 
@@ -49,19 +49,41 @@ pub enum CodegenError {
     },
 }
 
+/// `PHP`, which saves the interrupt-disable flag a timed region is about to change.
+const PHP: u8 = 0x08;
 /// `SEI`, which masks IRQs while a region that did not opt out is running.
 const SEI: u8 = 0x78;
-/// `CLI`, which restores them on the way out.
-const CLI: u8 = 0x58;
+/// `PLP`, which puts the flag back exactly as it was.
+///
+/// `CLI` would *enable* interrupts rather than restore them, which is wrong three ways: a nested
+/// region would unmask inside its still-running parent, a region nested in an `interruptible` one
+/// would unmask inside an interrupt handler, and a program that entered its own code with
+/// interrupts disabled — which is how `raster-link` starts one — would silently leave them on.
+const PLP: u8 = 0x28;
 /// `BIT $2002`, the PPU status read that the de-jitter poll spins on.
 const BIT_ABSOLUTE: u8 = 0x2c;
 /// `BPL`, taken while the vblank flag is clear.
 const BPL: u8 = 0x10;
 const PPU_STATUS: u16 = 0x2002;
+const LDX_IMMEDIATE: u8 = 0xa2;
+const LDY_IMMEDIATE: u8 = 0xa0;
+const DEX: u8 = 0xca;
+const DEY: u8 = 0x88;
+const BEQ: u8 = 0xf0;
 
-/// Generate code, allowing the undocumented `NOP` forms that make padding compact.
+/// `LDX #$00` sets 256 iterations, because the first `DEX` wraps it to 255.
+fn iteration_operand(iterations: u32) -> u16 {
+    (iterations % raster_timing::MAX_ITERATIONS) as u16
+}
+
+/// Generate code using only official opcodes.
+///
+/// The default is the restrictive one because `raster_6502::assemble` refuses an undocumented
+/// opcode under a legal ISA, and the linker assembles under one: a caller that took the compact
+/// padding by accident would see the disagreement as an internal compiler error rather than as a
+/// choice it made. [`generate_with_isa`] is how a caller asks for the shorter padding on purpose.
 pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
-    generate_with_isa(program, false)
+    generate_with_isa(program, true)
 }
 
 /// Generate code, restricted to official opcodes when `legal_isa` is set.
@@ -179,9 +201,11 @@ impl Generator<'_> {
                 span,
             } => self.timed_region(constraint, *pad, *interruptible, body, *span, halt_label)?,
             Statement::Delay { cycles, span } => {
-                let delay = synthesize_delay(*cycles, self.legal_isa)
+                let plan = plan_delay(*cycles, self.legal_isa)
                     .map_err(|error| CodegenError::Timing { error, span: *span })?;
-                self.emit_all(&delay);
+                for step in &plan {
+                    self.delay_step(step);
+                }
             }
             Statement::SyncExact => {
                 // Spec section 6.6's read-and-branch de-jitter: spin on the PPU status register
@@ -211,8 +235,11 @@ impl Generator<'_> {
     /// appended verbatim — nothing is added, removed or reordered afterwards, which is what makes
     /// the emitted bytes and the predicted cost the same artefact.
     ///
-    /// `SEI` and `CLI` sit outside the measured window: they are the compiler's own interrupt
-    /// masking, not the block's work, so the budget stays the cost of what was written.
+    /// The interrupt masking is charged to the budget along with the body, so `cycles(114)` means
+    /// the region occupies 114 cycles from the first instruction to the last. Leaving the masking
+    /// outside would make a scanline loop drift by nine cycles a line, which is the one thing a
+    /// raster effect cannot survive. The padding goes before the `PLP` so that every cycle the
+    /// budget pays for is spent with interrupts still masked.
     fn timed_region(
         &mut self,
         constraint: &CycleConstraint,
@@ -222,19 +249,26 @@ impl Generator<'_> {
         span: Span,
         halt_label: Option<IrLabel>,
     ) -> Result<(), CodegenError> {
+        let start = self.output.items.len();
         if !interruptible {
+            self.emit(PHP, Implied, None);
             self.emit(SEI, Implied, None);
         }
-
-        let start = self.output.items.len();
         self.statements(body, halt_label)?;
-        let instructions = self.output.items[start..]
+
+        let mut instructions: Vec<_> = self.output.items[start..]
             .iter()
             .filter_map(|item| match item {
                 FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
                 FixedBankItem::Label(_) => None,
             })
             .collect();
+        // The `PLP` closing the region is measured before it is emitted, so the padding that makes
+        // the budget can be placed ahead of it.
+        let restore = implied(PLP);
+        if !interruptible {
+            instructions.push(restore);
+        }
 
         let report = analyze(
             &TimedRegion {
@@ -249,14 +283,47 @@ impl Generator<'_> {
 
         let padding = report.padding.clone();
         self.emit_all(&padding);
+        if !interruptible {
+            self.emit_all(&[restore]);
+        }
         if let Some(label) = report.label {
             self.reports.push((label, report.measured_cycles));
         }
-
-        if !interruptible {
-            self.emit(CLI, Implied, None);
-        }
         Ok(())
+    }
+
+    /// Emit one piece of a planned delay.
+    ///
+    /// The loops close on a relocated `JMP` rather than a backward branch, so no taken branch's
+    /// page-crossing penalty has to be proven away — see [`raster_timing::DelayStep`].
+    fn delay_step(&mut self, step: &DelayStep) {
+        match step {
+            DelayStep::Filler(instructions) => self.emit_all(instructions),
+            DelayStep::Loop { outer, inner } => {
+                let outer_loop = self.internal_label();
+                let outer_done = self.internal_label();
+                if let Some(outer) = outer {
+                    self.emit(LDY_IMMEDIATE, Immediate, Some(iteration_operand(*outer)));
+                }
+                self.emit_label(outer_loop);
+                self.emit(LDX_IMMEDIATE, Immediate, Some(iteration_operand(*inner)));
+
+                let inner_loop = self.internal_label();
+                let inner_done = self.internal_label();
+                self.emit_label(inner_loop);
+                self.emit(DEX, Implied, None);
+                self.branch(BEQ, inner_done);
+                self.jump(inner_loop);
+                self.emit_label(inner_done);
+
+                if outer.is_some() {
+                    self.emit(DEY, Implied, None);
+                    self.branch(BEQ, outer_done);
+                    self.jump(outer_loop);
+                }
+                self.emit_label(outer_done);
+            }
+        }
     }
 
     fn emit_all(&mut self, instructions: &[Instruction]) {
@@ -541,6 +608,14 @@ impl Generator<'_> {
         let label = IrLabel(self.next_internal_label);
         self.next_internal_label += 1;
         label
+    }
+}
+
+fn implied(opcode: u8) -> Instruction {
+    Instruction {
+        opcode,
+        mode: Implied,
+        operand: None,
     }
 }
 

@@ -45,9 +45,10 @@ pub enum TimingError {
 
 /// `NOP`: two cycles in one byte, and the only official instruction with no effect at all.
 const NOP: u8 = 0xea;
-/// `BIT $00`: three cycles in two bytes. It reads the zero page below the compiler's own
-/// allocations and touches only the flags, which is why it is the official odd-cycle filler.
-const BIT_ZERO_PAGE: u8 = 0x24;
+/// `STA $00`: three cycles in two bytes. It writes below the compiler's own zero-page allocations,
+/// which start at `$10`, and touches no register and no flag — the official odd-cycle filler has to
+/// be as invisible as `NOP`, and `BIT $00` would have clobbered N, V and Z.
+const STA_ZERO_PAGE: u8 = 0x85;
 /// Undocumented `NOP $00`: three cycles in two bytes, with no effect whatsoever.
 const NOP_ZERO_PAGE: u8 = 0x04;
 /// Undocumented `NOP $00,X`: four cycles in two bytes, with no effect whatsoever.
@@ -97,7 +98,7 @@ pub fn synthesize_padding(
     padding.extend(std::iter::repeat_n(filler(NOP_ZERO_PAGE_X), fours as usize));
     padding.extend(std::iter::repeat_n(
         filler(if legal_isa {
-            BIT_ZERO_PAGE
+            STA_ZERO_PAGE
         } else {
             NOP_ZERO_PAGE
         }),
@@ -161,7 +162,11 @@ pub fn analyze(region: &TimedRegion, legal_isa: bool) -> Result<TimingReport, Ti
 }
 
 /// Charge every penalty a flat instruction sequence cannot prove away.
-fn worst_case_cycles(instructions: &[Instruction]) -> u32 {
+///
+/// This is the cost the compiler holds a timed region to, so anything checking a region's cost
+/// should call it rather than re-derive the same sum: a test that agrees with itself proves
+/// nothing.
+pub fn worst_case_cycles(instructions: &[Instruction]) -> u32 {
     let mut context = CycleContext::default();
     for (index, instruction) in instructions.iter().enumerate() {
         if opcode(instruction.opcode).mode == AddressingMode::Relative {
@@ -174,98 +179,87 @@ fn worst_case_cycles(instructions: &[Instruction]) -> u32 {
     cycles(instructions, context)
 }
 
-/// The most iterations a single `DEX`/`BNE` loop runs: `LDX #$00` decrements to 255 first.
-const MAX_ITERATIONS: u32 = 256;
-const LDX_IMMEDIATE: u8 = 0xa2;
-const LDY_IMMEDIATE: u8 = 0xa0;
-const DEX: u8 = 0xca;
-const DEY: u8 = 0x88;
-const BNE: u8 = 0xd0;
-/// Back three bytes from the end of the `BNE`, to the `DEX` that opens the loop body.
-const INNER_BRANCH_OFFSET: u16 = 0xfd;
-/// Back eight bytes from the end of the outer `BNE`, to the `LDX` that reloads the inner count.
-const OUTER_BRANCH_OFFSET: u16 = 0xf8;
+/// The most iterations one counted loop runs: `LDX #$00` decrements to 255 first.
+pub const MAX_ITERATIONS: u32 = 256;
 
-/// `LDX #n` plus `n` passes of `DEX`/`BNE`, the last of which does not take the branch.
-const fn inner_loop_cycles(iterations: u32) -> u32 {
-    5 * iterations + 1
-}
-
-/// `LDY #m` plus `m` passes of [`inner_loop_cycles`] followed by `DEY`/`BNE`.
-const fn nested_loop_cycles(outer: u32, inner: u32) -> u32 {
-    outer * (5 * inner + 6) + 1
-}
-
-fn immediate(opcode: u8, iterations: u32) -> Instruction {
-    debug_assert!(
-        (1..=MAX_ITERATIONS).contains(&iterations),
-        "an immediate iteration count fits a byte, with zero standing for 256"
-    );
-    Instruction {
-        opcode,
-        mode: AddressingMode::Immediate,
-        operand: Some((iterations % MAX_ITERATIONS) as u16),
-    }
-}
-
-fn implied(opcode: u8) -> Instruction {
-    Instruction {
-        opcode,
-        mode: AddressingMode::Implied,
-        operand: None,
-    }
-}
-
-fn branch(offset: u16) -> Instruction {
-    Instruction {
-        opcode: BNE,
-        mode: AddressingMode::Relative,
-        operand: Some(offset),
-    }
-}
-
-fn inner_loop(iterations: u32) -> Vec<Instruction> {
-    vec![
-        immediate(LDX_IMMEDIATE, iterations),
-        implied(DEX),
-        branch(INNER_BRANCH_OFFSET),
-    ]
-}
-
-fn nested_loop(outer: u32, inner: u32) -> Vec<Instruction> {
-    let mut instructions = vec![immediate(LDY_IMMEDIATE, outer)];
-    instructions.extend(inner_loop(inner));
-    instructions.push(implied(DEY));
-    instructions.push(branch(OUTER_BRANCH_OFFSET));
-    instructions
-}
-
-/// The instructions that spend exactly `requested_cycles` cycles doing nothing.
+/// One piece of a synthesized delay.
 ///
-/// The bulk goes into nested `DEX`/`BNE` loops whose iteration counts are constants, so the cost is
-/// proven rather than measured, and the remainder into the same filler [`synthesize_padding`]
-/// emits. Every count from two upwards is reachable in a handful of instructions; one cycle is not,
-/// because no instruction is that short.
+/// A delay is not a flat instruction sequence, because its loops close on a `JMP` and only the
+/// caller knows addresses. So the plan says what to emit and the caller — codegen, which owns
+/// labels and relocations — builds it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DelayStep {
+    /// Filler to emit exactly as it is.
+    Filler(Vec<Instruction>),
+    /// A counted loop over X, optionally wrapped in one over Y.
+    ///
+    /// ```text
+    ///     LDY #outer          ; only when `outer` is set
+    /// outer_loop:
+    ///     LDX #inner
+    /// inner_loop:
+    ///     DEX
+    ///     BEQ inner_done      ; taken once, on the last pass
+    ///     JMP inner_loop      ; three cycles, and no branch penalty to prove away
+    /// inner_done:
+    ///     DEY                 ; only when `outer` is set
+    ///     BEQ outer_done
+    ///     JMP outer_loop
+    /// outer_done:
+    /// ```
+    ///
+    /// The `JMP` back is what makes this exact. A `DEX`/`BNE` loop takes its branch on every pass
+    /// but the last, and a taken branch costs an extra cycle when it crosses a page — so a
+    /// thousand-cycle delay could spend twelve hundred depending on where the linker put it.
+    /// Here exactly one branch is ever taken, so at worst one cycle is unaccounted for, and
+    /// removing even that needs an alignment the linker cannot yet express.
+    Loop { outer: Option<u32>, inner: u32 },
+}
+
+/// `LDX #n` plus `n` passes of `DEX`/`BEQ`/`JMP`, the last of which takes the branch out.
+const fn inner_loop_cycles(iterations: u32) -> u32 {
+    7 * iterations
+}
+
+/// `LDY #m` plus `m` passes of [`inner_loop_cycles`] followed by `DEY`/`BEQ`/`JMP`.
+const fn nested_loop_cycles(outer: u32, inner: u32) -> u32 {
+    7 * outer * (inner + 1)
+}
+
+/// What a planned delay costs when it runs, assuming no branch crosses a page.
+pub fn delay_cycles(steps: &[DelayStep]) -> u32 {
+    steps
+        .iter()
+        .map(|step| match step {
+            DelayStep::Filler(instructions) => cycles(instructions, CycleContext::default()),
+            DelayStep::Loop {
+                outer: Some(outer),
+                inner,
+            } => nested_loop_cycles(*outer, *inner),
+            DelayStep::Loop { outer: None, inner } => inner_loop_cycles(*inner),
+        })
+        .sum()
+}
+
+/// A plan that spends exactly `requested_cycles` cycles doing nothing.
+///
+/// The bulk goes into counted loops whose iteration counts are constants, so the cost is proven
+/// rather than measured, and the remainder into the same filler [`synthesize_padding`] emits. Every
+/// count from two upwards is reachable in a handful of instructions; one cycle is not, because no
+/// instruction is that short.
 ///
 /// The loops clobber X, and a delay long enough to need the outer loop clobbers Y as well.
-///
-/// The cost assumes each `BNE` reaches its target without crossing a page boundary, which is what
-/// makes it exact: the sequence is five or eight bytes and is emitted contiguously, so the caller
-/// must not split it across a page.
-pub fn synthesize_delay(
-    requested_cycles: u32,
-    legal_isa: bool,
-) -> Result<Vec<Instruction>, TimingError> {
+pub fn plan_delay(requested_cycles: u32, legal_isa: bool) -> Result<Vec<DelayStep>, TimingError> {
     if requested_cycles < 2 {
         return Err(TimingError::DelayTooShort { requested_cycles });
     }
 
-    let mut instructions = Vec::new();
+    let mut steps = Vec::new();
     let mut remaining = requested_cycles;
-    let per_outer_pass = nested_loop_cycles(1, MAX_ITERATIONS) - 1;
+    let per_outer_pass = nested_loop_cycles(1, MAX_ITERATIONS) - inner_loop_cycles(0);
 
     while remaining > inner_loop_cycles(MAX_ITERATIONS) {
-        let mut outer = ((remaining - 1) / per_outer_pass).min(MAX_ITERATIONS);
+        let mut outer = (remaining / per_outer_pass).min(MAX_ITERATIONS);
         // A single leftover cycle has no filler, so give one pass back to reach a reachable tail.
         if outer >= 1 && remaining - nested_loop_cycles(outer, MAX_ITERATIONS) == 1 {
             outer -= 1;
@@ -273,21 +267,27 @@ pub fn synthesize_delay(
         if outer == 0 {
             break;
         }
-        instructions.extend(nested_loop(outer, MAX_ITERATIONS));
+        steps.push(DelayStep::Loop {
+            outer: Some(outer),
+            inner: MAX_ITERATIONS,
+        });
         remaining -= nested_loop_cycles(outer, MAX_ITERATIONS);
     }
 
     if remaining >= inner_loop_cycles(1) {
-        let mut inner = ((remaining - 1) / 5).min(MAX_ITERATIONS);
+        let mut inner = (remaining / 7).min(MAX_ITERATIONS);
         if inner >= 1 && remaining - inner_loop_cycles(inner) == 1 {
             inner -= 1;
         }
         if inner >= 1 {
-            instructions.extend(inner_loop(inner));
+            steps.push(DelayStep::Loop { outer: None, inner });
             remaining -= inner_loop_cycles(inner);
         }
     }
 
-    instructions.extend(synthesize_padding(remaining, legal_isa)?);
-    Ok(instructions)
+    let filler = synthesize_padding(remaining, legal_isa)?;
+    if !filler.is_empty() {
+        steps.push(DelayStep::Filler(filler));
+    }
+    Ok(steps)
 }

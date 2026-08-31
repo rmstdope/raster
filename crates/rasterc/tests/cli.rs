@@ -386,7 +386,7 @@ fn timing_overage_diagnostic_names_cost_budget_and_span() {
                 " --> {path}:3:5\n",
                 "  |\n",
                 "3 |     cycles(<= 4) {{\n",
-                "  |     ^^^^^^^^^^^^ block costs 6 cycles, budget is 4\n",
+                "  |     ^^^^^^^^^^^^ block costs 15 cycles, budget is 4\n",
                 "  = note: an indexed read that may cross a page and a branch that may be\n",
                 "          taken are both charged their worst case\n",
                 "\n",
@@ -413,7 +413,7 @@ fn a_report_region_prints_its_measured_cost_in_the_build_summary() {
     assert_eq!(result, Ok(()));
     assert_eq!(stderr, "");
     assert!(
-        stdout.contains("   cycles  hblank: 6 cycles\n"),
+        stdout.contains("   cycles  hblank: 15 cycles\n"),
         "the build summary reports a `cycles(?)` region, got:\n{stdout}"
     );
     assert!(output.exists());
@@ -425,7 +425,7 @@ fn a_block_one_cycle_short_of_its_budget_says_why_it_cannot_be_padded() {
     let input = directory.path().join("short.raster");
     fs::write(
         &input,
-        "main {\n    sync exact\n    cycles(7) pad {\n        ppu.mask = 1\n    }\n}\n",
+        "main {\n    sync exact\n    cycles(16) pad {\n        ppu.mask = 1\n    }\n}\n",
     )
     .unwrap();
 
@@ -447,7 +447,7 @@ fn a_block_short_of_an_exact_budget_is_told_about_pad() {
     let input = directory.path().join("under.raster");
     fs::write(
         &input,
-        "main {\n    sync exact\n    cycles(20) {\n        ppu.mask = 1\n    }\n}\n",
+        "main {\n    sync exact\n    cycles(25) {\n        ppu.mask = 1\n    }\n}\n",
     )
     .unwrap();
 
@@ -458,7 +458,7 @@ fn a_block_short_of_an_exact_budget_is_told_about_pad() {
         "got:\n{stderr}"
     );
     assert!(
-        stderr.contains("`pad` would fill the remaining 14 cycles"),
+        stderr.contains("`pad` would fill the remaining 10 cycles"),
         "got:\n{stderr}"
     );
 }
