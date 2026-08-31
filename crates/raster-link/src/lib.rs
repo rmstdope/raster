@@ -11,9 +11,13 @@ const INES_PRG_ROM_BANK_SIZE: usize = 16 * 1024;
 pub const MMC3_FIXED_BANK_CODE_SIZE: usize = MMC3_FIXED_BANK_SIZE - 6;
 
 mod m1;
+mod m5;
 mod runtime;
 
 pub use m1::m1_solid_backdrop_rom;
+pub use m5::{
+    m5_background_rom, BackgroundData, PPU_ATTRIBUTE_BYTES, PPU_NAMETABLE_BYTES, PPU_PALETTE_BYTES,
+};
 pub use runtime::{link_mmc3_program, LinkedRom, INTERRUPT_LABEL, RESET_LABEL};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
