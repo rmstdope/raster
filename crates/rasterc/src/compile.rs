@@ -42,6 +42,9 @@ pub struct Rom {
     pub vectors: InterruptVectors,
     /// The measured cost of each `cycles(?)` region, which the summary prints.
     pub reports: Vec<(String, u32)>,
+    /// The hazards the compiler saw and did not refuse. A ROM with warnings is
+    /// still a ROM: these are printed, and counted, and the build succeeds.
+    pub warnings: Vec<Diagnostic>,
 }
 
 /// Compile `source` into a ROM, or into every diagnostic the first failing stage
@@ -65,14 +68,18 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
             source,
         )
     })?;
-    let ir = lower(&typed).map_err(|failure| {
-        spanned(
+    // Warnings first, then errors: a warning is about what the author wrote
+    // before the stage gave up, and the errors are why it did.
+    let mut ir = lower(&typed).map_err(|failure| {
+        let mut diagnostics = warned(failure.warnings, source);
+        diagnostics.extend(spanned(
             failure
                 .errors
                 .into_iter()
                 .map(|e| (e.message, e.span, e.refusal)),
             source,
-        )
+        ));
+        diagnostics
     })?;
     let output = generate_with_isa(&ir, LEGAL_ISA)
         .map_err(|error| vec![codegen_diagnostic(error, source)])?;
@@ -84,6 +91,7 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
         code_len: rom.code_len,
         vectors: rom.vectors,
         reports: output.reports,
+        warnings: warned(std::mem::take(&mut ir.warnings), source),
     })
 }
 
@@ -103,6 +111,28 @@ fn spanned(
             })
             .collect(),
     )
+}
+
+/// Lowering's warnings, as diagnostics. `Span::clamped` for the same reason
+/// `spanned` uses it: offsets arrive as `u32` from another crate, and a panic in
+/// the renderer would show the author a backtrace instead of a hazard.
+///
+/// Warnings never pass through `noted`: a note there belongs to a `Refusal`, and
+/// a warning refuses nothing.
+fn warned(warnings: Vec<raster_ir::LowerWarning>, source: &str) -> Vec<Diagnostic> {
+    warnings
+        .into_iter()
+        .map(|warning| {
+            let span = Span::clamped(
+                warning.span.start as usize,
+                warning.span.end as usize,
+                source,
+            );
+            let mut diagnostic = Diagnostic::warning(warning.message, span, warning.label);
+            diagnostic.notes = warning.notes;
+            diagnostic
+        })
+        .collect()
 }
 
 /// The note a refusal of this kind carries, if it carries one.
