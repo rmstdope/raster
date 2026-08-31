@@ -1,0 +1,7 @@
+// One NTSC scanline. `pad` fills the 108 cycles the write itself does not spend.
+main {
+    sync exact
+    cycles(114) pad {
+        ppu.mask = 1
+    }
+}

@@ -5,11 +5,12 @@ use raster_6502::{
     Instruction,
 };
 use raster_ir::{
-    BinaryOperator, Comparison, Condition, Destination, Label as IrLabel, Main, Place, Program,
-    Statement, UnaryOperator, Value,
+    BinaryOperator, Comparison, Condition, CycleConstraint, Destination, Label as IrLabel, Main,
+    Place, Program, Statement, UnaryOperator, Value,
 };
 use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind};
 use raster_syntax::Span;
+use raster_timing::{analyze, plan_delay, DelayStep, TimedRegion, TimingError};
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
 
@@ -20,6 +21,8 @@ pub struct CodegenOutput {
     /// to decide, so this is the one fact codegen knows about entry.
     pub main: Label,
     pub zero_page: BTreeMap<Place, u8>,
+    /// The measured cost of each `cycles(?)` region, in the order the regions were generated.
+    pub reports: Vec<(String, u32)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,9 +42,55 @@ pub enum CodegenError {
         expected: usize,
         actual: usize,
     },
+    /// A region could not be given a provable cost, or could not be padded to its budget.
+    Timing {
+        error: TimingError,
+        span: Span,
+    },
 }
 
+/// `PHP`, which saves the interrupt-disable flag a timed region is about to change.
+const PHP: u8 = 0x08;
+/// `SEI`, which masks IRQs while a region that did not opt out is running.
+const SEI: u8 = 0x78;
+/// `PLP`, which puts the flag back exactly as it was.
+///
+/// `CLI` would *enable* interrupts rather than restore them, which is wrong three ways: a nested
+/// region would unmask inside its still-running parent, a region nested in an `interruptible` one
+/// would unmask inside an interrupt handler, and a program that entered its own code with
+/// interrupts disabled — which is how `raster-link` starts one — would silently leave them on.
+const PLP: u8 = 0x28;
+/// `BIT $2002`, the PPU status read that the de-jitter poll spins on.
+const BIT_ABSOLUTE: u8 = 0x2c;
+/// `BPL`, taken while the vblank flag is clear.
+const BPL: u8 = 0x10;
+const PPU_STATUS: u16 = 0x2002;
+const LDX_IMMEDIATE: u8 = 0xa2;
+const LDY_IMMEDIATE: u8 = 0xa0;
+const DEX: u8 = 0xca;
+const DEY: u8 = 0x88;
+const BEQ: u8 = 0xf0;
+
+/// `LDX #$00` sets 256 iterations, because the first `DEX` wraps it to 255.
+fn iteration_operand(iterations: u32) -> u16 {
+    (iterations % raster_timing::MAX_ITERATIONS) as u16
+}
+
+/// Generate code using only official opcodes.
+///
+/// The default is the restrictive one because `raster_6502::assemble` refuses an undocumented
+/// opcode under a legal ISA, and the linker assembles under one: a caller that took the compact
+/// padding by accident would see the disagreement as an internal compiler error rather than as a
+/// choice it made. [`generate_with_isa`] is how a caller asks for the shorter padding on purpose.
 pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
+    generate_with_isa(program, true)
+}
+
+/// Generate code, restricted to official opcodes when `legal_isa` is set.
+pub fn generate_with_isa(
+    program: &Program,
+    legal_isa: bool,
+) -> Result<CodegenOutput, CodegenError> {
     let zero_page = allocate_zero_page(program)?;
     let main = program.main.as_ref().ok_or(CodegenError::MissingMain)?;
     let function_parameters = program
@@ -54,6 +103,8 @@ pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
         zero_page: &zero_page,
         function_parameters,
         next_internal_label: next_internal_label(program),
+        legal_isa,
+        reports: Vec::new(),
     };
 
     for function in &program.functions {
@@ -63,10 +114,12 @@ pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
     }
 
     generator.main(main, &program.global_initializers)?;
+    let reports = std::mem::take(&mut generator.reports);
     Ok(CodegenOutput {
         program: generator.output,
         main: link_label(main.label),
         zero_page,
+        reports,
     })
 }
 
@@ -93,6 +146,8 @@ struct Generator<'a> {
     zero_page: &'a BTreeMap<Place, u8>,
     function_parameters: BTreeMap<IrLabel, Vec<Place>>,
     next_internal_label: u32,
+    legal_isa: bool,
+    reports: Vec<(String, u32)>,
 }
 
 impl Generator<'_> {
@@ -138,6 +193,28 @@ impl Generator<'_> {
                 if_false,
             } => self.branch_if_false(condition, *if_false)?,
             Statement::Jump { target } => self.jump(*target),
+            Statement::Timed {
+                constraint,
+                pad,
+                interruptible,
+                body,
+                span,
+            } => self.timed_region(constraint, *pad, *interruptible, body, *span, halt_label)?,
+            Statement::Delay { cycles, span } => {
+                let plan = plan_delay(*cycles, self.legal_isa)
+                    .map_err(|error| CodegenError::Timing { error, span: *span })?;
+                for step in &plan {
+                    self.delay_step(step);
+                }
+            }
+            Statement::SyncExact => {
+                // Spec section 6.6's read-and-branch de-jitter: spin on the PPU status register
+                // until its vblank flag is set, which lands every entry on the same alignment.
+                let poll = self.internal_label();
+                self.emit_label(poll);
+                self.emit(BIT_ABSOLUTE, Absolute, Some(PPU_STATUS));
+                self.branch(BPL, poll);
+            }
             Statement::Return(value) => {
                 if let Some(value) = value {
                     self.value(value)?;
@@ -150,6 +227,112 @@ impl Generator<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Emit a timed region, then hold the analysis's verdict as the region's final form.
+    ///
+    /// The body is generated first, measured through `raster-timing`, and the padding it returns is
+    /// appended verbatim — nothing is added, removed or reordered afterwards, which is what makes
+    /// the emitted bytes and the predicted cost the same artefact.
+    ///
+    /// The interrupt masking is charged to the budget along with the body, so `cycles(114)` means
+    /// the region occupies 114 cycles from the first instruction to the last. Leaving the masking
+    /// outside would make a scanline loop drift by nine cycles a line, which is the one thing a
+    /// raster effect cannot survive. The padding goes before the `PLP` so that every cycle the
+    /// budget pays for is spent with interrupts still masked.
+    fn timed_region(
+        &mut self,
+        constraint: &CycleConstraint,
+        pad: bool,
+        interruptible: bool,
+        body: &[Statement],
+        span: Span,
+        halt_label: Option<IrLabel>,
+    ) -> Result<(), CodegenError> {
+        let start = self.output.items.len();
+        if !interruptible {
+            self.emit(PHP, Implied, None);
+            self.emit(SEI, Implied, None);
+        }
+        self.statements(body, halt_label)?;
+
+        let mut instructions: Vec<_> = self.output.items[start..]
+            .iter()
+            .filter_map(|item| match item {
+                FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+                FixedBankItem::Label(_) => None,
+            })
+            .collect();
+        // The `PLP` closing the region is measured before it is emitted, so the padding that makes
+        // the budget can be placed ahead of it.
+        let restore = implied(PLP);
+        if !interruptible {
+            instructions.push(restore);
+        }
+
+        let report = analyze(
+            &TimedRegion {
+                constraint: constraint.clone(),
+                pad,
+                interruptible,
+                instructions,
+            },
+            self.legal_isa,
+        )
+        .map_err(|error| CodegenError::Timing { error, span })?;
+
+        let padding = report.padding.clone();
+        self.emit_all(&padding);
+        if !interruptible {
+            self.emit_all(&[restore]);
+        }
+        if let Some(label) = report.label {
+            self.reports.push((label, report.measured_cycles));
+        }
+        Ok(())
+    }
+
+    /// Emit one piece of a planned delay.
+    ///
+    /// The loops close on a relocated `JMP` rather than a backward branch, so no taken branch's
+    /// page-crossing penalty has to be proven away — see [`raster_timing::DelayStep`].
+    fn delay_step(&mut self, step: &DelayStep) {
+        match step {
+            DelayStep::Filler(instructions) => self.emit_all(instructions),
+            DelayStep::Loop { outer, inner } => {
+                let outer_loop = self.internal_label();
+                let outer_done = self.internal_label();
+                if let Some(outer) = outer {
+                    self.emit(LDY_IMMEDIATE, Immediate, Some(iteration_operand(*outer)));
+                }
+                self.emit_label(outer_loop);
+                self.emit(LDX_IMMEDIATE, Immediate, Some(iteration_operand(*inner)));
+
+                let inner_loop = self.internal_label();
+                let inner_done = self.internal_label();
+                self.emit_label(inner_loop);
+                self.emit(DEX, Implied, None);
+                self.branch(BEQ, inner_done);
+                self.jump(inner_loop);
+                self.emit_label(inner_done);
+
+                if outer.is_some() {
+                    self.emit(DEY, Implied, None);
+                    self.branch(BEQ, outer_done);
+                    self.jump(outer_loop);
+                }
+                self.emit_label(outer_done);
+            }
+        }
+    }
+
+    fn emit_all(&mut self, instructions: &[Instruction]) {
+        for instruction in instructions {
+            self.output.items.push(FixedBankItem::Instruction {
+                instruction: *instruction,
+                relocation: None,
+            });
+        }
     }
 
     fn value(&mut self, value: &Value) -> Result<(), CodegenError> {
@@ -428,6 +611,14 @@ impl Generator<'_> {
     }
 }
 
+fn implied(opcode: u8) -> Instruction {
+    Instruction {
+        opcode,
+        mode: Implied,
+        operand: None,
+    }
+}
+
 fn link_label(label: IrLabel) -> Label {
     Label(label.0)
 }
@@ -456,9 +647,16 @@ fn next_internal_label(program: &Program) -> u32 {
         )
         .chain(program.main.iter().flat_map(|main| main.statements.iter()))
     {
-        if let Statement::Label(label) = statement {
-            maximum = maximum.max(label.0);
-        }
+        maximum = maximum.max(highest_label(statement));
     }
     maximum + 1
+}
+
+/// The highest label a statement carries, looking inside timed regions as well.
+fn highest_label(statement: &Statement) -> u32 {
+    match statement {
+        Statement::Label(label) => label.0,
+        Statement::Timed { body, .. } => body.iter().map(highest_label).max().unwrap_or(0),
+        _ => 0,
+    }
 }

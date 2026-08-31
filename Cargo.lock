@@ -318,6 +318,7 @@ dependencies = [
  "raster-link",
  "raster-sema",
  "raster-syntax",
+ "raster-timing",
 ]
 
 [[package]]
@@ -337,6 +338,7 @@ version = "0.1.0"
 dependencies = [
  "raster-sema",
  "raster-syntax",
+ "raster-timing",
 ]
 
 [[package]]
@@ -358,9 +360,17 @@ name = "raster-syntax"
 version = "0.1.0"
 
 [[package]]
+name = "raster-timing"
+version = "0.1.0"
+dependencies = [
+ "raster-6502",
+]
+
+[[package]]
 name = "rasterc"
 version = "0.1.0"
 dependencies = [
+ "raster-6502",
  "raster-codegen",
  "raster-diag",
  "raster-emu",
@@ -368,6 +378,7 @@ dependencies = [
  "raster-link",
  "raster-sema",
  "raster-syntax",
+ "raster-timing",
 ]
 
 [[package]]

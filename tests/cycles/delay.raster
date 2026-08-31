@@ -1,0 +1,4 @@
+// A delay longer than one nested loop's reach, spent to the cycle.
+main {
+    wait cycles(1000)
+}

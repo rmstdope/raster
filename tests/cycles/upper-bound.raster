@@ -1,0 +1,7 @@
+// Hblank on NTSC is 28 CPU cycles. The write fits, and nothing is added to it.
+main {
+    sync exact
+    cycles(<= 28) {
+        ppu.mask = 1
+    }
+}

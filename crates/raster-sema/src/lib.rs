@@ -49,6 +49,8 @@ struct Analyzer {
     errors: Vec<SemanticError>,
     constants: BTreeMap<String, u32>,
     return_type: ValueType,
+    /// Whether each enclosing timed region carries `pad`, innermost last.
+    timed_regions: Vec<bool>,
 }
 
 pub fn analyze(program: &Program) -> Result<TypedProgram, Vec<SemanticError>> {
@@ -86,6 +88,7 @@ impl Analyzer {
             errors: Vec::new(),
             constants: BTreeMap::new(),
             return_type: ValueType::Void,
+            timed_regions: Vec::new(),
         }
     }
 
@@ -227,7 +230,13 @@ impl Analyzer {
         }
         let function_return_type = self.lookup_function_return(function);
         let previous_return_type = std::mem::replace(&mut self.return_type, function_return_type);
+        if let Some(spec) = &function.cycle_spec {
+            self.timed_regions.push(spec.pad);
+        }
         self.check_block_statements(&function.body);
+        if function.cycle_spec.is_some() {
+            self.timed_regions.pop();
+        }
         self.return_type = previous_return_type;
         self.leave_scope();
     }
@@ -275,8 +284,29 @@ impl Analyzer {
     }
 
     fn check_block_statements(&mut self, block: &Block) {
-        for statement in &block.statements {
+        for (index, statement) in block.statements.iter().enumerate() {
+            if let Statement::Cycles { spec, body, .. } = &statement.value
+                && writes_ppu_register(body)
+                && !block.statements[..index].iter().any(is_sync_exact)
+            {
+                self.error(
+                    spec.span,
+                    "`sync exact` is required before a timed region that writes a PPU register, \
+                     because NMI entry is not cycle-exact",
+                );
+            }
             self.check_statement(&statement.value, statement.span);
+        }
+    }
+
+    fn in_timed_region(&self) -> bool {
+        !self.timed_regions.is_empty()
+    }
+
+    /// Refuse something whose cost a straight-line region cannot charge.
+    fn reject_in_timed_region(&mut self, span: Span, message: &str) {
+        if self.in_timed_region() {
+            self.error(span, message.to_owned());
         }
     }
 
@@ -286,12 +316,28 @@ impl Analyzer {
                 self.declare_declaration(declaration);
                 self.check_declaration(declaration);
             }
-            Statement::Block(block) | Statement::Loop(block) => self.check_block(block),
+            Statement::Block(block) => self.check_block(block),
+            Statement::Loop(block) => {
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "an unbounded loop has no provable cycle cost inside a timed region",
+                    );
+                }
+                self.check_block(block);
+            }
             Statement::If {
                 condition,
                 then_body,
                 else_body,
             } => {
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "branch arms inside a timed region cannot yet be balanced, because each \
+                         path through them costs a different number of cycles",
+                    );
+                }
                 self.require_type(condition, ValueType::Bool, "condition must have type bool");
                 self.check_block(then_body);
                 if let Some(body) = else_body {
@@ -299,6 +345,12 @@ impl Analyzer {
                 }
             }
             Statement::While { condition, body } => {
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "a `while` loop's trip count cannot be proven inside a timed region",
+                    );
+                }
                 self.require_type(condition, ValueType::Bool, "condition must have type bool");
                 self.check_block(body);
             }
@@ -308,6 +360,13 @@ impl Analyzer {
                 step,
                 body,
             } => {
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "a `for` loop inside a timed region compiles to a loop whose cost is not \
+                         yet proven, because the region is costed as straight-line code",
+                    );
+                }
                 self.require_range(range, "for range");
                 if let Some(step) = step
                     && self.require_static(step, "for step") == Some(0)
@@ -326,12 +385,37 @@ impl Analyzer {
                 self.check_block_statements(body);
                 self.leave_scope();
             }
-            Statement::Cycles { spec, body, .. } => {
+            Statement::Cycles { spec, body, label } => {
+                if matches!(spec.bound, CycleBound::Inferred(_)) && label.is_none() {
+                    self.error(
+                        spec.span,
+                        "`cycles(?)` needs a label to report its measured cost under",
+                    );
+                }
                 self.check_cycle_bound(&spec.bound);
+                self.timed_regions.push(spec.pad);
                 self.check_block(body);
+                self.timed_regions.pop();
             }
-            Statement::Wait(Wait::Cycles(value) | Wait::Scanline(value)) => {
+            Statement::Wait(Wait::Scanline(value)) => {
                 self.require_static(value, "wait bound");
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "`wait scanline` has no provable cost inside a timed region",
+                    );
+                }
+            }
+            Statement::Wait(Wait::Cycles(value)) => {
+                self.require_static(value, "wait bound");
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "`wait cycles` inside a timed region spends its cycles in a loop, which \
+                         the region's straight-line cost model cannot yet charge; widen the \
+                         budget and let `pad` fill it instead",
+                    );
+                }
             }
             Statement::Return(value) => match value {
                 Some(value) => self.require_type(
@@ -350,7 +434,30 @@ impl Analyzer {
             Statement::Expression(expression) => {
                 self.expression_type(expression);
             }
-            Statement::Wait(_) | Statement::Sync(_) | Statement::Break | Statement::Continue => {}
+            Statement::Wait(Wait::Vblank(_)) => {
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "`wait vblank` has no provable cost inside a timed region",
+                    );
+                }
+            }
+            Statement::Sync(strategy) => {
+                if self.in_timed_region() {
+                    self.error(
+                        statement_span,
+                        "`sync exact` waits an unpredictable number of cycles, so it belongs \
+                         before a timed region rather than inside one",
+                    );
+                }
+                if strategy.value != "exact" {
+                    self.error(
+                        strategy.span,
+                        format!("unknown sync strategy `{}`", strategy.value),
+                    );
+                }
+            }
+            Statement::Break | Statement::Continue => {}
         }
     }
 
@@ -569,6 +676,21 @@ impl Analyzer {
         let left_type = self.expression_type(left);
         let right_type = self.expression_type(right);
         match operator.value {
+            // Each of these lowers to a `DEX`/`BNE` loop over one of its operands, so its cost
+            // is a loop's cost however constant the operands are. A straight-line region would
+            // charge a single pass: `v * 3` was predicted at 38 cycles and spends 69.
+            Operator::Star | Operator::Slash | Operator::Percent => self.reject_in_timed_region(
+                operator.span,
+                "multiplication, division and remainder inside a timed region compile to loops \
+                 whose cost is not yet proven",
+            ),
+            Operator::ShiftLeft | Operator::ShiftRight => self.reject_in_timed_region(
+                operator.span,
+                "a shift inside a timed region compiles to a loop whose cost is not yet proven",
+            ),
+            _ => {}
+        }
+        match operator.value {
             Operator::AmpersandAmpersand | Operator::PipePipe => {
                 self.ensure_compatible(
                     operator.span,
@@ -637,6 +759,19 @@ impl Analyzer {
             self.error(callee.span, format!("`{}` is not a function", name.value));
             return ValueType::Unknown;
         };
+        // `lower` refuses a function that carries a cycle annotation, so demanding one here would
+        // ask for the very thing the compiler then rejects. A call's cost is the callee's, and
+        // nothing measures a callee yet.
+        if self.in_timed_region() {
+            self.error(
+                name.span,
+                format!(
+                    "`{}` cannot be called inside a timed region yet: a call's cost is the \
+                     callee's, and no function's cost is measured yet",
+                    name.value
+                ),
+            );
+        }
         if parameters.len() != arguments.len() {
             self.error(
                 callee.span,
@@ -870,4 +1005,56 @@ fn register_member(namespace: &str, member: &str) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Whether a block assigns to a PPU register, at any depth.
+fn writes_ppu_register(block: &Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.value {
+            Statement::Expression(expression) => is_ppu_register_write(expression),
+            Statement::Block(body) | Statement::Loop(body) => writes_ppu_register(body),
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                writes_ppu_register(then_body)
+                    || else_body.as_ref().is_some_and(writes_ppu_register)
+            }
+            Statement::While { body, .. }
+            | Statement::For { body, .. }
+            | Statement::Cycles { body, .. } => writes_ppu_register(body),
+            _ => false,
+        })
+}
+
+fn is_ppu_register_write(expression: &Spanned<Expression>) -> bool {
+    let Expression::Infix { left, operator, .. } = &expression.value else {
+        return false;
+    };
+    if !matches!(
+        operator.value,
+        Operator::Assign
+            | Operator::PlusEqual
+            | Operator::MinusEqual
+            | Operator::StarEqual
+            | Operator::SlashEqual
+    ) {
+        return false;
+    }
+    let Expression::Member { base, .. } = &left.value else {
+        return false;
+    };
+    matches!(&base.value, Expression::Name(name) if name.value == "ppu")
+}
+
+/// Whether a statement is `sync exact`.
+///
+/// The guard looks for one anywhere earlier in the same block rather than immediately before the
+/// region: `sync exact` followed by a variable assignment and then the region is the same
+/// de-jitter, and refusing it would send the author looking for a rule that is not there.
+fn is_sync_exact(statement: &Spanned<Statement>) -> bool {
+    matches!(&statement.value, Statement::Sync(strategy) if strategy.value == "exact")
 }

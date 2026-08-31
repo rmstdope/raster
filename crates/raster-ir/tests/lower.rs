@@ -72,9 +72,7 @@ fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
                 flag = false
                 "text"
                 'x'
-                cycles(2) {}
                 wait vblank
-                sync schedule
                 loop { break; continue }
             }
         "#,
@@ -93,9 +91,7 @@ fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
         "arrays",
         "string",
         "character",
-        "`cycles`",
         "wait",
-        "sync",
         "loop",
         "break",
         "continue",

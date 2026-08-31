@@ -8,4 +8,5 @@ workspace = true
 
 [dependencies]
 raster-sema = { path = "../raster-sema" }
+raster-timing = { path = "../raster-timing" }
 raster-syntax = { path = "../raster-syntax" }

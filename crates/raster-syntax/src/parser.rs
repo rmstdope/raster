@@ -535,6 +535,7 @@ impl<'a> Parser<'a> {
     }
 
     fn cycle_spec(&mut self) -> CycleSpec {
+        let start = self.peek().span;
         self.expect_keyword(Keyword::Cycles, "expected `cycles`");
         self.expect_punctuation(Punctuation::LeftParen, "expected `(` after `cycles`");
         let bound = if self.match_punctuation(Punctuation::Question) {
@@ -551,6 +552,7 @@ impl<'a> Parser<'a> {
             bound,
             pad,
             interruptible,
+            span: start.join(self.previous().span),
         }
     }
 

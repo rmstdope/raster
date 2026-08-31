@@ -18,10 +18,9 @@ const SUPPORTED_SUBSET: &str = concat!(
 
 #[test]
 fn reports_every_error_from_the_failing_stage() {
-    let diagnostics = compile_source(
-        "frame display { at vblank {} }\nmain {\n    cycles(2) {}\n    wait vblank\n}\n",
-    )
-    .expect_err("three unsupported constructs are three errors");
+    let diagnostics =
+        compile_source("frame display { at vblank {} }\nmain {\n    loop {}\n    wait vblank\n}\n")
+            .expect_err("three unsupported constructs are three errors");
 
     assert_eq!(
         diagnostics
@@ -30,8 +29,8 @@ fn reports_every_error_from_the_failing_stage() {
             .collect::<Vec<_>>(),
         [
             "`frame` blocks are not supported yet",
-            "`cycles` blocks are not supported yet",
-            "`wait` statements are not supported yet",
+            "`loop` is not supported yet",
+            "only `wait cycles` is supported yet; frame waits arrive with frame scheduling",
         ]
     );
 
