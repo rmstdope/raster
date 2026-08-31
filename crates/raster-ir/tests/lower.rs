@@ -60,7 +60,14 @@ fn lowers_scoped_control_flow_and_calls() {
 /// The line each construct sits on, so an expectation names a place in the
 /// fixture rather than a word in a message. `LowerError.span` is a byte offset.
 fn line_of(source: &str, offset: u32) -> usize {
-    source[..offset as usize].matches('\n').count() + 1
+    // Counted over bytes rather than `source[..offset]`, which panics when an offset lands inside a
+    // multi-byte character. A panic in a test helper reads as a compiler bug rather than as a moved
+    // expectation, and `\n` cannot occur inside a UTF-8 sequence, so the count is the same.
+    source.as_bytes()[..offset as usize]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1
 }
 
 /// Every construct here is one the specification defines and this release does
@@ -337,6 +344,7 @@ fn a_frame_interval_wider_than_the_picture_is_one_occurrence_rather_than_a_wrap(
 fn a_construct_this_release_does_not_have_is_refused_as_such() {
     let errors = lower_errors("var table: [2]u8\nmain {}\n");
 
+    assert!(!errors.is_empty(), "the array must be refused at all");
     assert!(
         errors
             .iter()
