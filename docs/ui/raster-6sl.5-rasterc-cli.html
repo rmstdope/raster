@@ -106,21 +106,24 @@ Options:
   -h, --help                 print this help and exit</pre>
 
 <pre class="term" style="margin-top:14px"><span class="p">$</span> rasterc demo.raster
-<span class="e">error:</span> <span class="w">`wait`</span> statements are not supported yet
- --&gt; demo.raster:5:9
+<span class="e">error:</span> arrays are not supported yet
+ --&gt; demo.raster:2:12
   |
-5 |         wait vblank
-  |         ^^^^^^^^^^^ <span class="w">`wait`</span> statements are not supported yet
+2 | var table: [2]u8
+  |            ^^^^^ arrays are not supported yet
   <span class="d">= note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8
           arithmetic and `ppu.*` / `mmc3.*` register writes</span>
 
-<span class="e">error:</span> <span class="w">`cycles`</span> blocks are not supported yet
- --&gt; demo.raster:6:9
+<span class="e">error:</span> only <span class="w">`wait cycles`</span> is supported yet; frame waits arrive with frame scheduling
+ --&gt; demo.raster:8:5
   |
-6 |         cycles(114) { pad }
-  |         ^^^^^^^^^^^ <span class="w">`cycles`</span> blocks are not supported yet
+8 |     wait vblank
+  |     ^^^^^^^^^^^ only `wait cycles` is supported yet; frame waits arrive with frame scheduling
 
 <span class="e">error:</span> could not compile demo.raster (2 errors)</pre>
+<p class="note">Two rules the note obeys. It says what the release <i>can</i> build, so it belongs
+beside a construct the release does not have at all &mdash; and it is said <b>once</b> per run,
+beside the first of them, because twice is noise and never leaves &ldquo;yet&rdquo; unexplained.</p>
 
 <h2><span class="n">04</span> Failure text</h2>
 <p class="note" style="margin:0 0 10px">Four errors an ordinary user can reach, with their notes.</p>
@@ -147,5 +150,35 @@ Options:
    |     ^^^^^^^^^^^^^^^ too many variables for the zero page
    <span class="d">= note: the zero page holds 240 variables, from $10 to $FF</span></pre>
 
-<footer>Agreed CLI surface for bead raster-6sl.5 &middot; the three screens in 01 are measured pixel values from tetanes &middot; colour is decoration only</footer>
+<h2><span class="n">05</span> Which refusals carry a note</h2>
+<p class="note" style="margin:0 0 10px">Agreed for bead <b>raster-fu0</b>. A refusal earns the
+&ldquo;this release compiles&hellip;&rdquo; note when it names a construct the specification defines
+and this release does not compile anywhere &mdash; not when its wording happens to end in a
+particular phrase. Six constructs gain it: <code>wait vblank</code>, strings, characters,
+<code>bool</code>, function timing specifications, and storage classes other than <code>in zp</code>.</p>
+<pre class="term"><span class="d">// a construct this release does not have</span>
+<span class="e">error:</span> only <span class="w">`wait cycles`</span> is supported yet; frame waits arrive with frame scheduling
+ --&gt; demo.raster:8:5
+  |
+8 |     wait vblank
+  |     ^^^^^^^^^^^ only `wait cycles` is supported yet; frame waits arrive with frame scheduling
+  <span class="d">= note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8
+          arithmetic and `ppu.*` / `mmc3.*` register writes</span></pre>
+<p class="note" style="margin:14px 0 10px">A construct that is fine in general and cannot be used
+<i>inside a timed region</i> is a different refusal, and gets a note of its own. Five of these:
+branch arms, a <code>for</code> loop, <code>wait cycles</code>, <code>*</code> <code>/</code>
+<code>%</code> and shifts, and a call. Said once per run, like the other.</p>
+<pre class="term"><span class="d">// a construct the region's cost model cannot charge</span>
+<span class="e">error:</span> a shift inside a timed region compiles to a loop whose cost is not yet proven
+ --&gt; shift.raster:4:23
+  |
+4 |         level = level &gt;&gt; 1
+  |                       ^^ a shift inside a timed region compiles to a loop whose cost is not yet proven
+  <span class="d">= note: a timed region is costed as straight-line code; loops and calls
+          will be admitted once their cost can be measured</span></pre>
+<p class="note">Everything else &mdash; a mistake in the program, and the catch-all arms that name no
+construct &mdash; carries neither note. Each of those already says what to do instead, and a list of
+supported constructs beside it would be noise.</p>
+
+<footer>Agreed CLI surface for beads raster-6sl.5 and raster-fu0 &middot; the three screens in 01 are measured pixel values from tetanes; the transcripts in 03 and 05 are real <code>rasterc</code> output &middot; colour is decoration only</footer>
 </div></body></html>
