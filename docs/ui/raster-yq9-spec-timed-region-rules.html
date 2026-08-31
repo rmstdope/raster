@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{
+    --bg:#12131a; --panel:#0c0d12; --ink:#e6e7ee; --dim:#8b8fa3;
+    --line:#242634; --accent:#7ecfff; --err:#ff8b7a; --ok:#8fe08a; --warn:#ffd479;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;}
+  .wrap{max-width:900px;margin:0 auto;padding:48px 24px 96px}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
+  .tag{display:inline-block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);border:1px solid var(--line);border-radius:99px;padding:3px 10px;margin-bottom:18px}
+  .lede{color:var(--dim);margin:0 0 32px;max-width:66ch}
+  h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);
+    margin:40px 0 10px;font-weight:600}
+  h2 .n{color:var(--line);margin-right:8px}
+  .note{color:var(--dim);font-size:13px;margin:8px 0 0;max-width:70ch}
+  .doc{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:22px 26px;margin:0}
+  .doc h3{font-size:17px;margin:0 0 12px;color:var(--ink);letter-spacing:-.01em}
+  .doc h4{font-size:14px;margin:22px 0 8px;color:var(--ink)}
+  .doc p{margin:0 0 12px;max-width:68ch}
+  .doc ol{margin:0 0 12px;padding-left:22px} .doc ul{margin:0 0 12px;padding-left:22px}
+  .doc li{margin:0 0 10px;max-width:66ch}
+  .doc code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:rgba(126,207,255,.08);border-radius:3px;padding:1px 4px;color:var(--accent)}
+  pre.term,pre.src{background:#07080c;border:1px solid var(--line);border-radius:6px;
+    padding:14px 16px;overflow-x:auto;margin:0 0 14px;
+    font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;}
+  table{border-collapse:collapse;width:100%;margin:0 0 14px;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+  .e{color:var(--err)} .g{color:var(--ok)} .w{color:var(--warn)} .d{color:var(--dim)} .p{color:var(--accent)}
+  .pill{display:inline-block;font:11px/1.5 ui-monospace,Menlo,monospace;border-radius:99px;
+    padding:1px 8px;border:1px solid var(--line);white-space:nowrap}
+  .pill.now{color:var(--ok);border-color:rgba(143,224,138,.4)}
+  .pill.strict{color:var(--warn);border-color:rgba(255,212,121,.4)}
+  .pill.soon{color:var(--dim)}
+  ins{background:rgba(143,224,138,.14);text-decoration:none;color:var(--ok);border-radius:3px;padding:0 2px}
+  del{background:rgba(255,139,122,.12);color:var(--err);border-radius:3px;padding:0 2px}
+  footer{margin-top:56px;border-top:1px solid var(--line);padding-top:16px;color:var(--dim);font-size:12px}
+</style></head><body><div class="wrap">
+<title>The §6.3 spec pass — agreed</title>
+<span class="tag">raster-yq9 · decided</span>
+<h1>What the spec pass ships</h1>
+<p class="lede">Every edit <code>docs/raster-language-spec.md</code> receives, as agreed with the navigator. Green is added, red is struck, and every word on this page ships verbatim. Each "rasterc today" claim was read in the tree at <code>057fac8</code>.</p>
+
+<h2><span class="n">00</span> The shape, and the vocabulary</h2>
+<p class="note" style="margin:0 0 14px">A section that differs from the compiler gains a <b>rasterc today</b> column or note. Three markers, and no others: <span class="pill now">as designed</span> the compiler does what the text says; <span class="pill strict">stricter</span> the compiler refuses more than the text allows; <span class="pill soon">not built</span> the construct does not exist. In the markdown a marker renders as a bold word, an em dash, then the sentence &mdash; <code>**stricter** &mdash; `if` is refused outright; nothing balances arms yet.</code> The compiler's own diagnostic strings do <b>not</b> appear in the spec — a reword of a message must not falsify the document.</p>
+
+<h2><span class="n">01</span> Document banner</h2>
+<div class="doc">
+<pre class="src"><b>Draft 0.1 — August 2026</b>
+<del>*Status: design draft. Nothing here is implemented yet. Syntax is provisional and
+expected to change as the MVP is built.*</del>
+<ins>*Status: design draft. Syntax is provisional. Nothing here is built unless a
+"rasterc today" column or note says so.*</ins></pre>
+</div>
+
+<h2><span class="n">02</span> §5 — expressions and statements</h2>
+<div class="doc">
+<p><del>Division and general multiplication are expensive on 6502; the compiler will refuse them inside a <code>cycles</code> block unless the operands are compile-time constants or the operation lowers to shifts. This is intentional — see §6.4.</del></p>
+<p><ins>Division and general multiplication are expensive on 6502, and the compiler refuses them inside a <code>cycles</code> block. This is intentional — see §6.4.</ins></p>
+<p><ins><b>rasterc today:</b> <code>*</code>, <code>/</code>, <code>%</code>, <code>&lt;&lt;</code> and <code>&gt;&gt;</code> are all refused inside a timed region whatever their operands, because each lowers to a loop and a loop is not straight-line code (§6.3). This is not caution: before the refusal existed, <code>v * 3</code> was predicted at 38 cycles and spent 69.</ins></p>
+</div>
+
+<h2><span class="n">03</span> §6.2 — automatic padding</h2>
+<div class="doc"><p>Appended:</p>
+<p><ins><b>rasterc today:</b> as designed, except that a block exactly one cycle short of its budget cannot be padded — a single cycle has no filler — and says so rather than rounding.</ins></p></div>
+
+<h2><span class="n">04</span> §6.3 — rules inside a timed region</h2>
+<div class="doc">
+<h3>6.3 Rules inside a timed region</h3>
+<p>For a cycle count to be provable, the compiler restricts what may appear. A <code>frame</code> handler (§7) is a timed region and obeys the same rules.</p>
+<p><b>Today the restriction is one sentence: a timed region is straight-line code.</b> rasterc costs a region by adding up its instructions, so anything whose generated code can move the program counter elsewhere is refused. The designed rules below are the relaxations a cost model that survives control flow would buy.</p>
+<table>
+<tr><th style="width:44%">Designed</th><th>rasterc today</th></tr>
+<tr><td><b>1. No unbounded loops.</b> <code>while</code> with a non-constant trip count is rejected. <code>for i in 0..N</code> with constant <code>N</code> is allowed and is always fully unrolled or compiled to a loop with a proven constant cost.</td>
+<td><span class="pill strict">stricter</span> <code>for</code>, <code>while</code> and <code>loop</code> are all refused: a region is costed as straight-line code, so no loop is charged correctly.</td></tr>
+<tr><td><b>2. Branches must be balanced.</b> Both arms of an <code>if</code> must cost the same, or the block must be <code>pad</code>, in which case the compiler pads the cheaper arm. An <code>if</code> without an <code>else</code> is padded to the cost of the taken path.</td>
+<td><span class="pill strict">stricter</span> <code>if</code> is refused outright; nothing balances arms yet.</td></tr>
+<tr><td><b>3. Page-crossing penalties are resolved, not assumed.</b> Indexed addressing that may cross a page boundary costs an extra cycle. The compiler either proves no crossing occurs (via alignment) or accounts for the worst case and tells you which it did. <code>align 256</code> on a variable forces the safe layout.</td>
+<td><span class="pill strict">stricter</span> Always the worst case, and it does not say which. There is no <code>align</code> in the language, and no source construct reaches the penalty yet — the code generator emits no indexed addressing mode at all.</td></tr>
+<tr><td><b>4. Calls must be timed.</b> A function called inside a <code>cycles</code> block must itself carry a cycle annotation. <ins>Whether cycle cost should compose across function boundaries at all, and how, is §15 question 1; this rule is the shape that question has not yet settled.</ins></td>
+<td><span class="pill strict">stricter</span> A call inside a region is refused, and a function carrying a cycle annotation is refused when it is lowered — so the shape this rule describes does not compile today.</td></tr>
+<tr><td><b>5. No interrupts, unless declared.</b> An IRQ or NMI firing inside a timed block destroys its timing. The compiler inserts <code>sei</code> around timed regions by default; <code>cycles(N) interruptible { }</code> opts out for regions that are themselves interrupt handlers.</td>
+<td><span class="pill now">as designed</span> The <code>php</code>/<code>sei</code> … <code>plp</code> bracket costs nine cycles and is charged to the region's own budget, so the annotation is the region's wall-clock cost.</td></tr>
+<tr><td><b>6. A region must be straight-line.</b> Generated code that can go anywhere but the next instruction — a branch, a jump, a <code>jsr</code>, an <code>rts</code>, an <code>rti</code> or a <code>brk</code> — is a compile error whatever construct produced it.</td>
+<td><span class="pill now">as designed</span> Enforced on the emitted instructions, so a construct nobody has thought of is caught too. <code>return</code>, the arithmetic of §5, every <code>wait</code> form and <code>sync exact</code> are each refused earlier and by name, so the message points at your source rather than at an opcode.</td></tr>
+</table>
+<p>Rule 6 is a floor rather than an ambition: rules 1–4 are the work of lifting it. These restrictions apply <i>only inside</i> <code>cycles</code> blocks. The rest of the program is compiled conventionally with full optimization.</p>
+</div>
+<p class="note">§6.4 opens "Every one of the rules above is a case where an ordinary optimizing compiler would make a silent choice that changes duration" and needs no edit: rule 6 is such a case, and the sentence still refers to the rules above it.</p>
+
+<h2><span class="n">05</span> §6.5 — waiting</h2>
+<div class="doc"><p>Appended:</p>
+<p><ins><b>rasterc today:</b> every <code>wait</code> form is refused <i>inside</i> a timed region, because a wait spends its cycles in a loop and a region is costed as straight-line code; widen the budget and let <code>pad</code> fill it instead. Outside a region, <code>wait cycles(N)</code> is built for any N ≥ 2; <code>wait vblank</code> and <code>wait scanline</code> are not built.</ins></p></div>
+
+<h2><span class="n">06</span> §6.6 — frame sync and jitter</h2>
+<div class="doc"><p>Appended:</p>
+<p><ins><b>rasterc today:</b> as designed, and enforced — a timed region that writes a PPU register with no preceding <code>sync exact</code> is refused. A <code>frame</code> handler is entered already synchronized and needs none of its own.</ins></p></div>
+
+<h2><span class="n">07</span> §7 — the frame construct</h2>
+<div class="doc">
+<p>Added immediately after the opening example:</p>
+<p><ins>A handler body is a timed region: every rule of §6.3 applies inside one, and its budget is the window the schedule leaves it.</ins></p>
+<h4>7.1 Lowering strategies</h4>
+<p>The existing three-column table gains a fourth column. The <b>Notes</b> column keeps its current text unchanged; only the last column is new:</p>
+<table>
+<tr><th>Strategy</th><th>Mechanism</th><th>Notes</th><th>rasterc today</th></tr>
+<tr><td><code>using irq</code></td><td>MMC3 scanline counter</td><td class="d">Preferred on MMC3. Each entry programs <code>$C000</code>/<code>$C001</code> for the delta to the next event, <code>$E001</code> to enable, and acknowledges via <code>$E000</code>/<code>$E001</code> in the handler.</td><td><b>not built</b></td></tr>
+<tr><td><code>using timed</code></td><td>Cycle-counted delay loop from a synced frame start</td><td class="d">Works on any mapper including NROM. Costs the whole frame's CPU time.</td><td><b>as designed</b> &mdash; and it is what an omitted <code>using</code> clause means</td></tr>
+<tr><td><code>using sprite0</code></td><td>Sprite 0 hit polling</td><td class="d">One split only, position determined by sprite placement.</td><td><b>not built</b></td></tr>
+<tr><td><code>using hybrid</code></td><td>Sprite 0 for the first split, IRQ chain after</td><td class="d">Common demo idiom.</td><td><b>not built</b></td></tr>
+</table>
+<p><ins><b>rasterc today:</b> one <code>frame</code> per program, and events on the visible picture only &mdash; <code>at vblank</code> is not built.</ins></p>
+<h4>7.3 MMC3 IRQ specifics the compiler handles for you</h4>
+<p>Appended:</p>
+<p><ins><b>rasterc today:</b> not built. All four of these arrive with <code>using irq</code> — the A12 check, the latch computation and the automatic acknowledge are designed and unimplemented.</ins></p>
+</div>
+
+<h2><span class="n">07b</span> §9.4 — the reset map, and the rule behind this edit</h2>
+<div class="doc">
+<p>Appended to §9.4, which landed while this was being planned:</p>
+<p><ins><b>rasterc today:</b> as designed.</ins></p>
+</div>
+<p class="note"><b>Why a section nobody put in scope.</b> §9.4 describes behaviour rasterc ships, in plain prose, with no marker &mdash; so the banner in section 01 would have made it read as unbuilt. This edit exists because the banner creates the problem. <b>And it is a standing rule, not a one-off:</b> the spec is edited by other beads while this one waits, and it moved twice during this planning. Any section that arrives before the work is built, and that describes behaviour rasterc actually ships, gets the same one-line marker. A section describing something unbuilt needs nothing &mdash; the banner already covers it.</p>
+
+<h2><span class="n">08</span> §13 — complete example</h2>
+<div class="doc">
+<h4 style="margin-top:0">13. Complete example — the MVP demo</h4>
+<p><ins>This is the program the MVP must compile — not one that compiles today. It parses, and a test in <code>raster-syntax</code> reads it out of this document and keeps it parsing; everything past the parser is still ahead of the compiler, including arrays, indexed reads, a call inside a handler and <code>using irq</code>. For a program that compiles now, see <code>examples/mvp/demo.raster</code>.</ins></p>
+<pre class="src"><span class="d">… the program itself, not one character changed …</span></pre>
+<p><del>This is the program the MVP must compile — see the companion MVP plan document.</del><br><ins>See the companion MVP plan document.</ins></p>
+</div>
+<p class="note"><b>The added paragraph must contain no triple backtick.</b> <code>parser_accepts_the_complete_mvp_example</code> finds the program by splitting the whole markdown file on the §13 heading and taking what lies between the first and second <code>```</code> after it. Inline single-backtick code spans are safe; a fenced block in that paragraph would silently hand the parser a paragraph of prose.</p>
+
+<h2><span class="n">09</span> §16 — grammar sketch</h2>
+<div class="doc">
+<p><del>*Informal EBNF for the constructs defined above; to be formalised once the MVP parser exists.*</del></p>
+<p><ins>*Informal EBNF for the constructs defined above. The MVP parser now exists and is the authority where the two differ. Two differences are known: a cycle bound is any compile-time constant expression rather than a bare <code>number</code>, and <code>interruptible</code> is a contextual identifier rather than a reserved keyword — §3's keyword list is correct in omitting it.*</ins></p>
+<pre class="src">cyclespec = "cycles" "(" ( <del>number</del><ins>expr</ins> | "&lt;=" <del>number</del><ins>expr</ins> | "?" ) ")" [ "pad" ] [ "interruptible" ] ;</pre>
+</div>
+
+<h2><span class="n">10</span> What keeps it honest</h2>
+<p class="note">No machine-readable list is added to the spec — the document stays ordinary prose. Instead <code>every_timed_region_refusal_carries_the_kind_that_decides_its_note</code> in <code>crates/raster-sema/tests/analyze.rs</code> becomes the exact counterpart of §6.3's "rasterc today" column: one fixture per refused construct, <code>return</code> included, and a doc comment saying that a row added or removed here is an edit to §6.3. The tie is a human-maintained comment, deliberately: the alternative — a fenced list in the spec that a test parses — puts a block of construct names in front of an author, and was declined.</p>
+
+<footer>raster-yq9 · decided with the navigator, 2026-08-31 · every claim read in the tree at 057fac8</footer>
+</div></body></html>
