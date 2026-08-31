@@ -157,6 +157,27 @@ fn rejects_u8_functions_that_can_fall_through() {
 
     lower_source(
         r#"
+            fn first_value() -> u8 {
+                for index in 0..1 { return 1 }
+            }
+            main {}
+        "#,
+    );
+
+    let errors = lower_errors(
+        r#"
+            fn value() -> u8 {
+                for index in 0..1 {}
+            }
+            main {}
+        "#,
+    );
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("fall through")));
+
+    lower_source(
+        r#"
             fn choose(value: u8) -> u8 {
                 if value == 0 { return 1 } else { return 2 }
             }

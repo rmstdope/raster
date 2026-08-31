@@ -112,6 +112,7 @@ pub enum Value {
     Call {
         target: Label,
         arguments: Vec<Value>,
+        argument_temporaries: Vec<Place>,
     },
 }
 
@@ -166,6 +167,7 @@ pub enum Statement {
     Call {
         target: Label,
         arguments: Vec<Value>,
+        argument_temporaries: Vec<Place>,
     },
     Branch {
         condition: Condition,
@@ -451,13 +453,6 @@ impl Lowerer {
         if !self.function_return_is_supported(function) {
             return;
         }
-        if function_returns_u8(function) && !block_always_returns(&function.body) {
-            self.error(
-                function.name.span,
-                "u8-returning functions cannot fall through without returning",
-            );
-        }
-
         self.enter_scope();
         let mut parameters = Vec::new();
         for parameter in &function.parameters {
@@ -469,6 +464,12 @@ impl Lowerer {
             parameters.push(place);
         }
         let statements = self.lower_statements(&function.body);
+        if function_returns_u8(function) && !self.block_always_returns(&function.body) {
+            self.error(
+                function.name.span,
+                "u8-returning functions cannot fall through without returning",
+            );
+        }
         self.leave_scope();
         self.program.functions.push(Function {
             name: function.name.value.clone(),
@@ -783,7 +784,15 @@ impl Lowerer {
             }
         }
         match self.lower_value(expression) {
-            Value::Call { target, arguments } => output.push(Statement::Call { target, arguments }),
+            Value::Call {
+                target,
+                arguments,
+                argument_temporaries,
+            } => output.push(Statement::Call {
+                target,
+                arguments,
+                argument_temporaries,
+            }),
             _ => self.error(
                 expression.span,
                 "only direct calls and assignments are supported as statements",
@@ -945,12 +954,17 @@ impl Lowerer {
                     self.error(name.span, format!("unknown function `{}`", name.value));
                     return Value::Constant(0);
                 };
+                let arguments: Vec<_> = arguments
+                    .iter()
+                    .map(|argument| self.lower_value(argument))
+                    .collect();
+                let argument_temporaries = (0..arguments.len())
+                    .map(|_| self.allocate_place(PlaceKind::Temporary, expression.span, false))
+                    .collect();
                 Value::Call {
                     target: function.label,
-                    arguments: arguments
-                        .iter()
-                        .map(|argument| self.lower_value(argument))
-                        .collect(),
+                    arguments,
+                    argument_temporaries,
                 }
             }
             SyntaxExpression::Index { base, index } => {
@@ -1141,6 +1155,100 @@ impl Lowerer {
         let _ = self.scopes.pop();
     }
 
+    fn block_always_returns(&self, block: &Block) -> bool {
+        block
+            .statements
+            .iter()
+            .any(|statement| self.statement_always_returns(&statement.value))
+    }
+
+    fn statement_always_returns(&self, statement: &SyntaxStatement) -> bool {
+        match statement {
+            SyntaxStatement::Return(_) => true,
+            SyntaxStatement::Block(block) => self.block_always_returns(block),
+            SyntaxStatement::If {
+                then_body,
+                else_body: Some(else_body),
+                ..
+            } => self.block_always_returns(then_body) && self.block_always_returns(else_body),
+            SyntaxStatement::For {
+                range, step, body, ..
+            } => self.for_always_returns(range, step.as_ref(), body),
+            _ => false,
+        }
+    }
+
+    fn for_always_returns(
+        &self,
+        range: &Spanned<SyntaxExpression>,
+        step: Option<&Spanned<SyntaxExpression>>,
+        body: &Block,
+    ) -> bool {
+        let SyntaxExpression::Range { start, end } = &range.value else {
+            return false;
+        };
+        let Some(start) = self.static_constant_value(start) else {
+            return false;
+        };
+        let Some(end) = self.static_constant_value(end) else {
+            return false;
+        };
+        let step = match step {
+            Some(step) => {
+                let Some(step) = self.static_constant_value(step) else {
+                    return false;
+                };
+                step
+            }
+            None => 1,
+        };
+        if start >= end || step == 0 {
+            return false;
+        }
+        let last_counter = u16::from(start)
+            + ((u16::from(end) - 1 - u16::from(start)) / u16::from(step)) * u16::from(step);
+        last_counter + u16::from(step) <= u16::from(u8::MAX) && self.block_always_returns(body)
+    }
+
+    fn static_constant_value(&self, expression: &Spanned<SyntaxExpression>) -> Option<u8> {
+        to_u8(self.static_constant_value_u32(expression)?)
+    }
+
+    fn static_constant_value_u32(&self, expression: &Spanned<SyntaxExpression>) -> Option<u32> {
+        match &expression.value {
+            SyntaxExpression::Number(number) => parse_number(number),
+            SyntaxExpression::Name(name) => match self.lookup(&name.value) {
+                Some(Binding::Constant(value)) => Some(u32::from(value)),
+                _ => None,
+            },
+            SyntaxExpression::Prefix { operator, operand } if operator.value == Operator::Tilde => {
+                self.static_constant_value_u32(operand).map(|value| !value)
+            }
+            SyntaxExpression::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                let left = self.static_constant_value_u32(left)?;
+                let right = self.static_constant_value_u32(right)?;
+                match operator.value {
+                    Operator::Plus => left.checked_add(right),
+                    Operator::Minus => left.checked_sub(right),
+                    Operator::Star => left.checked_mul(right),
+                    Operator::Slash if right != 0 => left.checked_div(right),
+                    Operator::Percent if right != 0 => left.checked_rem(right),
+                    Operator::Ampersand => Some(left & right),
+                    Operator::Pipe => Some(left | right),
+                    Operator::Caret => Some(left ^ right),
+                    Operator::ShiftLeft => left.checked_shl(right),
+                    Operator::ShiftRight => left.checked_shr(right),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn bind(&mut self, name: &str, binding: Binding) {
         self.scopes
             .last_mut()
@@ -1297,26 +1405,6 @@ fn function_returns_u8(function: &SyntaxFunction) -> bool {
         function.return_type.as_ref().map(|return_type| &return_type.value),
         Some(Type::Name(name)) if name.value == "u8"
     )
-}
-
-fn block_always_returns(block: &Block) -> bool {
-    block
-        .statements
-        .iter()
-        .any(|statement| statement_always_returns(&statement.value))
-}
-
-fn statement_always_returns(statement: &SyntaxStatement) -> bool {
-    match statement {
-        SyntaxStatement::Return(_) => true,
-        SyntaxStatement::Block(block) => block_always_returns(block),
-        SyntaxStatement::If {
-            then_body,
-            else_body: Some(else_body),
-            ..
-        } => block_always_returns(then_body) && block_always_returns(else_body),
-        _ => false,
-    }
 }
 
 fn declaration_name_span(declaration: &Declaration) -> Span {

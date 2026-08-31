@@ -132,7 +132,11 @@ impl Generator<'_> {
                 self.value(value)?;
                 self.store(*destination)?;
             }
-            Statement::Call { target, arguments } => self.call(*target, arguments)?,
+            Statement::Call {
+                target,
+                arguments,
+                argument_temporaries,
+            } => self.call(*target, arguments, argument_temporaries)?,
             Statement::Branch {
                 condition,
                 if_false,
@@ -203,7 +207,11 @@ impl Generator<'_> {
                     BinaryOperator::ShiftRight => self.shift(*right_temporary, 0x4a)?,
                 }
             }
-            Value::Call { target, arguments } => self.call(*target, arguments)?,
+            Value::Call {
+                target,
+                arguments,
+                argument_temporaries,
+            } => self.call(*target, arguments, argument_temporaries)?,
         }
         Ok(())
     }
@@ -273,7 +281,12 @@ impl Generator<'_> {
         Ok(())
     }
 
-    fn call(&mut self, target: IrLabel, arguments: &[Value]) -> Result<(), CodegenError> {
+    fn call(
+        &mut self,
+        target: IrLabel,
+        arguments: &[Value],
+        argument_temporaries: &[Place],
+    ) -> Result<(), CodegenError> {
         let parameters = self
             .function_parameters
             .get(&target)
@@ -286,8 +299,12 @@ impl Generator<'_> {
                 actual: arguments.len(),
             });
         }
-        for (argument, parameter) in arguments.iter().zip(parameters) {
+        for (argument, temporary) in arguments.iter().zip(argument_temporaries) {
             self.value(argument)?;
+            self.store_place(*temporary)?;
+        }
+        for (temporary, parameter) in argument_temporaries.iter().zip(parameters) {
+            self.load_place(*temporary)?;
             self.store_place(parameter)?;
         }
         self.relocated(0x20, Absolute, RelocationKind::Absolute, target);

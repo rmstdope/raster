@@ -2,7 +2,7 @@ use raster_6502::AddressingMode;
 use raster_codegen::{generate, CodegenError};
 use raster_ir::lower;
 use raster_link::{
-    link_mmc3_ines, FixedBankItem, RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
+    link_mmc3_ines, FixedBankItem, Label, RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
     MMC3_PRG_ROM_SIZE,
 };
 use raster_sema::analyze;
@@ -73,6 +73,79 @@ fn generates_relocatable_calls_control_flow_arithmetic_and_register_stores() {
             ..
         } if relocation.kind == RelocationKind::Relative
     )));
+}
+
+#[test]
+fn stages_outer_call_arguments_after_nested_call_evaluation() {
+    let source = r#"
+        fn f(first: u8, second: u8) {}
+        fn h() -> u8 { return 2 }
+        main { f(1, h()) }
+    "#;
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let program = lower(&typed).expect("fixture should lower");
+    let output = generate(&program).expect("fixture should generate");
+    let f = program
+        .functions
+        .iter()
+        .find(|function| function.name == "f")
+        .expect("fixture should define f");
+    let h = program
+        .functions
+        .iter()
+        .find(|function| function.name == "h")
+        .expect("fixture should define h");
+    let parameter_addresses: Vec<_> = f
+        .parameters
+        .iter()
+        .map(|parameter| output.zero_page[parameter])
+        .collect();
+
+    let h_call = instruction_position(&output.program.items, 0x20, Some(Label(h.label.0)));
+    let f_call = instruction_position(&output.program.items, 0x20, Some(Label(f.label.0)));
+    for address in parameter_addresses {
+        let staged = output
+            .program
+            .items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item,
+                    FixedBankItem::Instruction { instruction, .. }
+                        if instruction.opcode == 0x85
+                            && instruction.mode == AddressingMode::ZeroPage
+                            && instruction.operand == Some(u16::from(address))
+                )
+            })
+            .expect("outer parameter should be staged");
+        assert!(
+            h_call < staged && staged < f_call,
+            "outer parameters must be staged only after h() evaluates"
+        );
+    }
+}
+
+fn instruction_position(
+    items: &[FixedBankItem],
+    opcode: u8,
+    relocation_target: Option<Label>,
+) -> usize {
+    items
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                FixedBankItem::Instruction {
+                    instruction,
+                    relocation,
+                } if instruction.opcode == opcode
+                    && relocation_target.map_or(true, |target| {
+                        relocation.as_ref().is_some_and(|relocation| relocation.target == target)
+                    })
+            )
+        })
+        .expect("expected instruction")
 }
 
 #[test]
