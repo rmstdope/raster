@@ -1,0 +1,15 @@
+// The whole of milestone 4: a backdrop colour, from source.
+//
+// rasterc emits the reset sequence, the two-vblank wait and the
+// MMC3 bank layout around this. What is below is only your part.
+
+const BACKDROP: u8 = $12        // NES colour $12, a mid blue
+
+main {
+    ppu.addr = $3f              // the palette lives at $3F00 ...
+    ppu.addr = $00              // ... and $3F00 is the backdrop
+    ppu.data = BACKDROP
+
+    ppu.addr = $00              // leave palette space, or the screen
+    ppu.addr = $00              // shows $3F01 instead of the backdrop
+}

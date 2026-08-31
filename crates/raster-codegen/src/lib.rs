@@ -8,9 +8,7 @@ use raster_ir::{
     BinaryOperator, Comparison, Condition, Destination, Label as IrLabel, Main, Place, Program,
     Statement, UnaryOperator, Value,
 };
-use raster_link::{
-    EntryPoints, FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind,
-};
+use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind};
 use raster_syntax::Span;
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
@@ -18,7 +16,9 @@ const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodegenOutput {
     pub program: RelocatableProgram,
-    pub entry_points: EntryPoints,
+    /// The label `main` was emitted at. The interrupt vectors are the runtime's
+    /// to decide, so this is the one fact codegen knows about entry.
+    pub main: Label,
     pub zero_page: BTreeMap<Place, u8>,
 }
 
@@ -65,11 +65,7 @@ pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
     generator.main(main, &program.global_initializers)?;
     Ok(CodegenOutput {
         program: generator.output,
-        entry_points: EntryPoints {
-            nmi: link_label(main.label),
-            reset: link_label(main.label),
-            irq: link_label(main.label),
-        },
+        main: link_label(main.label),
         zero_page,
     })
 }
