@@ -15,6 +15,12 @@ prints usage and exits nonzero; invalid source produces concise, actionable sour
 The terminal interface is keyboard-first, has no authentication or persistent state, communicates no
 meaning by colour alone, and feels fast, streamlined, and tech.
 
+## General Instructions
+
+## Skills Usage
+
+Always select the appropriate skill for a specific task. Be sure to ALWAYS explicitly write in the chat what skills that are currently being used. Always follow the instructions in the skills to the letter.
+
 ## Four Eye Principle
 
 Nothing merges unreviewed and nothing merges red.
@@ -34,12 +40,20 @@ the navigator; a bead is planned in one session and implemented in another.
 The board syncs through the Dolt remote rather than through git. A fresh clone runs `bd bootstrap`;
 after that use `bd dolt pull` and `bd dolt push`.
 
-## Development practices
+## Development Practices
 
-- Work is delivered in small increments that stand on their own.
-- Code is written using test driven development
-- The full pull-request gate is `cargo fmt --check && cargo clippy -- -D warnings && cargo test`.
-- Prefer the simple design; say so when you decline a more general one.
+### Small Increments
+
+The application shall ALWAYS be developed in very small, manageable increments that can be delivered independently. Each increment should add a specific feature or improvement to the application. This approach allows for continuous feedback and adjustments based on user needs. The code base should ALWAYS have a great safety net of tests to ensure that new changes do not break existing functionality.
+
+### Test-driven Development (TDD)
+
+In the development process, the application should be developed using Test-driven Development (TDD) principles. Always use the test-driven-development skill when writing code. This means that you should write tests before writing the actual implementation code. This should be the case also when fixing bugs. First write a test that reproduces the bug, then fix the bug and verify that the test passes along with all existing tests.
+However, when trying to pinpoint a bug, you are free to add any traces, try fixes or anything else without having to write tests for that immediately. But once the issue has been pinpointed, either update existing tests or add a new test that triggers the error before applying the fix. This ensures no unnecessary modifications are done and helps to prevent regressions in the future.
+
+### Design
+
+Always prefer simple design solutions. Avoid over-engineering. If unsure, ask the navigator for clarification. The design should be easy to change if need be.
 
 ## Where the project declares its facts
 
