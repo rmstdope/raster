@@ -39,6 +39,7 @@ fn generates_relocatable_calls_control_flow_arithmetic_and_register_stores() {
         .filter_map(|item| match item {
             FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
             FixedBankItem::Label(_) => None,
+            FixedBankItem::Data(_) => unreachable!("raster-codegen emits no data blocks"),
         })
         .collect();
 
@@ -204,6 +205,7 @@ fn instructions_of(items: &[FixedBankItem]) -> Vec<raster_6502::Instruction> {
         .filter_map(|item| match item {
             FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
             FixedBankItem::Label(_) => None,
+            FixedBankItem::Data(_) => unreachable!("raster-codegen emits no data blocks"),
         })
         .collect()
 }
