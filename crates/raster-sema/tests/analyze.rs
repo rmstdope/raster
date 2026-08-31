@@ -604,6 +604,10 @@ fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
 /// that eleven of the twelve refusals fire from one program. The twelfth — `sync exact` is
 /// required before a PPU-writing block — cannot join them: it fires only when no `sync exact`
 /// precedes the block, and this fixture contains one inside it.
+///
+/// The guard below only sees the messages these two fixtures provoke, so **a refusal added to
+/// `raster-sema` on a construct that is not here is not guarded**: add the construct to this
+/// fixture at the same time, and raise the guard's expected count with it.
 const REFUSALS_INSIDE_A_BLOCK: &str = r#"
     fn helper() { }
     var count: u8
@@ -640,6 +644,17 @@ fn no_refusal_calls_a_timed_block_a_timed_region() {
     let mut diagnostics = errors(REFUSALS_INSIDE_A_BLOCK);
     diagnostics.extend(errors(PPU_WRITE_WITHOUT_SYNC));
 
+    // `errors` only panics when a fixture produces no errors at all, so a construct that stops
+    // being refused would drop out of the two filters below in silence and leave them passing
+    // over less than they were written to cover. Twelve is what the two fixtures provoke: eleven
+    // from the block, one from the PPU write.
+    assert_eq!(
+        diagnostics.len(),
+        12,
+        "the fixtures should provoke all twelve refusals; a lower count means this guard is \
+         covering less than it reads as covering: {diagnostics:?}"
+    );
+
     let region: Vec<&String> = diagnostics
         .iter()
         .filter(|message| message.contains("timed region"))
@@ -649,12 +664,15 @@ fn no_refusal_calls_a_timed_block_a_timed_region() {
         "`timed block` is the word that ships; these still say `timed region`: {region:?}"
     );
 
+    // Deliberately the bare word rather than `the region`: no shipped diagnostic names the
+    // construct a region at all any more, so `a region`, `this region` and `the region's` are
+    // caught too — the shapes a future second reference is as likely to take.
     let bare: Vec<&String> = diagnostics
         .iter()
-        .filter(|message| message.contains("the region"))
+        .filter(|message| message.contains(" region"))
         .collect();
     assert!(
         bare.is_empty(),
-        "a message that opens with `timed block` must not call it `the region` later: {bare:?}"
+        "a message that opens with `timed block` must not call it a region later: {bare:?}"
     );
 }
