@@ -547,6 +547,41 @@ reinterpret every bank register at once, from whichever select was written
 last — so rasterc warns when it can see one of them set, and warns when it
 cannot see the value at all.
 
+### 9.5 Which registers read back
+
+Sixteen registers have names, and three of them can be read.
+
+| Register | Address | A read of it |
+|---|---|---|
+| `ppu.ctrl` | `$2000` | refused |
+| `ppu.mask` | `$2001` | refused |
+| `ppu.status` | `$2002` | **allowed** |
+| `ppu.oam_addr` | `$2003` | refused |
+| `ppu.oam_data` | `$2004` | **allowed** |
+| `ppu.scroll` | `$2005` | refused |
+| `ppu.addr` | `$2006` | refused |
+| `ppu.data` | `$2007` | **allowed** |
+| `mmc3.bank_select` | `$8000` | refused |
+| `mmc3.bank_data` | `$8001` | refused |
+| `mmc3.mirroring` | `$A000` | refused |
+| `mmc3.ram_protect` | `$A001` | refused |
+| `mmc3.irq_latch` | `$C000` | refused |
+| `mmc3.irq_reload` | `$C001` | refused |
+| `mmc3.irq_disable` | `$E000` | refused |
+| `mmc3.irq_enable` | `$E001` | refused |
+
+The other thirteen are write-only ports. A read of one does not return the
+last value written: a PPU port returns whatever was last on the PPU's data
+bus, and an MMC3 port returns a byte of your own program, from the PRG bank
+the mapper has at that address. There is no value that makes such a read
+correct, so the compiler refuses it rather than warning about it.
+
+That includes the read a compound assignment makes for you. `ppu.mask += $18`
+reads `$2001` before it writes, and `$2001` does not read, so it is refused
+too: keep what you wrote in a variable of your own and write the whole value.
+
+Every one of the sixteen may still be written. This is only about reads.
+
 ---
 
 ## 10. Timeline

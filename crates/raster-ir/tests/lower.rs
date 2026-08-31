@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use raster_diag::Refusal;
-use raster_ir::{lower, PlaceKind, Statement};
+use raster_ir::{lower, PlaceKind, Register, Statement};
 use raster_sema::analyze;
 use raster_syntax::parse;
 
@@ -15,6 +15,42 @@ fn lower_errors(source: &str) -> Vec<raster_ir::LowerError> {
     let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
     lower(&typed).expect_err("fixture should not lower").errors
+}
+
+/// Every named register, with the three facts a diagnostic needs from it: the
+/// name it has in source, its address, and whether a read of it is refused.
+/// Written out here rather than derived, so the test fails when the compiler's
+/// own table changes rather than agreeing with it by construction.
+const REGISTERS: [(Register, &str, u16, bool); 16] = [
+    (Register::PpuCtrl, "ppu.ctrl", 0x2000, true),
+    (Register::PpuMask, "ppu.mask", 0x2001, true),
+    (Register::PpuStatus, "ppu.status", 0x2002, false),
+    (Register::PpuOamAddr, "ppu.oam_addr", 0x2003, true),
+    (Register::PpuOamData, "ppu.oam_data", 0x2004, false),
+    (Register::PpuScroll, "ppu.scroll", 0x2005, true),
+    (Register::PpuAddr, "ppu.addr", 0x2006, true),
+    (Register::PpuData, "ppu.data", 0x2007, false),
+    (Register::Mmc3BankSelect, "mmc3.bank_select", 0x8000, true),
+    (Register::Mmc3BankData, "mmc3.bank_data", 0x8001, true),
+    (Register::Mmc3Mirroring, "mmc3.mirroring", 0xa000, true),
+    (Register::Mmc3RamProtect, "mmc3.ram_protect", 0xa001, true),
+    (Register::Mmc3IrqLatch, "mmc3.irq_latch", 0xc000, true),
+    (Register::Mmc3IrqReload, "mmc3.irq_reload", 0xc001, true),
+    (Register::Mmc3IrqDisable, "mmc3.irq_disable", 0xe000, true),
+    (Register::Mmc3IrqEnable, "mmc3.irq_enable", 0xe001, true),
+];
+
+#[test]
+fn the_register_table_names_every_register_and_says_which_read() {
+    for (register, name, address, write_only) in REGISTERS {
+        assert_eq!(register.name(), name);
+        assert_eq!(register.address(), address);
+        assert_eq!(register.is_write_only(), write_only, "{name}");
+    }
+    // Three of the sixteen read: $2002, $2004 and $2007. If this number moves,
+    // a register has changed sides and the spec table in §9.5 has to move with
+    // it.
+    assert_eq!(REGISTERS.iter().filter(|row| !row.3).count(), 3);
 }
 
 #[test]
@@ -488,14 +524,136 @@ fn warnings_survive_a_failed_lowering() {
 }
 
 #[test]
-fn a_compound_bank_select_cannot_be_folded_and_warns() {
-    // `binary` builds a `Value::Binary` unconditionally, so a compound
-    // assignment is never a constant to rasterc however plain it reads.
-    let program = lower_source("main { mmc3.bank_select += $80 }");
+fn a_bank_select_rasterc_cannot_fold_still_warns() {
+    // `binary` builds a `Value::Binary` unconditionally, so a value rasterc
+    // could fold by eye is not a constant to it. This used to be shown with
+    // `mmc3.bank_select += $80`, which is now refused outright for reading
+    // $8000; a plain assignment of a binary expression makes the same point.
+    let program = lower_source("main { mmc3.bank_select = $40 | $06 }");
 
     assert_eq!(program.warnings.len(), 1);
     assert_eq!(
         program.warnings[0].label,
         "rasterc cannot see this value here, so bits 6 and 7 are unknown"
     );
+}
+
+#[test]
+fn reading_a_write_only_register_is_refused() {
+    let errors = lower_errors("main {\n    var m: u8 = ppu.mask\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "`ppu.mask` cannot be read");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$2001 is a write-only port")
+    );
+    assert_eq!(
+        errors[0].notes,
+        [
+            "reading $2001 returns whatever was last on the PPU's data bus,\nnot the last value written",
+            "keep what you wrote in a variable of your own\nand write the whole value",
+        ]
+    );
+    assert_eq!(errors[0].refusal, Refusal::Rejected);
+    // `var m: u8 = ppu.mask` — line 2 begins at byte 7, and `ppu.mask` is
+    // sixteen characters further along.
+    assert_eq!(errors[0].span.start, 23);
+    assert_eq!(errors[0].span.end, 31);
+}
+
+#[test]
+fn a_compound_assignment_to_a_write_only_register_is_refused() {
+    let source = "main {\n    mmc3.bank_select += $80\n}\n";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("$8000 does not read back");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(
+        failure.errors[0].message,
+        "`mmc3.bank_select` cannot be read"
+    );
+    assert_eq!(
+        failure.errors[0].label.as_deref(),
+        Some("$8000 is a write-only port")
+    );
+    assert_eq!(
+        failure.errors[0].notes,
+        [
+            "`+=` reads its destination before it writes, so this reads $8000",
+            "reading $8000 returns a byte of your own program from the PRG\nbank mapped there, not the last value written",
+            "keep what you wrote in a variable of your own\nand write the whole value",
+        ]
+    );
+    // The carets cover the destination only: `mmc3.bank_select` is sixteen
+    // characters, starting eleven into line 2, which itself starts at byte 7.
+    assert_eq!(failure.errors[0].span.start, 11);
+    assert_eq!(failure.errors[0].span.end, 27);
+    // The mapping-mode warning does not also fire: the statement is being
+    // rewritten, so what its value would have been is moot, and one fault gets
+    // one message.
+    assert!(failure.warnings.is_empty());
+}
+
+#[test]
+fn every_compound_operator_names_itself_in_the_refusal() {
+    for (source, spelling) in [
+        ("main { ppu.mask += 1 }", "+="),
+        ("main { ppu.mask -= 1 }", "-="),
+        ("main { ppu.mask *= 1 }", "*="),
+        ("main { ppu.mask /= 1 }", "/="),
+    ] {
+        let errors = lower_errors(source);
+        assert_eq!(errors.len(), 1, "{source}");
+        assert_eq!(
+            errors[0].notes[0],
+            format!("`{spelling}` reads its destination before it writes, so this reads $2001"),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn every_write_only_register_refuses_a_read_and_every_readable_one_does_not() {
+    for (register, name, _address, _write_only) in REGISTERS {
+        let source = format!("main {{ var v: u8 = {name} }}");
+        let syntax = parse(&source).expect("fixture should parse");
+        let typed = analyze(&syntax).expect("fixture should analyze");
+        let result = lower(&typed);
+        if register.is_write_only() {
+            let failure = result.expect_err(name);
+            assert_eq!(failure.errors.len(), 1, "{name}");
+            assert_eq!(
+                failure.errors[0].message,
+                format!("`{name}` cannot be read")
+            );
+        } else {
+            assert!(result.is_ok(), "{name} reads");
+        }
+    }
+}
+
+#[test]
+fn two_write_only_reads_on_one_line_are_two_errors_in_source_order() {
+    let errors = lower_errors("main {\n    ppu.ctrl = ppu.mask | ppu.scroll\n}\n");
+
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].message, "`ppu.mask` cannot be read");
+    assert_eq!(errors[1].message, "`ppu.scroll` cannot be read");
+    // `lower_value`'s `Infix` arm lowers left before right, so the errors come
+    // out the way the author reads the line.
+    assert!(errors[0].span.start < errors[1].span.start);
+}
+
+#[test]
+fn writing_a_write_only_register_is_still_fine() {
+    // The whole point of the rule is that it is about reads. Every one of the
+    // thirteen may still be written, and this is the test that goes red if the
+    // check is ever attached to `lower_destination` instead.
+    let program = lower_source(
+        "main {\n    ppu.mask = $1E\n    mmc3.bank_select = $06\n    ppu.addr = $00\n}\n",
+    );
+    assert!(program.main.is_some());
 }

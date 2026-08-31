@@ -73,6 +73,62 @@ impl Register {
             Self::Mmc3IrqEnable => 0xe001,
         }
     }
+
+    /// The register's name in source, which is what a diagnostic calls it.
+    ///
+    /// One-for-one with the match in `Lowerer::register`: every arm there maps a
+    /// `("ns", "member")` pair to a variant, and every arm here spells that pair
+    /// back. The table test in `tests/lower.rs` is what keeps the two in step.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::PpuCtrl => "ppu.ctrl",
+            Self::PpuMask => "ppu.mask",
+            Self::PpuStatus => "ppu.status",
+            Self::PpuOamAddr => "ppu.oam_addr",
+            Self::PpuOamData => "ppu.oam_data",
+            Self::PpuScroll => "ppu.scroll",
+            Self::PpuAddr => "ppu.addr",
+            Self::PpuData => "ppu.data",
+            Self::Mmc3BankSelect => "mmc3.bank_select",
+            Self::Mmc3BankData => "mmc3.bank_data",
+            Self::Mmc3Mirroring => "mmc3.mirroring",
+            Self::Mmc3RamProtect => "mmc3.ram_protect",
+            Self::Mmc3IrqLatch => "mmc3.irq_latch",
+            Self::Mmc3IrqReload => "mmc3.irq_reload",
+            Self::Mmc3IrqDisable => "mmc3.irq_disable",
+            Self::Mmc3IrqEnable => "mmc3.irq_enable",
+        }
+    }
+
+    /// Whether a read of this port returns anything to do with the register.
+    ///
+    /// Three of the sixteen can be read: $2002, $2004 and $2007. A read of any
+    /// other returns whatever was last on the PPU's data bus, or — at $8000 and
+    /// above — a byte of the PRG bank the mapper has at that address, which is
+    /// a byte of the program itself.
+    ///
+    /// Both sides are listed rather than `!matches!(...)` on the three, so the
+    /// match stays exhaustive with no `_` arm: a register added later cannot
+    /// inherit a verdict nobody chose, because the compiler will not build
+    /// until someone decides.
+    pub const fn is_write_only(self) -> bool {
+        match self {
+            Self::PpuStatus | Self::PpuOamData | Self::PpuData => false,
+            Self::PpuCtrl
+            | Self::PpuMask
+            | Self::PpuOamAddr
+            | Self::PpuScroll
+            | Self::PpuAddr
+            | Self::Mmc3BankSelect
+            | Self::Mmc3BankData
+            | Self::Mmc3Mirroring
+            | Self::Mmc3RamProtect
+            | Self::Mmc3IrqLatch
+            | Self::Mmc3IrqReload
+            | Self::Mmc3IrqDisable
+            | Self::Mmc3IrqEnable => true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,6 +316,13 @@ pub struct Program {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LowerError {
     pub message: String,
+    /// What the carets say. `None` mirrors the message, which is what every
+    /// refusal did before one of them needed to name a fact the message does
+    /// not — here, which port the register is.
+    pub label: Option<String>,
+    /// Notes this refusal carries in its own right, before `rasterc` adds the
+    /// one its `Refusal` earns.
+    pub notes: Vec<String>,
     pub span: Span,
     pub refusal: Refusal,
 }
@@ -290,6 +353,43 @@ const MMC3_CHR_INVERSION: u8 = 0b1000_0000;
 
 const BANK_SELECT_MODE_NOTE: &str = "bits 6 and 7 take effect from whichever bank select was\n\
                                      written last, not from the bank data that follows";
+
+/// The lowest MMC3 port address. At or above it a named register sits in the
+/// PRG window the mapper banks, so a read there is a read of the program;
+/// below it, among the sixteen, every named register is a PPU port.
+const MMC3_PORT_BASE: u16 = 0x8000;
+
+const WRITE_THE_WHOLE_VALUE: &str = "keep what you wrote in a variable of your own\n\
+                                     and write the whole value";
+
+/// What a read of a write-only port actually returns.
+fn dead_read_note(register: Register) -> String {
+    let address = register.address();
+    if address >= MMC3_PORT_BASE {
+        format!(
+            "reading ${address:04X} returns a byte of your own program from the PRG\n\
+             bank mapped there, not the last value written"
+        )
+    } else {
+        format!(
+            "reading ${address:04X} returns whatever was last on the PPU's data bus,\n\
+             not the last value written"
+        )
+    }
+}
+
+/// How a register read reached lowering, which decides whether the refusal has
+/// to say where the read came from.
+#[derive(Clone, Copy)]
+enum ReadSite {
+    /// The author named the register in an expression: `var m: u8 = ppu.mask`.
+    /// The read is on the line in front of them, so nothing explains it.
+    Named,
+    /// A compound assignment read its own destination: `ppu.mask += $18`.
+    /// There is no read on that line at all, so the refusal says which operator
+    /// made one. Carries the operator as the author wrote it.
+    CompoundAssignment(&'static str),
+}
 
 /// The warning a write to `mmc3.bank_select` earns, if it earns one.
 ///
@@ -412,8 +512,33 @@ impl Lowerer {
     fn refuse(&mut self, span: Span, message: impl Into<String>, refusal: Refusal) {
         self.errors.push(LowerError {
             message: message.into(),
+            label: None,
+            notes: Vec::new(),
             span,
             refusal,
+        });
+    }
+
+    /// Refuse the program with a label and notes of the refusal's own, rather
+    /// than the mirrored message every other refusal carries.
+    ///
+    /// `Refusal::Rejected`, which carries no note of its own: the message
+    /// already says what to do instead, and a read of a write-only port is not
+    /// a construct that arrives in a later release, so the supported-subset
+    /// list beside it would be wrong as well as noisy.
+    fn refuse_with(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        label: impl Into<String>,
+        notes: Vec<String>,
+    ) {
+        self.errors.push(LowerError {
+            message: message.into(),
+            label: Some(label.into()),
+            notes,
+            span,
+            refusal: Refusal::Rejected,
         });
     }
 
@@ -1082,17 +1207,30 @@ impl Lowerer {
                     | Operator::MinusEqual
                     | Operator::StarEqual
                     | Operator::SlashEqual => {
-                        let Some(operator) = compound_operator(operator.value) else {
+                        let Some((operator, spelling)) = compound_operator(operator.value) else {
                             self.error(operator.span, "this compound assignment is not supported");
                             return;
                         };
+                        // `left.span` covers the destination and nothing else:
+                        // the label names the port, and the right-hand side is
+                        // not part of the port.
+                        let Some(left_value) = self.destination_read(
+                            destination,
+                            left.span,
+                            ReadSite::CompoundAssignment(spelling),
+                        ) else {
+                            // The right-hand side is still lowered, so its own
+                            // faults are reported in this run rather than the
+                            // next one. Nothing is pushed: the statement has
+                            // been refused, so it has no `Assign` to emit — and
+                            // returning here is also what keeps
+                            // `bank_select_warning` below from firing on a line
+                            // whose read has already been refused.
+                            let _ = self.lower_value(right);
+                            return;
+                        };
                         let right = self.lower_value(right);
-                        self.binary(
-                            destination_value(destination),
-                            operator,
-                            right,
-                            expression.span,
-                        )
+                        self.binary(left_value, operator, right, expression.span)
                     }
                     _ => unreachable!("assignment operator was checked above"),
                 };
@@ -1298,10 +1436,14 @@ impl Lowerer {
                 let _ = self.lower_value(index);
                 Value::Constant(0)
             }
-            SyntaxExpression::Member { base, member } => self
-                .register(base, member)
-                .map(Value::Register)
-                .unwrap_or(Value::Constant(0)),
+            SyntaxExpression::Member { base, member } => match self.register(base, member) {
+                // `expression.span` covers `ppu.mask` exactly: the parser joins
+                // the namespace's span with the member's.
+                Some(register) => self
+                    .read_register(register, expression.span, ReadSite::Named)
+                    .unwrap_or(Value::Constant(0)),
+                None => Value::Constant(0),
+            },
             SyntaxExpression::Range { start, end } => {
                 self.error(
                     expression.span,
@@ -1311,6 +1453,49 @@ impl Lowerer {
                 let _ = self.lower_value(end);
                 Value::Constant(0)
             }
+        }
+    }
+
+    /// A read of a hardware register, or `None` once it has been refused.
+    ///
+    /// Both ways to read a register come here — naming it in an expression, and
+    /// a compound assignment reading its own destination — so the two cannot
+    /// drift apart. A write never comes here: every one of the sixteen may
+    /// still be written, and this changes nothing about a write.
+    fn read_register(&mut self, register: Register, span: Span, site: ReadSite) -> Option<Value> {
+        if !register.is_write_only() {
+            return Some(Value::Register(register));
+        }
+        let mut notes = Vec::new();
+        if let ReadSite::CompoundAssignment(spelling) = site {
+            notes.push(format!(
+                "`{spelling}` reads its destination before it writes, so this reads ${:04X}",
+                register.address()
+            ));
+        }
+        notes.push(dead_read_note(register));
+        notes.push(WRITE_THE_WHOLE_VALUE.to_owned());
+        self.refuse_with(
+            span,
+            format!("`{}` cannot be read", register.name()),
+            format!("${:04X} is a write-only port", register.address()),
+            notes,
+        );
+        None
+    }
+
+    /// The value a compound assignment reads out of its own destination, or
+    /// `None` if that destination is a port that does not read. Replaces the
+    /// free function `destination_value`, which had no way to refuse.
+    fn destination_read(
+        &mut self,
+        destination: Destination,
+        span: Span,
+        site: ReadSite,
+    ) -> Option<Value> {
+        match destination {
+            Destination::Place(place) => Some(Value::Place(place)),
+            Destination::Register(register) => self.read_register(register, span, site),
         }
     }
 
@@ -1692,12 +1877,16 @@ fn binary_operator(operator: Operator) -> Option<BinaryOperator> {
     }
 }
 
-fn compound_operator(operator: Operator) -> Option<BinaryOperator> {
+/// The binary operator a compound assignment applies, and how it is written.
+/// The spelling is what a refusal quotes when it explains where a read the
+/// author did not write came from; keeping both in one match is what stops the
+/// two lists drifting.
+fn compound_operator(operator: Operator) -> Option<(BinaryOperator, &'static str)> {
     match operator {
-        Operator::PlusEqual => Some(BinaryOperator::Add),
-        Operator::MinusEqual => Some(BinaryOperator::Subtract),
-        Operator::StarEqual => Some(BinaryOperator::Multiply),
-        Operator::SlashEqual => Some(BinaryOperator::Divide),
+        Operator::PlusEqual => Some((BinaryOperator::Add, "+=")),
+        Operator::MinusEqual => Some((BinaryOperator::Subtract, "-=")),
+        Operator::StarEqual => Some((BinaryOperator::Multiply, "*=")),
+        Operator::SlashEqual => Some((BinaryOperator::Divide, "/=")),
         _ => None,
     }
 }
@@ -1711,12 +1900,5 @@ fn comparison_operator(operator: Operator) -> Option<Comparison> {
         Operator::Greater => Some(Comparison::Greater),
         Operator::GreaterEqual => Some(Comparison::GreaterEqual),
         _ => None,
-    }
-}
-
-fn destination_value(destination: Destination) -> Value {
-    match destination {
-        Destination::Place(place) => Value::Place(place),
-        Destination::Register(register) => Value::Register(register),
     }
 }
