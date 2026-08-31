@@ -120,6 +120,13 @@ fn interrupt_epilogue() -> Vec<FixedBankItem> {
 /// down as a constant, so it cannot drift from them. `entry` decides a
 /// relocation's operand and never an instruction's width, so measuring the
 /// prologue with any label gives the width the linker will use.
+///
+/// One number, two spellings: [`LinkedRom::runtime_len`] is per-ROM and this is
+/// not, and today they agree because every program gets the same epilogue. The
+/// day the epilogue stops being one `RTI` for every program — a real NMI handler
+/// for a `frame` block is where that lands — the field stays right and this does
+/// not. It exists because the refusal path has no `LinkedRom` to read; a caller
+/// holding one should read the field.
 pub fn mmc3_reset_runtime_bytes() -> usize {
     crate::items_len(&prologue(RESET_LABEL)) + crate::items_len(&interrupt_epilogue())
 }

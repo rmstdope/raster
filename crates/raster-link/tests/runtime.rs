@@ -91,8 +91,9 @@ fn a_linked_rom_says_how_many_of_its_bytes_are_the_runtime() {
 
     assert_eq!(rom.code_len, 133);
     assert_eq!(rom.runtime_len, 132);
-    // The guard against drift: whatever `mmc3_reset_runtime_bytes` claims, the
-    // body it leaves room for is the one byte this program actually is.
+    // The split's meaning, stated rather than guarded: the two figures above
+    // pin it already, and what this line adds is that their difference is the
+    // one byte this program's body actually is.
     assert_eq!(rom.code_len - rom.runtime_len, 1);
 }
 
