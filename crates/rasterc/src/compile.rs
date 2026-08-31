@@ -5,7 +5,7 @@
 
 use raster_codegen::{generate_with_isa, CodegenError};
 use raster_diag::{Diagnostic, Span};
-use raster_ir::lower;
+use raster_ir::{lower, FrameStrategy};
 use raster_link::{link_mmc3_program, InterruptVectors, LinkError};
 use raster_sema::analyze;
 use raster_syntax::parse;
@@ -53,8 +53,15 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
         .map_err(|errors| spanned(errors.into_iter().map(|e| (e.message, e.span)), source))?;
     let output = generate_with_isa(&ir, LEGAL_ISA)
         .map_err(|error| noted(vec![codegen_diagnostic(error, source)]))?;
-    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA)
-        .map_err(|error| noted(vec![link_diagnostic(error, ir.frame.is_some())]))?;
+    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA).map_err(
+        |error| {
+            let timed_frame = ir
+                .frame
+                .as_ref()
+                .is_some_and(|frame| frame.strategy == FrameStrategy::Timed);
+            noted(vec![link_diagnostic(error, timed_frame)])
+        },
+    )?;
 
     Ok(Rom {
         image: rom.image,

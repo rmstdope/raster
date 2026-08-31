@@ -461,6 +461,33 @@ pub fn mmc3_latch_for_delta(scanlines: u16) -> u8 {
 /// that scanline's sprite fetches — so the handler counted to scanline `s - 1` is the one that runs
 /// at the top of scanline `s`. Both of these functions already carry that shift: they are given the
 /// picture scanline the author wrote and return the latch that runs its handler there.
+/// Scanlines the MMC3 counter sees in one frame: the 240 visible ones and the pre-render line.
+///
+/// The counter clocks on filtered A12 rises, which happen once per scanline the PPU renders — so
+/// the post-render line and the twenty of vblank are not among them, and the counter's year is 241
+/// rises long rather than 262. This is what lets one chain reach from a frame's last event to the
+/// next frame's first without anything re-arming it in between.
+pub const IRQ_SCANLINES_PER_FRAME: u16 = 241;
+
+/// The `$C000` latch that carries a chain from a frame's last event to the next frame's first.
+///
+/// Nothing clocks the counter between the last visible scanline and the next pre-render line, so
+/// the gap is not the 22 scanlines the picture spends there: it is one rise, the pre-render line's.
+/// Counted that way the wrap is [`IRQ_SCANLINES_PER_FRAME`] minus the distance the schedule already
+/// covered, which is at most 241 and always fits a latch.
+///
+/// A chain that wraps needs no per-frame re-arming, and that is the point rather than an economy:
+/// re-arming means waiting on the vblank flag in `$2002`, and a read landing within two cycles of
+/// the dot that sets the flag returns it clear and suppresses it. That costs the frame its whole
+/// schedule — measured here at about one frame in fifty before the chain wrapped.
+pub fn mmc3_latch_for_next_frame(last_scanline: u16, first_scanline: u16) -> u8 {
+    debug_assert!(
+        first_scanline <= last_scanline,
+        "a schedule's first event is not after its last"
+    );
+    mmc3_latch_for_delta(IRQ_SCANLINES_PER_FRAME - last_scanline + first_scanline)
+}
+
 pub fn mmc3_latch_for_first_event(scanline: u16) -> u8 {
     debug_assert!(
         scanline < MAX_IRQ_DELTA_SCANLINES,

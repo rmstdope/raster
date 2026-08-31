@@ -1,0 +1,31 @@
+// Three bands of colour emphasis, placed by a `frame ... using irq` schedule and timed by the MMC3
+// scanline counter.
+//
+// Rendering stays on, which `using irq` requires: the counter clocks on filtered PPU A12 rises, and
+// A12 only moves while the PPU is fetching. So `ppu.ctrl` puts the background at $0000 and the
+// sprites at $1000 — opposite halves — and `ppu.mask` turns both on. Pattern memory is an empty
+// CHR RAM, so every pixel is colour index 0 and the picture is the backdrop at $3F00 throughout.
+//
+// A handler emphasises that backdrop rather than rewriting it. `ppu.mask` takes effect on the pixel
+// after it is written; `ppu.addr` cannot be used here at all, because the PPU is advancing its own
+// address register all the while a rendered scanline is being fetched.
+main {
+    ppu.addr = $3f              // the palette lives at $3F00 ...
+    ppu.addr = $00              // ... and $3F00 is the backdrop
+    ppu.data = $0f              // black, and black is what every band is made of
+
+    ppu.ctrl = $08              // background at $0000, sprites at $1000: A12 rises every scanline
+    ppu.mask = $1e              // both halves of rendering on, or nothing fetches at all
+}
+
+frame bars using irq {
+    at scanline 60 {
+        ppu.mask = $3e          // red emphasis
+    }
+    at scanline 120 {
+        ppu.mask = $5e          // green emphasis
+    }
+    at scanline 180 {
+        ppu.mask = $1e          // none again
+    }
+}

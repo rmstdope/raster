@@ -294,11 +294,94 @@ fn irq_lowering_acknowledges_before_rearming_and_returns_from_fixed_bank() {
     assert_eq!(&chained[28..30], &[0x68, 0x40], "PLA then RTI");
     let second = u16::from_le_bytes([chained[21], chained[25]]);
 
-    // The last handler acknowledges and stops: the frame loop arms the next frame from vblank, so
-    // a chain that re-enabled here would fire again on a counter nothing reloaded.
+    // The last handler wraps: same shape, and a latch that counts across the vblank the counter
+    // does not clock, back to the first handler of the next frame.
     assert!(second >= MMC3_FIXED_BANK_START);
+    let wrapping = at(second, 30);
     assert_eq!(
-        at(second, 11),
-        &[0x48, 0xa9, 0x21, 0x8d, 0x07, 0x20, 0x8d, 0x00, 0xe0, 0x68, 0x40]
+        &wrapping[..20],
+        &[
+            0x48, //
+            0xa9, 0x21, 0x8d, 0x07, 0x20, // ppu.data = $21
+            0xa9, 180, // 241 counted rises a frame, less the 60 the schedule spans
+            0x8d, 0x00, 0xc0, 0x8d, 0x01, 0xc0, // the latch, then the reload request
+            0x8d, 0x00, 0xe0, 0x8d, 0x01, 0xe0, // acknowledge, then re-arm
+        ]
+    );
+    assert_eq!(
+        u16::from_le_bytes([wrapping[21], wrapping[25]]),
+        first,
+        "the last handler points the chain back at the first"
+    );
+    assert_eq!(&wrapping[28..30], &[0x68, 0x40], "PLA then RTI");
+}
+
+/// An IRQ chain emits each handler once, so the note the timed lowering earns would be a lie here —
+/// and a lie about a factor of three is exactly the kind an author cannot check.
+#[test]
+fn an_irq_frame_too_large_for_the_bank_is_not_told_its_schedule_is_tripled() {
+    let diagnostics = compile_source(
+        "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+         frame bars using irq {\n\
+         \x20   every 1 scanlines from 0 to 239 {\n\
+         \x20       ppu.mask = $1e\n    ppu.mask = $3e\n    ppu.mask = $1e\n\
+         \x20   }\n\
+         }\n",
+    )
+    .expect_err("the fixed bank is finite");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "the program does not fit the MMC3 fixed bank"
+    );
+    assert!(
+        !diagnostics[0]
+            .notes
+            .iter()
+            .any(|note| note.contains("three times")),
+        "an IRQ chain emits each handler once: {:?}",
+        diagnostics[0].notes
+    );
+}
+
+/// A schedule of one event chains to itself: the wrap is the whole frame, and the vector it leaves
+/// behind points at the handler that just ran.
+#[test]
+fn a_single_event_irq_chain_wraps_onto_itself() {
+    use raster_link::MMC3_FIXED_BANK_START;
+
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = $3e }\n}\n";
+    let rom = compile_source(source).expect("the fixture compiles");
+    let image = &rom.image;
+
+    let armed = image
+        .windows(8)
+        .position(|window| {
+            window[0] == 0xa9
+                && window[2..4] == [0x85, 0x0e]
+                && window[4] == 0xa9
+                && window[6..8] == [0x85, 0x0f]
+        })
+        .expect("the arming points the dispatch vector at the only handler");
+    let handler = u16::from_le_bytes([image[armed + 1], image[armed + 5]]);
+    assert!(handler >= MMC3_FIXED_BANK_START);
+
+    let offset = fixed_bank_offset(handler);
+    let emitted = &image[offset..offset + 28];
+    assert_eq!(
+        &emitted[..20],
+        &[
+            0x48, //
+            0xa9, 0x3e, 0x8d, 0x01, 0x20, // ppu.mask = $3e
+            0xa9, 240, // a whole frame of counted rises, less the one it starts from
+            0x8d, 0x00, 0xc0, 0x8d, 0x01, 0xc0, //
+            0x8d, 0x00, 0xe0, 0x8d, 0x01, 0xe0,
+        ]
+    );
+    assert_eq!(
+        u16::from_le_bytes([emitted[21], emitted[25]]),
+        handler,
+        "the only handler chains to itself"
     );
 }

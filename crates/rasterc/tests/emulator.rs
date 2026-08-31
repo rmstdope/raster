@@ -185,3 +185,54 @@ fn timed_colour_bars_are_identical_across_consecutive_frames() {
         );
     }
 }
+
+/// The schedule the MMC3 counter placed, as the PPU actually emitted it.
+///
+/// The compiler's claim about `using irq` is that a handler runs at the top of the scanline the
+/// source names, and nothing but an execution can settle whether the latch arithmetic, the
+/// acknowledgement order and the vblank re-arm add up to that. The bands are read in NES palette
+/// entries, so the fixture is judged against the colours its source names rather than against an
+/// emulator's idea of what they look like.
+#[test]
+fn irq_frame_runs_events_at_the_requested_scanlines() {
+    let rom =
+        compile_source(&cycles_fixture("irq-colour-bars.raster")).expect("the fixture compiles");
+    let render = |frames: u32| {
+        let frame = render_after_frames(
+            "irq-colour-bars.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs");
+        *frame.as_indices()
+    };
+
+    let first = render(8);
+    assert_eq!(
+        bands(&first),
+        // Black throughout, emphasised red from scanline 60 and green from 120: the emphasis bits
+        // `ppu.mask` asked for arrive in bits 6 and 7 of the palette entry the PPU emitted.
+        vec![(0, 0x0f), (60, 0x4f), (120, 0x8f), (180, 0x0f)],
+        "each handler runs at the top of the scanline its `at` names"
+    );
+
+    // Every scanline is one colour: a handler counted to the rise on the line before the one it
+    // names finishes inside that line's hblank, so nothing is written part-way along a visible row.
+    assert!(
+        row_bands(&first).iter().all(|bands| bands.len() == 1),
+        "a handler wrote part-way along a scanline"
+    );
+
+    // The chain is armed once and wraps, so a frame that differs is a link the counter dropped
+    // rather than a loop that drifted. Frame 300 is five seconds in, which is where a chain
+    // re-armed from a `$2002` poll would already have lost frames.
+    for frames in [9, 10, 11, 61, 300] {
+        let later = render(frames);
+        assert_eq!(
+            bands(&later),
+            bands(&first),
+            "frame {frames} shows different bands from frame 8"
+        );
+        assert_eq!(row_bands(&later), row_bands(&first));
+    }
+}

@@ -11,8 +11,8 @@ use raster_ir::{
 use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind};
 use raster_syntax::Span;
 use raster_timing::{
-    analyze, mmc3_latch_for_delta, mmc3_latch_for_first_event, plan_delay, plan_timed_frame,
-    DelayStep, TimedRegion, TimingError, FRAMES_PER_PASS,
+    analyze, mmc3_latch_for_delta, mmc3_latch_for_first_event, mmc3_latch_for_next_frame,
+    plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError, FRAMES_PER_PASS,
 };
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
@@ -209,18 +209,23 @@ impl Generator<'_> {
         Ok(())
     }
 
-    /// Emit a `frame ... using irq` as an MMC3 chain, armed once a frame from vblank.
+    /// Emit a `frame ... using irq` as an MMC3 chain that wraps, armed once and never again.
     ///
-    /// The loop the program ends in is the arming: it waits for vblank, points the dispatch vector
-    /// at the first handler, programs the latch, and unmasks. Everything after that happens in
-    /// interrupts, so the loop spends the whole visible picture spinning on `$2002` and arms the
-    /// next frame the moment the flag comes back.
+    /// The program ends by waiting for vblank, pointing the dispatch vector at the first handler,
+    /// programming the latch and unmasking; from there it spins, and everything the frame does
+    /// happens in interrupts. Each handler programs the latch for the next, and the last programs
+    /// the one that reaches round to the first handler of the next frame.
     ///
-    /// Arming from vblank rather than chaining across it is what makes the schedule repeat: the
-    /// counter clocks on filtered A12 rises, and there are none between the last visible scanline
-    /// and the next pre-render line, so a chain that tried to reach round the frame boundary would
-    /// have nothing to count with. It also means a dropped IRQ costs one frame rather than every
-    /// frame after it.
+    /// **The chain wraps rather than being re-armed each frame.** Nothing clocks the counter
+    /// between the last visible scanline and the next pre-render line, but the rises either side of
+    /// that gap are consecutive, so one latch reaches across it — see
+    /// [`mmc3_latch_for_next_frame`]. Re-arming instead means waiting on the vblank flag once a
+    /// frame, and a `$2002` read landing on the dot that sets the flag suppresses it and costs that
+    /// frame its whole schedule: measured here at about one frame in fifty.
+    ///
+    /// The one wait that remains is the arming itself, which has to happen in vblank so that the
+    /// reload lands on the pre-render line's rise. A suppressed flag there costs a frame at
+    /// start-up and nothing afterwards.
     ///
     /// The preconditions this depends on — rendering on, and the two pattern tables in opposite
     /// halves so A12 moves at all — are `raster-timing`'s, checked in `raster-ir` before anything
@@ -233,8 +238,8 @@ impl Generator<'_> {
         };
         let handlers: Vec<IrLabel> = frame.events.iter().map(|_| self.internal_label()).collect();
 
-        // The arming loop. `SEI` covers the whole sequence: an interrupt taken part-way through it
-        // would dispatch through a vector pointing at the previous frame's next handler.
+        // The arming. `SEI` covers the whole sequence: an interrupt taken part-way through it would
+        // dispatch through a half-written vector.
         self.statement(&Statement::SyncExact, Some(halt_label))?;
         self.emit(SEI, Implied, None);
         self.emit(LDA_IMMEDIATE, Immediate, Some(0));
@@ -249,38 +254,36 @@ impl Generator<'_> {
         self.emit_register(Register::Mmc3IrqReload);
         self.emit_register(Register::Mmc3IrqEnable);
         self.emit(CLI, Implied, None);
-        self.jump(halt_label);
+        let spin = self.internal_label();
+        self.emit_label(spin);
+        self.jump(spin);
 
-        // The handlers, past the loop's own jump: control reaches them through `$FFFE` and never by
+        // The handlers, past the spin loop: control reaches them through `$FFFE` and never by
         // falling through.
         for (index, event) in frame.events.iter().enumerate() {
+            // Every scanline here is on the visible picture, which `raster-ir` bounded at 239, so
+            // the counter's own 16-bit arithmetic loses nothing.
+            let next = &frame.events[(index + 1) % frame.events.len()];
+            let latch = if index + 1 < frame.events.len() {
+                mmc3_latch_for_delta((next.scanline - event.scanline) as u16)
+            } else {
+                mmc3_latch_for_next_frame(event.scanline as u16, next.scanline as u16)
+            };
             self.emit_label(handlers[index]);
-            // Only the accumulator is saved. The loop these interrupt spins on `$2002` and holds
-            // nothing in X or Y, and `RTI` restores the flags the interrupt itself pushed.
+            // Only the accumulator is saved. The loop these interrupt holds nothing in X or Y, and
+            // `RTI` restores the flags the interrupt itself pushed.
             self.emit(PHA, Implied, None);
             self.statements(&event.body, Some(halt_label))?;
-            match frame.events.get(index + 1) {
-                Some(next) => {
-                    let delta = (next.scanline - event.scanline) as u16;
-                    self.emit(
-                        LDA_IMMEDIATE,
-                        Immediate,
-                        Some(u16::from(mmc3_latch_for_delta(delta))),
-                    );
-                    // The order hardware requires: the latch, then the reload request, then the
-                    // acknowledgement — which also disables — and only then the re-arm. Enabling
-                    // before acknowledging would leave the line asserted and the console would take
-                    // this same interrupt for ever.
-                    self.emit_register(Register::Mmc3IrqLatch);
-                    self.emit_register(Register::Mmc3IrqReload);
-                    self.emit_register(Register::Mmc3IrqDisable);
-                    self.emit_register(Register::Mmc3IrqEnable);
-                    self.set_dispatch_vector(handlers[index + 1]);
-                }
-                // The last handler acknowledges and stops. The frame loop arms the next frame from
-                // vblank, so re-enabling here would fire on a counter nothing had reloaded.
-                None => self.emit_register(Register::Mmc3IrqDisable),
-            }
+            self.emit(LDA_IMMEDIATE, Immediate, Some(u16::from(latch)));
+            // The order hardware requires: the latch, then the reload request, then the
+            // acknowledgement — which also disables — and only then the re-arm. Enabling before
+            // acknowledging would leave the line asserted and the console would take this same
+            // interrupt for ever.
+            self.emit_register(Register::Mmc3IrqLatch);
+            self.emit_register(Register::Mmc3IrqReload);
+            self.emit_register(Register::Mmc3IrqDisable);
+            self.emit_register(Register::Mmc3IrqEnable);
+            self.set_dispatch_vector(handlers[(index + 1) % handlers.len()]);
             self.emit(PLA, Implied, None);
             self.emit(RTI, Implied, None);
         }
