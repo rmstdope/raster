@@ -1,5 +1,5 @@
 use raster_6502::{AddressingMode, Instruction};
-use raster_timing::{analyze, CycleConstraint, TimedRegion, TimingError};
+use raster_timing::{analyze, leaves_straight_line, CycleConstraint, TimedRegion, TimingError};
 
 /// `LDA #$00`, two cycles.
 fn load_immediate() -> Instruction {
@@ -306,6 +306,46 @@ fn a_counted_loop_takes_its_branch_once_however_long_it_runs() {
             raster_timing::delay_cycles(std::slice::from_ref(&step)),
             expected,
             "a loop of {iterations} iterations"
+        );
+    }
+}
+
+/// Every instruction the predicate must name, built from the opcode table so the test cannot
+/// disagree with the cost model about what an instruction is.
+fn instruction(code: u8) -> Instruction {
+    let definition = raster_6502::opcode(code);
+    Instruction {
+        opcode: code,
+        mode: definition.mode,
+        operand: (definition.bytes > 1).then_some(0),
+    }
+}
+
+#[test]
+fn leaves_straight_line_accepts_every_branch_jump_call_and_return() {
+    for code in [
+        0x10, 0x30, 0x50, 0x70, 0x90, 0xb0, 0xd0, 0xf0, // every branch
+        0x00, // BRK
+        0x20, // JSR
+        0x40, // RTI
+        0x4c, // JMP $nnnn
+        0x60, // RTS
+        0x6c, // JMP ($nnnn)
+    ] {
+        assert!(
+            leaves_straight_line(&instruction(code)),
+            "${code:02X} leaves the straight line"
+        );
+    }
+
+    for code in [
+        0xea, 0x85, 0x04, 0x14, // the filler synthesize_padding emits
+        0x08, 0x78, 0x28, // PHP, SEI, PLP — the block's own prologue and epilogue
+        0xa9, 0x8d, // LDA #, STA $nnnn
+    ] {
+        assert!(
+            !leaves_straight_line(&instruction(code)),
+            "${code:02X} stays in the straight line"
         );
     }
 }

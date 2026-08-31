@@ -54,6 +54,32 @@ const NOP_ZERO_PAGE: u8 = 0x04;
 /// Undocumented `NOP $00,X`: four cycles in two bytes, with no effect whatsoever.
 const NOP_ZERO_PAGE_X: u8 = 0x14;
 
+/// `BRK`, which pushes the program counter and vectors through `$FFFE`.
+const BRK: u8 = 0x00;
+/// `JSR $nnnn`.
+const JSR: u8 = 0x20;
+/// `RTI`.
+const RTI: u8 = 0x40;
+/// `JMP $nnnn`.
+const JMP_ABSOLUTE: u8 = 0x4c;
+/// `RTS`.
+const RTS: u8 = 0x60;
+/// `JMP ($nnnn)`.
+const JMP_INDIRECT: u8 = 0x6c;
+
+/// Whether this instruction can put the program counter anywhere but the next instruction.
+///
+/// Every branch — each of which is the one [`AddressingMode::Relative`] mode — and every
+/// instruction that sets the program counter outright. This is the whole of what a flat cost model
+/// cannot charge, so [`analyze`] refuses a region containing one rather than summing it.
+pub fn leaves_straight_line(instruction: &Instruction) -> bool {
+    opcode(instruction.opcode).mode == AddressingMode::Relative
+        || matches!(
+            instruction.opcode,
+            BRK | JSR | RTI | JMP_ABSOLUTE | RTS | JMP_INDIRECT
+        )
+}
+
 fn filler(code: u8) -> Instruction {
     let definition = opcode(code);
     Instruction {
