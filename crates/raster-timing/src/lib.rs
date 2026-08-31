@@ -449,18 +449,6 @@ pub fn mmc3_latch_for_delta(scanlines: u16) -> u8 {
     (scanlines.clamp(1, MAX_IRQ_DELTA_SCANLINES) - 1) as u8
 }
 
-/// The `$C000` latch that places a frame's first MMC3 IRQ on `scanline`, armed in vblank.
-///
-/// Armed in vblank there is no A12 rise left in the frame, so the reload flag is honoured on the
-/// first rise of the *next* frame — the pre-render line's. That is one rise earlier than the reload
-/// a handler's own `$C001` write gets, and one scanline earlier than the visible picture: counting
-/// from the pre-render line, an IRQ on scanline `s` is `s + 1` rises away and so needs a latch of
-/// `s`.
-///
-/// The IRQ is asserted towards the end of the scanline it is counted to, because A12 rises during
-/// that scanline's sprite fetches — so the handler counted to scanline `s - 1` is the one that runs
-/// at the top of scanline `s`. Both of these functions already carry that shift: they are given the
-/// picture scanline the author wrote and return the latch that runs its handler there.
 /// Scanlines the MMC3 counter sees in one frame: the 240 visible ones and the pre-render line.
 ///
 /// The counter clocks on filtered A12 rises, which happen once per scanline the PPU renders — so
@@ -488,6 +476,18 @@ pub fn mmc3_latch_for_next_frame(last_scanline: u16, first_scanline: u16) -> u8 
     mmc3_latch_for_delta(IRQ_SCANLINES_PER_FRAME - last_scanline + first_scanline)
 }
 
+/// The `$C000` latch that places a frame's first MMC3 IRQ on `scanline`, armed in vblank.
+///
+/// Armed in vblank there is no A12 rise left in the frame, so the reload flag is honoured on the
+/// first rise of the *next* frame — the pre-render line's. That is one rise earlier than the reload
+/// a handler's own `$C001` write gets, and one scanline earlier than the visible picture: counting
+/// from the pre-render line, an IRQ on scanline `s` is `s + 1` rises away and so needs a latch of
+/// `s`.
+///
+/// The IRQ is asserted towards the end of the scanline it is counted to, because A12 rises during
+/// that scanline's sprite fetches — so the handler counted to scanline `s - 1` is the one that runs
+/// at the top of scanline `s`. Both of these functions already carry that shift: they are given the
+/// picture scanline the author wrote and return the latch that runs its handler there.
 pub fn mmc3_latch_for_first_event(scanline: u16) -> u8 {
     debug_assert!(
         scanline < MAX_IRQ_DELTA_SCANLINES,
@@ -501,7 +501,9 @@ pub fn mmc3_latch_for_first_event(scanline: u16) -> u8 {
 const PPU_CTRL_SPRITE_PATTERN_HALF: u8 = 0b0000_1000;
 /// `ppu.ctrl` bit 4: the half of pattern memory the background is fetched from.
 const PPU_CTRL_BACKGROUND_PATTERN_HALF: u8 = 0b0001_0000;
-/// `ppu.mask` bits 3 and 4: show the background, and show the sprites.
+/// `ppu.ctrl` bit 5: 8x16 sprites, which take their half from the tile index instead.
+const PPU_CTRL_TALL_SPRITES: u8 = 0b0010_0000;
+/// `ppu.mask` bits 3 and 4: show the background, and show the sprites. Either one is rendering.
 const PPU_MASK_RENDERING: u8 = 0b0001_1000;
 
 /// What a PPU register holds where the compiler can prove it.
@@ -528,6 +530,8 @@ pub struct PpuConfiguration {
 pub enum Mmc3IrqError {
     /// Rendering is off, so the PPU fetches nothing and A12 never moves.
     RenderingDisabled { mask: u8 },
+    /// 8x16 sprites are selected, and their half of pattern memory is not in `ppu.ctrl` to check.
+    TallSpritesUncheckable { ctrl: u8 },
     /// Background and sprite patterns are in the same half of pattern memory, so a scanline's
     /// fetches never raise A12 and the counter never clocks.
     PatternTablesShareHalf { ctrl: u8 },
@@ -537,10 +541,14 @@ pub enum Mmc3IrqError {
 
 /// Check the hardware preconditions an MMC3 IRQ chain depends on.
 ///
-/// Both halves of rendering have to be on: the counter clocks on filtered A12 rises, and A12 only
-/// rises where a scanline fetches from both halves of pattern memory. Background fetches alone
-/// stay in one half however the tables are configured, so sprites off is as fatal as background
-/// off — and the two tables sharing a half is fatal with both on.
+/// Rendering has to be on — either half of it. The counter clocks on filtered A12 rises, and A12
+/// only rises where a scanline fetches from both halves of pattern memory; a rendering PPU runs its
+/// sprite pattern fetches at dots 257 to 320 whether or not sprites are composited, so a
+/// background-only split clocks the counter exactly as a full one does. What is fatal is rendering
+/// nothing at all, or configuring both tables into the same half.
+///
+/// 8x16 sprites are refused rather than judged: in that mode the hardware ignores the sprite-half
+/// bit and takes the half from bit 0 of each tile index, which is not in a register this can read.
 pub fn validate_mmc3_irq_frame(ppu: &PpuConfiguration) -> Result<(), Mmc3IrqError> {
     let RegisterState::Known(ctrl) = ppu.ctrl else {
         return Err(Mmc3IrqError::UnprovenConfiguration {
@@ -552,8 +560,11 @@ pub fn validate_mmc3_irq_frame(ppu: &PpuConfiguration) -> Result<(), Mmc3IrqErro
             register: "ppu.mask",
         });
     };
-    if mask & PPU_MASK_RENDERING != PPU_MASK_RENDERING {
+    if mask & PPU_MASK_RENDERING == 0 {
         return Err(Mmc3IrqError::RenderingDisabled { mask });
+    }
+    if ctrl & PPU_CTRL_TALL_SPRITES != 0 {
+        return Err(Mmc3IrqError::TallSpritesUncheckable { ctrl });
     }
     let background_half = ctrl & PPU_CTRL_BACKGROUND_PATTERN_HALF != 0;
     let sprite_half = ctrl & PPU_CTRL_SPRITE_PATTERN_HALF != 0;

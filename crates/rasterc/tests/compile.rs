@@ -163,15 +163,70 @@ fn irq_frame_rejects_same_half_background_and_sprite_patterns() {
 
 #[test]
 fn irq_frame_rejects_a_schedule_the_ppu_would_never_clock() {
-    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $08\n}\n\
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $06\n}\n\
                   \nframe bars using irq {\n    at scanline 60 { ppu.data = $12 }\n}\n";
-    let diagnostics = compile_source(source).expect_err("sprite fetches are what raise A12");
+    let diagnostics = compile_source(source).expect_err("a PPU that fetches nothing moves no A12");
 
     assert_eq!(
         diagnostics[0].message,
-        "`using irq` needs background and sprite rendering enabled, \
-         and `ppu.mask = $08` enables only the background"
+        "`using irq` needs rendering enabled, and `ppu.mask = $06` enables neither the \
+         background nor the sprites"
     );
+}
+
+/// Rendering one half is rendering: the sprite pattern fetches happen either way, so a
+/// background-only split - the commonest MMC3 IRQ program there is - compiles.
+#[test]
+fn irq_frame_accepts_a_background_only_schedule() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $0a\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = $2a }\n}\n";
+
+    compile_source(source)
+        .map(|_| ())
+        .expect("background rendering alone still clocks the counter");
+}
+
+/// A configuration written through a call in value position is read like any other: the walk
+/// follows the program, and a call is a call wherever its result goes.
+#[test]
+fn irq_frame_reads_a_ppu_configuration_written_through_a_value_call() {
+    let spoiled = "fn spoil() -> u8 {\n    ppu.mask = $00\n    return 1\n}\n\
+                   \nvar x: u8\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n\
+                   \n    x = spoil()\n}\n\
+                   \nframe bars using irq {\n    at scanline 60 { ppu.mask = $3e }\n}\n";
+    let diagnostics =
+        compile_source(spoiled).expect_err("the last write to ppu.mask turned rendering back off");
+    assert!(
+        diagnostics[0]
+            .message
+            .starts_with("`using irq` needs rendering enabled"),
+        "found {:?}",
+        diagnostics[0].message
+    );
+
+    let configured =
+        "fn setup() -> u8 {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n    return 0\n}\n\
+                      \nvar seed: u8 = setup()\n\nmain {\n    ppu.data = $00\n}\n\
+                      \nframe bars using irq {\n    at scanline 60 { ppu.mask = $3e }\n}\n";
+    compile_source(configured)
+        .map(|_| ())
+        .expect("an initializer's call configures the PPU as surely as a statement does");
+}
+
+/// `return` in a handler would leave the interrupt without its `RTI`, three bytes of stack at a
+/// time. Refused, rather than compiled into a ROM that runs for eighty frames and then wanders.
+#[test]
+fn a_frame_handler_cannot_return() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 {\n        ppu.mask = $3e\n\
+                  \n        return\n    }\n}\n";
+    let diagnostics = compile_source(source).expect_err("a handler has nowhere to return to");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "`return` is not supported inside a frame handler yet"
+    );
+    assert!(diagnostics[0].span.is_some());
 }
 
 /// A register the compiler cannot read is refused rather than assumed: guessing would either

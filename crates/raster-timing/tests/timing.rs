@@ -473,18 +473,49 @@ fn mmc3_irq_needs_opposite_pattern_halves() {
     }
 }
 
+/// Spec section 7.3 asks for rendering, not for both halves of it: the PPU runs its dot-257 to
+/// dot-320 sprite pattern fetches whenever rendering is on, whether or not sprites are composited,
+/// so a background-only split still clocks the counter. Measured on this project's own emulator.
 #[test]
-fn mmc3_irq_needs_both_halves_of_rendering_enabled() {
+fn mmc3_irq_needs_rendering_enabled() {
     use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
 
-    for mask in [0x00, 0x08, 0x10, 0x06] {
+    let with_mask = |mask: u8| PpuConfiguration {
+        ctrl: RegisterState::Known(0x08),
+        mask: RegisterState::Known(mask),
+    };
+
+    for mask in [0x1e, 0x0a, 0x14, 0x08, 0x10] {
+        assert_eq!(
+            validate_mmc3_irq_frame(&with_mask(mask)),
+            Ok(()),
+            "${mask:02X} renders, so the PPU fetches and A12 moves"
+        );
+    }
+    for mask in [0x00, 0x06, 0x01] {
+        assert_eq!(
+            validate_mmc3_irq_frame(&with_mask(mask)),
+            Err(Mmc3IrqError::RenderingDisabled { mask }),
+            "${mask:02X} renders nothing at all"
+        );
+    }
+}
+
+/// With 8x16 sprites the sprite half comes from bit 0 of each tile index and `ppu.ctrl` bit 3 is
+/// ignored, so the A12 check has nothing to read. Refused by name rather than answered from a bit
+/// the PPU is not looking at — a diagnostic that quotes a value must not misdescribe it.
+#[test]
+fn mmc3_irq_refuses_the_sprite_size_it_cannot_check() {
+    use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
+
+    for ctrl in [0x20, 0x28, 0x30] {
         assert_eq!(
             validate_mmc3_irq_frame(&PpuConfiguration {
-                ctrl: RegisterState::Known(0x08),
-                mask: RegisterState::Known(mask),
+                ctrl: RegisterState::Known(ctrl),
+                mask: RegisterState::Known(0x1e),
             }),
-            Err(Mmc3IrqError::RenderingDisabled { mask }),
-            "${mask:02X} leaves one of the two fetch phases off"
+            Err(Mmc3IrqError::TallSpritesUncheckable { ctrl }),
+            "${ctrl:02X} selects 8x16 sprites"
         );
     }
 }

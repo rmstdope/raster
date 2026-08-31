@@ -477,7 +477,7 @@ impl Lowerer {
                     }
                     FramePosition::Scanline(value) => {
                         if let Some(scanline) = self.visible_scanline(value) {
-                            let body = self.lower_frame_body(body);
+                            let body = self.lower_frame_body(body, event.span);
                             events.push(FrameEvent {
                                 scanline,
                                 body,
@@ -509,7 +509,7 @@ impl Lowerer {
                     // The body is lowered once and cloned per occurrence. Lowering it again for
                     // each would allocate a fresh temporary every time, and `every 1 scanlines
                     // from 0 to 239` would exhaust the zero page on a handler that needs one slot.
-                    let body = self.lower_frame_body(body);
+                    let body = self.lower_frame_body(body, event.span);
                     let mut scanline = Some(from);
                     while let Some(current) = scanline.filter(|&current| current <= to) {
                         events.push(FrameEvent {
@@ -624,10 +624,18 @@ impl Lowerer {
     }
 
     /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
-    fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
+    ///
+    /// A `return` is refused here rather than lowered: a handler is not a function, and codegen
+    /// compiles a `return` into a jump to the end of `main`. Under `using irq` that leaves the
+    /// interrupt without its `RTI` and three bytes of stack behind every event; under `using timed`
+    /// it re-enters the frame loop from inside a region whose interrupt flag was never restored.
+    fn lower_frame_body(&mut self, body: &Block, span: Span) -> Vec<Statement> {
         self.enter_scope();
         let (statements, _) = self.lower_statements(body);
         self.leave_scope();
+        if statements.iter().any(returns_from_handler) {
+            self.error(span, "`return` is not supported inside a frame handler yet");
+        }
         statements
     }
 
@@ -1688,6 +1696,15 @@ fn destination_value(destination: Destination) -> Value {
     }
 }
 
+/// Whether a lowered handler body leaves through a `return`, at any depth a handler can nest one.
+fn returns_from_handler(statement: &Statement) -> bool {
+    match statement {
+        Statement::Return(_) => true,
+        Statement::Timed { body, .. } => body.iter().any(returns_from_handler),
+        _ => false,
+    }
+}
+
 /// Record every store to `ppu.ctrl` and `ppu.mask` in `statements`, following calls.
 ///
 /// `visiting` is the call stack: `reject_recursive_calls` has already refused a recursive program,
@@ -1701,10 +1718,12 @@ fn collect_ppu_stores(
 ) {
     for statement in statements {
         match statement {
-            Statement::Assign {
-                destination: Destination::Register(register),
-                value,
-            } => {
+            Statement::Assign { destination, value } => {
+                // The value runs before the store, calls in it included.
+                collect_value_stores(value, functions, visiting, configuration);
+                let Destination::Register(register) = destination else {
+                    continue;
+                };
                 let state = match value {
                     Value::Constant(value) => RegisterState::Known(*value),
                     _ => RegisterState::Unproven,
@@ -1715,16 +1734,20 @@ fn collect_ppu_stores(
                     _ => {}
                 }
             }
-            Statement::Call { target, .. } => {
-                let Some(function) = functions.get(target) else {
-                    continue;
-                };
-                if visiting.contains(target) {
-                    continue;
+            Statement::Call {
+                target, arguments, ..
+            } => {
+                for argument in arguments {
+                    collect_value_stores(argument, functions, visiting, configuration);
                 }
-                visiting.push(*target);
-                collect_ppu_stores(&function.statements, functions, visiting, configuration);
-                visiting.pop();
+                enter_function(*target, functions, visiting, configuration);
+            }
+            Statement::Branch { condition, .. } => {
+                collect_value_stores(&condition.left, functions, visiting, configuration);
+                collect_value_stores(&condition.right, functions, visiting, configuration);
+            }
+            Statement::Return(Some(value)) => {
+                collect_value_stores(value, functions, visiting, configuration)
             }
             Statement::Timed { body, .. } => {
                 collect_ppu_stores(body, functions, visiting, configuration)
@@ -1734,23 +1757,67 @@ fn collect_ppu_stores(
     }
 }
 
+/// Follow a value's own calls: a function reached through `x = configure()` or through an argument
+/// writes the same registers a called statement does, and a walk that could not see it would report
+/// a configuration the program never had — in either direction.
+fn collect_value_stores(
+    value: &Value,
+    functions: &BTreeMap<Label, &Function>,
+    visiting: &mut Vec<Label>,
+    configuration: &mut PpuConfiguration,
+) {
+    match value {
+        Value::Constant(_) | Value::Place(_) | Value::Register(_) => {}
+        Value::Unary { operand, .. } => {
+            collect_value_stores(operand, functions, visiting, configuration)
+        }
+        Value::Binary { left, right, .. } => {
+            collect_value_stores(left, functions, visiting, configuration);
+            collect_value_stores(right, functions, visiting, configuration);
+        }
+        Value::Call {
+            target, arguments, ..
+        } => {
+            for argument in arguments {
+                collect_value_stores(argument, functions, visiting, configuration);
+            }
+            enter_function(*target, functions, visiting, configuration);
+        }
+    }
+}
+
+/// Walk a called function's body, unless it is already on the call stack.
+fn enter_function(
+    target: Label,
+    functions: &BTreeMap<Label, &Function>,
+    visiting: &mut Vec<Label>,
+    configuration: &mut PpuConfiguration,
+) {
+    let Some(function) = functions.get(&target) else {
+        return;
+    };
+    if visiting.contains(&target) {
+        return;
+    }
+    visiting.push(target);
+    collect_ppu_stores(&function.statements, functions, visiting, configuration);
+    visiting.pop();
+}
+
 /// The diagnostic an MMC3 precondition failure reads as, naming the value that caused it.
 ///
 /// Each of these is about a ROM that would assemble and never take an interrupt, so the message
 /// says both what the strategy needs and what the program actually wrote.
 fn mmc3_irq_message(error: Mmc3IrqError) -> String {
     match error {
-        Mmc3IrqError::RenderingDisabled { mask } => {
-            let enabled = match (mask & 0b0000_1000 != 0, mask & 0b0001_0000 != 0) {
-                (true, false) => "enables only the background",
-                (false, true) => "enables only the sprites",
-                _ => "enables neither",
-            };
-            format!(
-                "`using irq` needs background and sprite rendering enabled, \
-                 and `ppu.mask = ${mask:02X}` {enabled}"
-            )
-        }
+        Mmc3IrqError::RenderingDisabled { mask } => format!(
+            "`using irq` needs rendering enabled, and `ppu.mask = ${mask:02X}` enables neither \
+             the background nor the sprites"
+        ),
+        Mmc3IrqError::TallSpritesUncheckable { ctrl } => format!(
+            "`using irq` cannot check the A12 pattern for 8x16 sprites, and \
+             `ppu.ctrl = ${ctrl:02X}` selects them"
+        ),
         Mmc3IrqError::PatternTablesShareHalf { ctrl } => {
             let half = if ctrl & 0b0001_0000 != 0 {
                 "$1000"
