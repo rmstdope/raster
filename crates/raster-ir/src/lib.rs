@@ -1207,17 +1207,30 @@ impl Lowerer {
                     | Operator::MinusEqual
                     | Operator::StarEqual
                     | Operator::SlashEqual => {
-                        let Some(operator) = compound_operator(operator.value) else {
+                        let Some((operator, spelling)) = compound_operator(operator.value) else {
                             self.error(operator.span, "this compound assignment is not supported");
                             return;
                         };
+                        // `left.span` covers the destination and nothing else:
+                        // the label names the port, and the right-hand side is
+                        // not part of the port.
+                        let Some(left_value) = self.destination_read(
+                            destination,
+                            left.span,
+                            ReadSite::CompoundAssignment(spelling),
+                        ) else {
+                            // The right-hand side is still lowered, so its own
+                            // faults are reported in this run rather than the
+                            // next one. Nothing is pushed: the statement has
+                            // been refused, so it has no `Assign` to emit — and
+                            // returning here is also what keeps
+                            // `bank_select_warning` below from firing on a line
+                            // whose read has already been refused.
+                            let _ = self.lower_value(right);
+                            return;
+                        };
                         let right = self.lower_value(right);
-                        self.binary(
-                            destination_value(destination),
-                            operator,
-                            right,
-                            expression.span,
-                        )
+                        self.binary(left_value, operator, right, expression.span)
                     }
                     _ => unreachable!("assignment operator was checked above"),
                 };
@@ -1469,6 +1482,21 @@ impl Lowerer {
             notes,
         );
         None
+    }
+
+    /// The value a compound assignment reads out of its own destination, or
+    /// `None` if that destination is a port that does not read. Replaces the
+    /// free function `destination_value`, which had no way to refuse.
+    fn destination_read(
+        &mut self,
+        destination: Destination,
+        span: Span,
+        site: ReadSite,
+    ) -> Option<Value> {
+        match destination {
+            Destination::Place(place) => Some(Value::Place(place)),
+            Destination::Register(register) => self.read_register(register, span, site),
+        }
     }
 
     fn binary(&mut self, left: Value, operator: BinaryOperator, right: Value, span: Span) -> Value {
@@ -1849,12 +1877,16 @@ fn binary_operator(operator: Operator) -> Option<BinaryOperator> {
     }
 }
 
-fn compound_operator(operator: Operator) -> Option<BinaryOperator> {
+/// The binary operator a compound assignment applies, and how it is written.
+/// The spelling is what a refusal quotes when it explains where a read the
+/// author did not write came from; keeping both in one match is what stops the
+/// two lists drifting.
+fn compound_operator(operator: Operator) -> Option<(BinaryOperator, &'static str)> {
     match operator {
-        Operator::PlusEqual => Some(BinaryOperator::Add),
-        Operator::MinusEqual => Some(BinaryOperator::Subtract),
-        Operator::StarEqual => Some(BinaryOperator::Multiply),
-        Operator::SlashEqual => Some(BinaryOperator::Divide),
+        Operator::PlusEqual => Some((BinaryOperator::Add, "+=")),
+        Operator::MinusEqual => Some((BinaryOperator::Subtract, "-=")),
+        Operator::StarEqual => Some((BinaryOperator::Multiply, "*=")),
+        Operator::SlashEqual => Some((BinaryOperator::Divide, "/=")),
         _ => None,
     }
 }
@@ -1871,9 +1903,3 @@ fn comparison_operator(operator: Operator) -> Option<Comparison> {
     }
 }
 
-fn destination_value(destination: Destination) -> Value {
-    match destination {
-        Destination::Place(place) => Value::Place(place),
-        Destination::Register(register) => Value::Register(register),
-    }
-}
