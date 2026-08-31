@@ -200,3 +200,43 @@ fn internal_compiler_error(error: &impl std::fmt::Debug) -> Diagnostic {
     Diagnostic::without_span(format!("internal compiler error: {error:?}"))
         .with_note("this is a bug in rasterc, not in your program")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The backstop is by design unreachable from any source `raster-sema` already refuses, so its
+    /// rendering is pinned here rather than through `compile_source`. Asserting `message` exactly
+    /// is what pins the variant onto a real arm: `codegen_diagnostic`'s
+    /// `error => internal_compiler_error(&error)` fallback produces a message beginning
+    /// "internal compiler error: ", which would fail this.
+    #[test]
+    fn the_control_flow_backstop_is_a_diagnostic_and_not_an_internal_error() {
+        let diagnostic = codegen_diagnostic(
+            CodegenError::Timing {
+                error: TimingError::ControlFlowInRegion {
+                    index: 2,
+                    opcode: 0x4c,
+                },
+                span: raster_syntax::Span::new(7, 17),
+            },
+            "main { cycles(30) pad { return } }",
+        );
+
+        assert_eq!(
+            diagnostic.message,
+            "rasterc cannot prove this timed block's cost"
+        );
+        assert_eq!(
+            diagnostic.label,
+            "this block compiles to a branch or a jump ($4C)"
+        );
+        assert_eq!(
+            diagnostic.notes,
+            [
+                "a timed block is costed by adding up its instructions, so one\nthat jumps has no single cost",
+                "rasterc should have refused the construct that produced this\nwith a clearer message; please report this file",
+            ]
+        );
+    }
+}

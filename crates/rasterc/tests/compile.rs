@@ -114,30 +114,3 @@ fn a_program_too_large_names_the_bank_it_does_not_fit() {
         "PRG bank switching is not supported yet, so all code lives\nin the fixed bank"
     );
 }
-
-#[test]
-fn the_control_flow_backstop_is_a_diagnostic_and_not_an_internal_error() {
-    let diagnostics = compile_source("main {\n    cycles(30) pad {\n        return\n    }\n}\n")
-        .expect_err("a timed block that jumps has no provable cost");
-
-    assert_eq!(diagnostics.len(), 1);
-    let diagnostic = &diagnostics[0];
-
-    // Exactly, because `codegen_diagnostic`'s fallback would produce a message beginning
-    // "internal compiler error: " and this is what pins the variant onto a real arm.
-    assert_eq!(
-        diagnostic.message,
-        "rasterc cannot prove this timed block's cost"
-    );
-    assert_eq!(
-        diagnostic.label,
-        "this block compiles to a branch or a jump ($4C)"
-    );
-    assert_eq!(
-        diagnostic.notes,
-        [
-            "a timed block is costed by adding up its instructions, so one\nthat jumps has no single cost",
-            "rasterc should have refused the construct that produced this\nwith a clearer message; please report this file",
-        ]
-    );
-}

@@ -1,24 +1,20 @@
 use raster_6502::AddressingMode;
 use raster_codegen::{generate, CodegenError};
-use raster_ir::lower;
+use raster_ir::{
+    lower, Comparison, Condition, CycleConstraint, Destination, Function as IrFunction,
+    Label as IrLabel, Main, Place, PlaceDefinition, PlaceKind, Program, Statement, Value,
+};
 use raster_link::{
     link_mmc3_program, FixedBankItem, Label, RelocationKind, INES_HEADER_SIZE,
     MMC3_FIXED_BANK_SIZE, MMC3_PRG_ROM_SIZE,
 };
 use raster_sema::analyze;
-use raster_syntax::parse;
+use raster_syntax::{parse, Span};
 
 fn generate_source(source: &str) -> raster_codegen::CodegenOutput {
     let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
     generate(&lower(&typed).expect("fixture should lower")).expect("fixture should generate")
-}
-
-/// The same, for a fixture whose codegen is expected to fail.
-fn generate_source_result(source: &str) -> Result<raster_codegen::CodegenOutput, CodegenError> {
-    let syntax = parse(source).expect("fixture should parse");
-    let typed = analyze(&syntax).expect("fixture should analyze");
-    generate(&lower(&typed).expect("fixture should lower"))
 }
 
 #[test]
@@ -389,9 +385,10 @@ fn sync_exact_lowers_to_the_documented_de_jitter_poll() {
 
 #[test]
 fn a_return_inside_a_timed_block_is_refused_by_the_analyser() {
-    // `raster-sema` refuses this too, from the increment that follows — but the analyser is the
-    // backstop, and this asserts it holds on its own, for any construct nobody thought to list.
-    let result = generate_source_result("main { cycles(20) pad { return } }");
+    // `raster-sema` refuses this from source, which is the friendly message — but the analyser is
+    // the backstop for constructs nobody listed, so it is exercised from the IR that reaches
+    // codegen rather than from source sema would have stopped first.
+    let result = generate(&program_whose_timed_block_contains(Statement::Return(None)));
 
     assert!(
         matches!(
@@ -408,4 +405,157 @@ fn a_return_inside_a_timed_block_is_refused_by_the_analyser() {
 #[test]
 fn a_nested_timed_block_is_not_control_flow() {
     generate_source("main { cycles(40) pad { cycles(20) pad { var v: u8 = 1 } } }");
+}
+
+/// The places the corpus below mentions. Every one needs a `PlaceDefinition` or `allocate_zero_page`
+/// returns `UnknownPlace`, which is a failure that looks nothing like the one under test.
+const P: Place = Place(0);
+const Q: Place = Place(1);
+const R: Place = Place(2);
+/// An empty parameterless function, so the `Call` sample has a target `Generator::call` knows.
+const HELPER: IrLabel = IrLabel(80);
+const MAIN: IrLabel = IrLabel(81);
+const HALT: IrLabel = IrLabel(82);
+
+fn place_definition(place: Place) -> PlaceDefinition {
+    PlaceDefinition {
+        place,
+        kind: PlaceKind::Local,
+        span: Span::new(0, 0),
+        explicit_zero_page: false,
+    }
+}
+
+/// A whole IR program whose `main` is one timed block containing `statement`, and nothing else.
+///
+/// The budget is deliberately wide: a straight-line sample must not fail for `OverBudget`, or the
+/// test would stop measuring what it means to.
+fn program_whose_timed_block_contains(statement: Statement) -> Program {
+    Program {
+        places: vec![
+            place_definition(P),
+            place_definition(Q),
+            place_definition(R),
+        ],
+        functions: vec![IrFunction {
+            name: "helper".to_owned(),
+            label: HELPER,
+            parameters: Vec::new(),
+            statements: Vec::new(),
+            span: Span::new(0, 0),
+        }],
+        main: Some(Main {
+            label: MAIN,
+            halt_label: HALT,
+            statements: vec![Statement::Timed {
+                constraint: CycleConstraint::AtMost(10_000),
+                pad: false,
+                interruptible: false,
+                body: vec![statement],
+                span: Span::new(0, 0),
+            }],
+            span: Span::new(0, 0),
+        }),
+        ..Default::default()
+    }
+}
+
+/// Whether codegen lowers this statement to something that leaves the straight line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InsideATimedBlock {
+    /// Costable by summing instructions, so `analyze` accepts it.
+    Straight,
+    /// Emits a branch, a jump, a `JSR` or an `RTS`, so `analyze` must refuse it.
+    Refused,
+}
+
+/// What a timed block does with one sample of every `raster_ir::Statement` variant.
+///
+/// The `match` is exhaustive on purpose: adding a variant to `raster_ir::Statement` breaks this
+/// function, and whoever adds it must say whether a timed block can cost it. That is the check
+/// nothing performed when `return` was added, and `main { cycles(20) pad { return } }` compiled to
+/// a block charged 20 cycles that spends 8.
+fn expectation(statement: &Statement) -> InsideATimedBlock {
+    match statement {
+        Statement::Declare { .. } => InsideATimedBlock::Straight,
+        Statement::Label(_) => InsideATimedBlock::Straight,
+        Statement::Assign { .. } => InsideATimedBlock::Straight,
+        Statement::Call { .. } => InsideATimedBlock::Refused,
+        Statement::Branch { .. } => InsideATimedBlock::Refused,
+        Statement::Jump { .. } => InsideATimedBlock::Refused,
+        Statement::Return(_) => InsideATimedBlock::Refused,
+        Statement::Timed { .. } => InsideATimedBlock::Straight,
+        Statement::Delay { .. } => InsideATimedBlock::Refused,
+        Statement::SyncExact => InsideATimedBlock::Refused,
+    }
+}
+
+#[test]
+fn every_ir_statement_is_classified_for_a_timed_block() {
+    let corpus = vec![
+        Statement::Declare { place: P },
+        Statement::Label(IrLabel(90)),
+        Statement::Assign {
+            destination: Destination::Place(P),
+            // A `Constant`, never a `Binary` whose operator is `Multiply`, `Divide`, `Remainder`,
+            // `ShiftLeft` or `ShiftRight` — each of those lowers to a loop, so the sample would be
+            // `Refused` for a reason that is about the value and not about `Assign`.
+            value: Value::Constant(1),
+        },
+        Statement::Call {
+            target: HELPER,
+            arguments: Vec::new(),
+            argument_temporaries: Vec::new(),
+        },
+        Statement::Branch {
+            condition: Condition {
+                left: Value::Constant(1),
+                comparison: Comparison::Equal,
+                right: Value::Constant(1),
+                left_temporary: Q,
+                right_temporary: R,
+            },
+            if_false: HALT,
+        },
+        Statement::Jump { target: HALT },
+        Statement::Return(None),
+        Statement::Timed {
+            constraint: CycleConstraint::AtMost(10_000),
+            pad: false,
+            interruptible: false,
+            body: vec![Statement::Declare { place: P }],
+            span: Span::new(0, 0),
+        },
+        // 1000 cycles, not a handful: `plan_delay` emits no loop at all for a delay short enough
+        // to fill with filler, and this sample is about the loop.
+        Statement::Delay {
+            cycles: 1000,
+            span: Span::new(0, 0),
+        },
+        Statement::SyncExact,
+    ];
+    // One per `raster_ir::Statement` variant, so a variant added to `expectation` without a sample
+    // here fails too.
+    assert_eq!(corpus.len(), 10);
+
+    for statement in corpus {
+        let expected = expectation(&statement);
+        let result = generate(&program_whose_timed_block_contains(statement.clone()));
+        match expected {
+            InsideATimedBlock::Refused => assert!(
+                matches!(
+                    result,
+                    Err(CodegenError::Timing {
+                        error: raster_timing::TimingError::ControlFlowInRegion { .. },
+                        ..
+                    })
+                ),
+                "{statement:?} must be refused inside a timed block, got {result:?}"
+            ),
+            InsideATimedBlock::Straight => assert!(
+                result.is_ok(),
+                "{statement:?} is costable inside a timed block, got {result:?}"
+            ),
+        }
+    }
 }

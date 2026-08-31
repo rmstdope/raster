@@ -357,3 +357,56 @@ fn sync_exact_need_not_sit_immediately_before_the_region_it_guards() {
     .expect("fixture should parse");
     analyze(&program).expect("a `sync exact` earlier in the block still guards the region");
 }
+
+/// The refusals below assert on the span as well as the message, so they need the errors whole.
+fn errors_with_spans(source: &str) -> Vec<raster_sema::SemanticError> {
+    let program = parse(source).expect("fixture should parse");
+    analyze(&program).expect_err("fixture should be semantically invalid")
+}
+
+const RETURN_IN_A_TIMED_BLOCK: &str = "`return` inside a timed block jumps out before the block has spent its budget and before the interrupt flag is restored, so it belongs after the block rather than inside one";
+
+const RETURN_IN_AN_INTERRUPTIBLE_TIMED_BLOCK: &str = "`return` inside a timed block jumps out before the block has spent its budget, so it belongs after the block rather than inside one";
+
+#[test]
+fn return_inside_a_timed_block_is_refused() {
+    let source = "main { cycles(20) pad { return } }";
+    let diagnostics = errors_with_spans(source);
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].message, RETURN_IN_A_TIMED_BLOCK);
+    assert_eq!(
+        &source[diagnostics[0].span.start as usize..diagnostics[0].span.end as usize],
+        "return"
+    );
+}
+
+#[test]
+fn return_inside_an_interruptible_timed_block_omits_the_interrupt_clause() {
+    // An `interruptible` block emits no `PHP`/`SEI`/`PLP`, so there is no interrupt flag to
+    // restore and the longer sentence would be false of it.
+    let diagnostics = errors_with_spans("main { cycles(20) pad interruptible { return } }");
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].message,
+        RETURN_IN_AN_INTERRUPTIBLE_TIMED_BLOCK
+    );
+    assert!(!diagnostics[0].message.contains("interrupt flag"));
+}
+
+#[test]
+fn return_inside_a_report_block_is_refused() {
+    // `cycles(?)` carries no budget, but it prints a measured cost — and a block that jumps out
+    // has no single cost to print.
+    let diagnostics = errors_with_spans("main { cycles(?) hblank { return } }");
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].message, RETURN_IN_A_TIMED_BLOCK);
+}
+
+#[test]
+fn return_outside_a_timed_block_is_accepted() {
+    let program = parse("fn f() -> u8 { return 1 }\nmain { }").expect("fixture should parse");
+    analyze(&program).expect("a `return` outside a timed block is ordinary");
+}
