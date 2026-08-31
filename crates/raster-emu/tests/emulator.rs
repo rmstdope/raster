@@ -89,6 +89,8 @@ fn a_marker_that_never_executes_is_reported_rather_than_waited_for() {
         format!("{error}").contains("$60"),
         "the error names the marker it never saw: {error}"
     );
+}
+
 #[test]
 fn reports_a_palette_entry_for_every_pixel() {
     let frame = render_after_frames(
@@ -134,7 +136,10 @@ fn renders_one_flat_colour_per_palette_entry() {
         let colour: [u8; 4] = rgba[index * 4..index * 4 + 4]
             .try_into()
             .expect("four channels");
-        let known = seen[usize::from(entry)].get_or_insert(colour);
+        let slot = seen
+            .get_mut(usize::from(entry))
+            .unwrap_or_else(|| panic!("entry {entry:#05x} is outside the 9-bit entry space"));
+        let known = slot.get_or_insert(colour);
         assert_eq!(
             *known, colour,
             "pixel {index} shows a second colour for palette entry {entry:#05x}"
