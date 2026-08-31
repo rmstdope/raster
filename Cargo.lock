@@ -361,7 +361,12 @@ version = "0.1.0"
 name = "rasterc"
 version = "0.1.0"
 dependencies = [
+ "raster-codegen",
  "raster-diag",
+ "raster-ir",
+ "raster-link",
+ "raster-sema",
+ "raster-syntax",
 ]
 
 [[package]]

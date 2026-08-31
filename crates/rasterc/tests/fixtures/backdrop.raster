@@ -1,0 +1,14 @@
+// A solid blue backdrop: initialise the PPU during forced blank, write the
+// universal backdrop colour at $3F00, and leave the PPU address there so the
+// backdrop is what the screen shows.
+main {
+    ppu.ctrl = $00
+    ppu.mask = $00
+    while (ppu.status & $80) == 0 { }
+    while (ppu.status & $80) == 0 { }
+    ppu.addr = $3f
+    ppu.addr = $00
+    ppu.data = $12
+    ppu.addr = $3f
+    ppu.addr = $00
+}
