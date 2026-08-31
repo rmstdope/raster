@@ -14,7 +14,7 @@ fn lower_source(source: &str) -> raster_ir::Program {
 fn lower_errors(source: &str) -> Vec<raster_ir::LowerError> {
     let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
-    lower(&typed).expect_err("fixture should not lower")
+    lower(&typed).expect_err("fixture should not lower").errors
 }
 
 #[test]
@@ -98,7 +98,9 @@ fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
         "#;
     let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
-    let errors = lower(&typed).expect_err("unsupported forms must be diagnosed");
+    let errors = lower(&typed)
+        .expect_err("unsupported forms must be diagnosed")
+        .errors;
 
     // group, array, u16, bool, `asm`, `at vblank`, the array assignment, the
     // string, the character, `wait vblank`, `loop`, `break` and `continue` —
@@ -350,5 +352,28 @@ fn a_construct_this_release_does_not_have_is_refused_as_such() {
             .iter()
             .all(|error| error.refusal == Refusal::NotInThisRelease),
         "an array is a construct the release does not have: {errors:?}"
+    );
+}
+
+#[test]
+fn a_bank_select_that_inverts_the_chr_map_is_a_warning() {
+    let program = lower_source("main { mmc3.bank_select = $80 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 7 swaps the two pattern tables from here on"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose CHR A12 inversion off, so pattern table 0 is at\nPPU $0000; clearing bit 7 keeps that map",
+            "bits 6 and 7 take effect from whichever bank select was\nwritten last, not from the bank data that follows",
+        ]
     );
 }

@@ -253,6 +253,8 @@ pub struct Program {
     pub main: Option<Main>,
     /// The one `frame` the program declares, if it declares one.
     pub frame: Option<Frame>,
+    /// The hazards lowering saw and did not refuse, in source order.
+    pub warnings: Vec<LowerWarning>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -262,16 +264,93 @@ pub struct LowerError {
     pub refusal: Refusal,
 }
 
-pub fn lower(typed: &TypedProgram) -> Result<Program, Vec<LowerError>> {
+/// A hazard rasterc can see but will not refuse. Shaped like `LowerError` plus
+/// the label and notes a diagnostic needs, and without a `Refusal`, which is a
+/// property of refusing. This crate does not build the diagnostic itself;
+/// `rasterc` does.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LowerWarning {
+    pub message: String,
+    pub label: String,
+    pub notes: Vec<String>,
+    pub span: Span,
+}
+
+/// Lowering that produced errors, and the warnings it found on the way.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LowerFailure {
+    pub errors: Vec<LowerError>,
+    pub warnings: Vec<LowerWarning>,
+}
+
+/// Bit 6 of an MMC3 bank select: PRG mode.
+const MMC3_PRG_MODE: u8 = 0b0100_0000;
+/// Bit 7 of an MMC3 bank select: CHR A12 inversion.
+const MMC3_CHR_INVERSION: u8 = 0b1000_0000;
+
+const BANK_SELECT_MODE_NOTE: &str = "bits 6 and 7 take effect from whichever bank select was\n\
+                                     written last, not from the bank data that follows";
+
+/// The warning a write to `mmc3.bank_select` earns, if it earns one.
+///
+/// `None` for a constant with bits 6 and 7 clear. That selects a bank register
+/// without touching the mapping mode, which is the ordinary use of these
+/// registers and the thing the reset map is built to survive; warning on it
+/// would fire on every correct CHR animation, on every build.
+fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
+    let mode_change = |label: &str, reset_note: &str| LowerWarning {
+        message: "this bank select changes the MMC3 mapping mode".to_owned(),
+        label: label.to_owned(),
+        notes: vec![reset_note.to_owned(), BANK_SELECT_MODE_NOTE.to_owned()],
+        span,
+    };
+    let Value::Constant(bits) = value else {
+        return Some(LowerWarning {
+            message: "rasterc cannot tell whether this bank select changes the mapping mode"
+                .to_owned(),
+            label: "rasterc cannot see this value here, so bits 6 and 7 are unknown".to_owned(),
+            notes: vec!["bit 6 is PRG mode and bit 7 is CHR A12 inversion; keeping\n\
+                         both clear keeps the map reset chose"
+                .to_owned()],
+            span,
+        });
+    };
+    let prg = bits & MMC3_PRG_MODE != 0;
+    let chr = bits & MMC3_CHR_INVERSION != 0;
+    match (prg, chr) {
+        (false, false) => None,
+        (false, true) => Some(mode_change(
+            "bit 7 swaps the two pattern tables from here on",
+            "reset chose CHR A12 inversion off, so pattern table 0 is at\n\
+             PPU $0000; clearing bit 7 keeps that map",
+        )),
+        (true, false) => Some(mode_change(
+            "bit 6 moves the fixed PRG bank from $C000 to $8000",
+            "reset chose PRG mode 0, a linear 32 KiB map with this code\n\
+             in the fixed bank at $E000; clearing bit 6 keeps that map",
+        )),
+        (true, true) => Some(mode_change(
+            "bit 6 moves the fixed PRG bank and bit 7 swaps the pattern tables",
+            "reset chose PRG mode 0 and CHR A12 inversion off: a linear\n\
+             32 KiB map, and pattern table 0 at PPU $0000",
+        )),
+    }
+}
+
+pub fn lower(typed: &TypedProgram) -> Result<Program, LowerFailure> {
     let mut lowerer = Lowerer::new();
     lowerer.predeclare_labels(&typed.program);
     lowerer.predeclare_globals(&typed.program);
     lowerer.reject_recursive_calls(&typed.program);
     lowerer.lower_program(&typed.program);
     if lowerer.errors.is_empty() {
+        lowerer.program.warnings = lowerer.warnings;
         Ok(lowerer.program)
     } else {
-        Err(lowerer.errors)
+        Err(LowerFailure {
+            errors: lowerer.errors,
+            warnings: lowerer.warnings,
+        })
     }
 }
 
@@ -289,6 +368,7 @@ struct FunctionSignature {
 struct Lowerer {
     program: Program,
     errors: Vec<LowerError>,
+    warnings: Vec<LowerWarning>,
     scopes: Vec<BTreeMap<String, Binding>>,
     functions: BTreeMap<String, FunctionSignature>,
     global_places: BTreeMap<u32, Place>,
@@ -302,6 +382,7 @@ impl Lowerer {
         Self {
             program: Program::default(),
             errors: Vec::new(),
+            warnings: Vec::new(),
             scopes: vec![BTreeMap::new()],
             functions: BTreeMap::new(),
             global_places: BTreeMap::new(),
@@ -1013,6 +1094,11 @@ impl Lowerer {
                     }
                     _ => unreachable!("assignment operator was checked above"),
                 };
+                if destination == Destination::Register(Register::Mmc3BankSelect) {
+                    if let Some(warning) = bank_select_warning(&value, expression.span) {
+                        self.warnings.push(warning);
+                    }
+                }
                 output.push(Statement::Assign { destination, value });
                 return;
             }

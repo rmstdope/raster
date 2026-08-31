@@ -65,9 +65,12 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
             source,
         )
     })?;
-    let ir = lower(&typed).map_err(|errors| {
+    let ir = lower(&typed).map_err(|failure| {
         spanned(
-            errors.into_iter().map(|e| (e.message, e.span, e.refusal)),
+            failure
+                .errors
+                .into_iter()
+                .map(|e| (e.message, e.span, e.refusal)),
             source,
         )
     })?;
