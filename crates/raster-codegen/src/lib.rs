@@ -10,7 +10,9 @@ use raster_ir::{
 };
 use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind};
 use raster_syntax::Span;
-use raster_timing::{analyze, plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError};
+use raster_timing::{
+    analyze, plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError, FRAMES_PER_PASS,
+};
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
 
@@ -70,6 +72,8 @@ const LDY_IMMEDIATE: u8 = 0xa0;
 const DEX: u8 = 0xca;
 const DEY: u8 = 0x88;
 const BEQ: u8 = 0xf0;
+/// What `JMP absolute` costs. The jump closing a frame pass is spent inside the pass's budget.
+const JMP_ABSOLUTE_CYCLES: u32 = 3;
 
 /// `LDX #$00` sets 256 iterations, because the first `DEX` wraps it to 255.
 fn iteration_operand(iterations: u32) -> u16 {
@@ -167,38 +171,39 @@ impl Generator<'_> {
         self.statements(initializers, Some(main.halt_label))?;
         self.statements(&main.statements, Some(main.halt_label))?;
         self.emit_label(main.halt_label);
-        if let Some(frame) = frame {
-            self.timed_frame(frame, main.halt_label)?;
+        match frame {
+            Some(frame) => self.timed_frame(frame, main.halt_label)?,
+            None => self.jump(main.halt_label),
         }
-        self.jump(main.halt_label);
         Ok(())
     }
 
-    /// Emit one pass of a `frame ... using timed`: synchronize, then run each handler where its
-    /// scanline is.
+    /// Emit a `frame ... using timed` as a synchronized loop the console never leaves.
     ///
-    /// The pass opens with the read-$2002-and-branch sequence of spec section 6.6, which both waits
-    /// for vblank and lands every pass on the same alignment — the poll is the frame's origin, and
-    /// every handler's position is counted in cycles from it. It is emitted once rather than as a
-    /// wait followed by a second de-jitter poll, because reading `$2002` clears the vblank flag: a
-    /// second identical poll would wait out a whole further frame.
+    /// The loop is entered once through the read-$2002-and-branch sequence of spec section 6.6,
+    /// which waits for vblank and fixes the origin every handler's position is counted from. After
+    /// that nothing polls: each pass spends exactly [`raster_timing::PASS_CYCLES`], so the loop
+    /// stays locked to the picture for as long as the console is on.
+    ///
+    /// A pass is three frames, and the schedule runs in each of them. One frame is 29780 CPU cycles
+    /// and two dots, so a loop of one frame cannot be exact — and a loop that re-polls `$2002` each
+    /// frame instead sweeps its reads across the dot where the vblank flag is set. A read within two
+    /// cycles of it returns the flag clear and suppresses it, and that frame's whole schedule is
+    /// lost: measured here, one frame in nine went blank before the pass existed.
     ///
     /// Between handlers the schedule is spent in synthesized delays, and each handler is padded to
-    /// the budget [`plan_timed_frame`] gives it, so the position of a handler is the sum of proven
-    /// costs rather than an accumulation of roundings.
+    /// the budget [`plan_timed_frame`] gives it, so a handler's position is a sum of proven costs
+    /// rather than an accumulation of roundings.
     fn timed_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
         self.statement(&Statement::SyncExact, Some(halt_label))?;
+        let pass_top = self.internal_label();
+        self.emit_label(pass_top);
+
         let scanlines: Vec<_> = frame.events.iter().map(|event| event.scanline).collect();
-        for (handler, event) in plan_timed_frame(&scanlines).iter().zip(&frame.events) {
-            if handler.delay_cycles > 0 {
-                self.statement(
-                    &Statement::Delay {
-                        cycles: handler.delay_cycles,
-                        span: event.span,
-                    },
-                    Some(halt_label),
-                )?;
-            }
+        let pass = plan_timed_frame(&scanlines, JMP_ABSOLUTE_CYCLES);
+        let events = (0..FRAMES_PER_PASS).flat_map(|_| frame.events.iter());
+        for (handler, event) in pass.handlers.iter().zip(events) {
+            self.delay(handler.delay_cycles, event.span)?;
             self.timed_region(
                 &CycleConstraint::Exact(handler.budget_cycles),
                 true,
@@ -208,7 +213,17 @@ impl Generator<'_> {
                 Some(halt_label),
             )?;
         }
+        self.delay(pass.trailing_delay_cycles, frame.span)?;
+        self.jump(pass_top);
         Ok(())
+    }
+
+    /// Spend exactly `cycles` doing nothing. Nothing is emitted for a gap of none.
+    fn delay(&mut self, cycles: u32, span: Span) -> Result<(), CodegenError> {
+        if cycles == 0 {
+            return Ok(());
+        }
+        self.statement(&Statement::Delay { cycles, span }, None)
     }
 
     fn statements(

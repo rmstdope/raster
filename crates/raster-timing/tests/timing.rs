@@ -310,39 +310,76 @@ fn a_counted_loop_takes_its_branch_once_however_long_it_runs() {
     }
 }
 
+/// What a caller spends returning to the top of the pass — `JMP absolute`, for the tests here.
+const CLOSING_CYCLES: u32 = 3;
+
 #[test]
-fn a_scanline_starts_a_whole_number_of_cycles_after_the_frame_origin() {
-    // Vblank is twenty scanlines and the pre-render line is one more, so the visible picture
-    // starts twenty-one scanlines after the origin the vblank poll establishes.
-    assert_eq!(raster_timing::scanline_origin_cycles(0), 2387);
-    // 341 dots is 113.667 CPU cycles, so consecutive scanlines are 114, 113, 114 apart and every
-    // three of them are exactly 341 cycles.
-    let starts: Vec<_> = (0..4).map(raster_timing::scanline_origin_cycles).collect();
-    assert_eq!(starts, vec![2387, 2501, 2614, 2728]);
-    assert_eq!(starts[3] - starts[0], 341);
+fn a_pass_of_three_frames_is_a_whole_number_of_cpu_cycles() {
+    // One frame is 89342 dots, which is 29780 CPU cycles and two dots: a loop that runs one
+    // frame's worth of cycles cannot stay locked to the picture. Three of them can.
+    assert_eq!(
+        raster_timing::PASS_CYCLES * raster_timing::DOTS_PER_CPU_CYCLE,
+        raster_timing::FRAMES_PER_PASS
+            * raster_timing::SCANLINES_PER_FRAME
+            * raster_timing::DOTS_PER_SCANLINE
+    );
+    assert_eq!(raster_timing::PASS_CYCLES, 89342);
 }
 
 #[test]
-fn a_timed_frame_schedule_puts_every_handler_on_its_own_scanline() {
+fn a_scanline_starts_a_whole_number_of_cycles_after_the_pass_origin() {
+    // Vblank is twenty scanlines and the pre-render line is one more, so the visible picture
+    // starts twenty-one scanlines after the origin the vblank poll establishes.
+    assert_eq!(raster_timing::scanline_origin_cycles(0, 0), 2387);
+    // 341 dots is 113.667 CPU cycles, so consecutive scanlines are 114, 113, 114 apart and every
+    // three of them are exactly 341 cycles.
+    let starts: Vec<_> = (0..4)
+        .map(|scanline| raster_timing::scanline_origin_cycles(0, scanline))
+        .collect();
+    assert_eq!(starts, vec![2387, 2501, 2614, 2728]);
+    assert_eq!(starts[3] - starts[0], 341);
+    // The second and third frames of a pass are whole frames further on.
+    assert_eq!(raster_timing::scanline_origin_cycles(1, 0), 32168);
+}
+
+#[test]
+fn a_timed_frame_schedule_puts_every_handler_on_its_own_scanline_in_every_frame() {
     let scanlines = [0, 8, 9, 10, 200];
-    let schedule = raster_timing::plan_timed_frame(&scanlines);
+    let pass = raster_timing::plan_timed_frame(&scanlines, CLOSING_CYCLES);
+
+    assert_eq!(
+        pass.handlers.len(),
+        scanlines.len() * raster_timing::FRAMES_PER_PASS as usize,
+        "the schedule runs in each frame of the pass"
+    );
 
     let mut position = 0;
-    for (handler, scanline) in schedule.iter().zip(scanlines) {
-        position += handler.delay_cycles;
-        assert_eq!(
-            position,
-            raster_timing::scanline_origin_cycles(scanline),
-            "the handler for scanline {scanline} starts where the scanline does"
-        );
-        position += handler.budget_cycles;
+    let mut handlers = pass.handlers.iter();
+    for frame in 0..raster_timing::FRAMES_PER_PASS {
+        for scanline in scanlines {
+            let handler = handlers.next().expect("a handler per scanline per frame");
+            position += handler.delay_cycles;
+            assert_eq!(
+                position,
+                raster_timing::scanline_origin_cycles(frame, scanline),
+                "the handler for scanline {scanline} of frame {frame} starts where it does"
+            );
+            position += handler.budget_cycles;
+        }
     }
+
+    // The pass closes on the cycle it opened on, which is what keeps it locked to the picture —
+    // and the jump that closes it is inside that budget, not on top of it.
+    assert_eq!(
+        position + pass.trailing_delay_cycles + CLOSING_CYCLES,
+        raster_timing::PASS_CYCLES
+    );
 }
 
 #[test]
 fn adjacent_handlers_carry_the_correction_that_keeps_the_frame_budget_exact() {
-    let schedule = raster_timing::plan_timed_frame(&[0, 1, 2, 3]);
-    let budgets: Vec<_> = schedule
+    let pass = raster_timing::plan_timed_frame(&[0, 1, 2, 3], CLOSING_CYCLES);
+    let budgets: Vec<_> = pass.handlers[..4]
         .iter()
         .map(|handler| handler.budget_cycles)
         .collect();
@@ -351,25 +388,25 @@ fn adjacent_handlers_carry_the_correction_that_keeps_the_frame_budget_exact() {
     assert_eq!(budgets, vec![114, 113, 114, 114]);
     assert_eq!(budgets[0] + budgets[1] + budgets[2], 341);
     // Back-to-back handlers leave no gap to delay through.
-    assert!(schedule[1..]
+    assert!(pass.handlers[1..4]
         .iter()
         .all(|handler| handler.delay_cycles == 0));
 }
 
 #[test]
 fn a_handler_with_room_after_it_gets_one_scanline_body_and_a_delay_to_the_next() {
-    let schedule = raster_timing::plan_timed_frame(&[60, 120]);
+    let pass = raster_timing::plan_timed_frame(&[60, 120], CLOSING_CYCLES);
 
-    assert_eq!(schedule[0].budget_cycles, 114);
-    assert_eq!(schedule[1].budget_cycles, 114);
+    assert_eq!(pass.handlers[0].budget_cycles, 114);
+    assert_eq!(pass.handlers[1].budget_cycles, 114);
     assert_eq!(
-        schedule[0].delay_cycles,
-        raster_timing::scanline_origin_cycles(60)
+        pass.handlers[0].delay_cycles,
+        raster_timing::scanline_origin_cycles(0, 60)
     );
     assert_eq!(
-        schedule[1].delay_cycles,
-        raster_timing::scanline_origin_cycles(120)
-            - raster_timing::scanline_origin_cycles(60)
+        pass.handlers[1].delay_cycles,
+        raster_timing::scanline_origin_cycles(0, 120)
+            - raster_timing::scanline_origin_cycles(0, 60)
             - 114
     );
 }

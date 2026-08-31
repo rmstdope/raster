@@ -1,0 +1,30 @@
+// Three colour bars, placed by a `frame ... using timed` schedule.
+//
+// Rendering stays off, and with it off the PPU shows the palette entry its address register points
+// at rather than the backdrop — see .cerebro/traps.md. So a bar is a mid-frame `ppu.addr`, and the
+// compiler's job is to land each one on the scanline the source names.
+main {
+    ppu.addr = $3f              // the palette lives at $3F00 ...
+    ppu.addr = $00              // ... and $3F00 is the backdrop
+    ppu.data = $0f              // $3F00: black, above the first bar and below the last
+    ppu.data = $12              // $3F01: a mid blue
+    ppu.data = $21              // $3F02: a lighter blue
+
+    ppu.addr = $00              // leave palette space, or the picture shows
+    ppu.addr = $00              // whichever entry the last write left behind
+}
+
+frame bars using timed {
+    at scanline 60 {
+        ppu.addr = $3f
+        ppu.addr = $01
+    }
+    at scanline 120 {
+        ppu.addr = $3f
+        ppu.addr = $02
+    }
+    at scanline 180 {
+        ppu.addr = $00
+        ppu.addr = $00
+    }
+}

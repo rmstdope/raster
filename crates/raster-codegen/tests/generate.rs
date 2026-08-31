@@ -434,8 +434,12 @@ fn timed_lowering_repeats_a_114_cycle_scanline_body() {
         "#,
     );
 
-    // One body per occurrence — 100, 104 and 108 — each padded to a whole scanline.
-    assert_eq!(timed_region_costs(&instructions), vec![114, 114, 114]);
+    // One body per occurrence — 100, 104 and 108 — each padded to a whole scanline, and the
+    // schedule repeated in each of the three frames one pass of the loop covers.
+    assert_eq!(
+        timed_region_costs(&instructions),
+        vec![114; 3 * raster_timing::FRAMES_PER_PASS as usize]
+    );
 }
 
 #[test]
@@ -489,12 +493,12 @@ fn a_timed_frame_delays_from_the_origin_to_each_handlers_scanline() {
         })
         .collect();
 
-    // Two delays and two handlers: the delay loops are the only `LDX #` immediates a fixture with
-    // no arithmetic in it produces.
-    let schedule = raster_timing::plan_timed_frame(&[60, 120]);
-    assert_eq!(schedule.len(), 2);
-    assert!(schedule.iter().all(|handler| handler.delay_cycles > 0));
-    assert_eq!(timed_region_costs(&instructions), vec![114, 114]);
+    let pass = raster_timing::plan_timed_frame(&[60, 120], 3);
+    assert!(pass.handlers.iter().all(|handler| handler.delay_cycles > 0));
+    assert_eq!(
+        timed_region_costs(&instructions),
+        vec![114; 2 * raster_timing::FRAMES_PER_PASS as usize]
+    );
 }
 
 #[test]

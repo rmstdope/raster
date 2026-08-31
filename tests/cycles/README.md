@@ -35,3 +35,19 @@ needs alignment control the linker cannot yet express. And no `.raster` source c
 indexed-read page penalty at all, because under the legal ISA `raster-codegen` emits no indexed
 addressing mode. Both are charged by `worst_case_cycles` and measured by nothing — a source
 construct that reaches either one is the point at which a fixture becomes writable.
+
+## Frame fixtures
+
+`colour-bars.raster`, `frame-schedule.raster` and `frame-over-budget.raster` are the
+`frame ... using timed` ones. Their handlers are placed by `raster_timing::plan_timed_frame`, which
+pads each to a whole scanline where the next is far enough away and to the exact distance to the
+next where it is not — 114, 113, 114, so three lines are 341 cycles and nothing accumulates.
+
+`colour-bars.raster` is judged in the emulator by `crates/rasterc/tests/emulator.rs`: the bars have
+to land on the scanlines the source names and stay there three hundred frames later. A loop that
+spends one cycle more than the picture slides a scanline every three seconds, which five
+consecutive frames cannot see.
+
+`unsynchronized.raster` is the negative of spec section 6.6: a timed region writing a PPU register
+with nothing to align it. Inside a `frame` the same region is fine, because the frame emits the
+synchronization itself.

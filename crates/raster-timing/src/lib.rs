@@ -186,6 +186,19 @@ pub const DOTS_PER_CPU_CYCLE: u32 = 3;
 /// Scanlines from the start of vblank to the top of the next visible picture: the twenty vblank
 /// lines 241-260 and the pre-render line 261.
 pub const SCANLINES_FROM_VBLANK_TO_PICTURE: u32 = 21;
+/// Scanlines in one NTSC frame: 240 of picture, the post-render line, twenty of vblank and the
+/// pre-render line.
+pub const SCANLINES_PER_FRAME: u32 = 262;
+/// Frames in one pass of a timed frame loop.
+///
+/// One frame is 89342 dots, which is 29780 CPU cycles and two dots left over — so a loop that
+/// spends one frame's worth of cycles cannot stay locked to the picture, and slides a dot a frame
+/// until the bars have crossed a whole scanline. Three frames are 268026 dots, which is 89342 CPU
+/// cycles exactly, so a pass of three is the shortest one a cycle-counted loop can repeat forever
+/// without drifting.
+pub const FRAMES_PER_PASS: u32 = 3;
+/// The cycles one pass of a timed frame loop spends, from its origin back to its origin.
+pub const PASS_CYCLES: u32 = scanline_cycles(SCANLINES_PER_FRAME * FRAMES_PER_PASS);
 /// The cycles a timed frame gives a handler that has a whole scanline to itself.
 ///
 /// A scanline is 113.667 cycles, not 114, so a schedule of nothing but 114-cycle bodies drifts a
@@ -202,13 +215,14 @@ pub const fn scanline_cycles(scanlines: u32) -> u32 {
     (scanlines * DOTS_PER_SCANLINE + DOTS_PER_CPU_CYCLE / 2) / DOTS_PER_CPU_CYCLE
 }
 
-/// The cycle, counted from a timed frame's origin, at which `scanline` of the picture begins.
+/// The cycle, counted from a pass's origin, at which `scanline` of `frame` of the pass begins.
 ///
-/// The origin is where the frame's vblank poll leaves the CPU, which is the start of vblank give or
-/// take the poll's own granularity. The visible picture starts
-/// [`SCANLINES_FROM_VBLANK_TO_PICTURE`] scanlines later.
-pub const fn scanline_origin_cycles(scanline: u32) -> u32 {
-    scanline_cycles(SCANLINES_FROM_VBLANK_TO_PICTURE + scanline)
+/// The origin is where the frame loop's one vblank poll left the CPU, which is the start of vblank
+/// give or take the poll's own granularity. The visible picture starts
+/// [`SCANLINES_FROM_VBLANK_TO_PICTURE`] scanlines later, and each further frame of the pass a whole
+/// frame after that.
+pub const fn scanline_origin_cycles(frame: u32, scanline: u32) -> u32 {
+    scanline_cycles(frame * SCANLINES_PER_FRAME + SCANLINES_FROM_VBLANK_TO_PICTURE + scanline)
 }
 
 /// Where one handler of a timed frame sits: what to spend before it, and what it must cost.
@@ -221,41 +235,71 @@ pub struct ScheduledHandler {
     pub budget_cycles: u32,
 }
 
-/// Place every handler of a timed frame, given the scanlines it is scheduled on.
+/// One pass of a timed frame loop: every handler of every frame in it, and the tail that closes it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimedFramePass {
+    /// The handlers in the order they run — the whole schedule, once per frame of the pass.
+    pub handlers: Vec<ScheduledHandler>,
+    /// Cycles between the last handler and the top of the pass.
+    pub trailing_delay_cycles: u32,
+}
+
+/// Place every handler of a timed frame, given the scanlines its schedule is written on.
 ///
 /// `scanlines` must be sorted and free of duplicates, which is what `raster-ir` hands over. Each
 /// handler starts exactly where its scanline does, so the frame's accumulated budget is the
 /// picture's own and not a sum of roundings: a handler is padded to a whole scanline body where the
 /// next one is far enough away, and to the exact distance to the next where it is not.
-pub fn plan_timed_frame(scanlines: &[u32]) -> Vec<ScheduledHandler> {
+///
+/// The schedule is placed once per frame of the pass rather than once, because only a whole pass is
+/// a whole number of CPU cycles. A loop that instead re-polls `$2002` each frame drifts across the
+/// dot where the vblank flag is set, and a read landing in the two cycles either side of it returns
+/// the flag clear and suppresses it — costing that frame its entire schedule. Measured on this
+/// project before the pass existed: one frame in nine lost its bars.
+///
+/// `closing_cycles` is what the caller spends getting back to the top of the pass — the jump that
+/// closes the loop. It comes out of the pass's own budget, because a pass that pays for its
+/// schedule and then spends three cycles more is three cycles longer than the picture it is
+/// tracking, which is a dot of drift a frame and a scanline of it every three seconds. Measured.
+pub fn plan_timed_frame(scanlines: &[u32], closing_cycles: u32) -> TimedFramePass {
     debug_assert!(
         scanlines.windows(2).all(|pair| pair[0] < pair[1]),
         "a frame schedule is sorted and has one handler per scanline"
     );
-    let mut schedule = Vec::with_capacity(scanlines.len());
+    let mut handlers = Vec::with_capacity(scanlines.len() * FRAMES_PER_PASS as usize);
     let mut position = 0;
-    for (index, &scanline) in scanlines.iter().enumerate() {
-        let start = scanline_origin_cycles(scanline);
-        let distance_to_next = scanlines
-            .get(index + 1)
-            .map_or(SCANLINE_BODY_CYCLES, |&next| {
-                scanline_origin_cycles(next) - start
+    for frame in 0..FRAMES_PER_PASS {
+        for (index, &scanline) in scanlines.iter().enumerate() {
+            let start = scanline_origin_cycles(frame, scanline);
+            let next = scanlines
+                .get(index + 1)
+                .map(|&next| scanline_origin_cycles(frame, next))
+                .or_else(|| {
+                    scanlines
+                        .first()
+                        .filter(|_| frame + 1 < FRAMES_PER_PASS)
+                        .map(|&first| scanline_origin_cycles(frame + 1, first))
+                });
+            let distance_to_next = next.map_or(SCANLINE_BODY_CYCLES, |next| next - start);
+            // A gap of one cycle has no instruction short enough to spend it, so a handler one
+            // cycle short of the next is widened to reach it rather than left with an unspendable
+            // remainder.
+            let budget_cycles = if distance_to_next <= SCANLINE_BODY_CYCLES + 1 {
+                distance_to_next
+            } else {
+                SCANLINE_BODY_CYCLES
+            };
+            handlers.push(ScheduledHandler {
+                delay_cycles: start - position,
+                budget_cycles,
             });
-        // A gap of one cycle has no instruction short enough to spend it, so a handler one cycle
-        // short of the next scanline is widened to reach it rather than left with an unspendable
-        // remainder.
-        let budget_cycles = if distance_to_next <= SCANLINE_BODY_CYCLES + 1 {
-            distance_to_next
-        } else {
-            SCANLINE_BODY_CYCLES
-        };
-        schedule.push(ScheduledHandler {
-            delay_cycles: start - position,
-            budget_cycles,
-        });
-        position = start + budget_cycles;
+            position = start + budget_cycles;
+        }
     }
-    schedule
+    TimedFramePass {
+        handlers,
+        trailing_delay_cycles: PASS_CYCLES - position - closing_cycles,
+    }
 }
 
 /// The most iterations one counted loop runs: `LDX #$00` decrements to 255 first.
