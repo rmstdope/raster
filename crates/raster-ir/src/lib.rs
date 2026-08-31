@@ -7,6 +7,7 @@ use raster_syntax::{
     Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement, Type, Wait,
 };
 pub use raster_timing::CycleConstraint;
+use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Place(pub u32);
@@ -223,7 +224,16 @@ pub const FIRST_VISIBLE_SCANLINE: u32 = 0;
 /// The last scanline of the NTSC visible picture — spec Appendix A.
 pub const LAST_VISIBLE_SCANLINE: u32 = 239;
 
-/// A `frame ... using timed` schedule.
+/// How a frame's schedule is realised — spec section 7.1's `using` clause.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameStrategy {
+    /// A cycle-counted loop synchronized once against vblank.
+    Timed,
+    /// The MMC3 scanline counter, chained handler to handler.
+    Irq,
+}
+
+/// A `frame` schedule, and the strategy that realises it.
 ///
 /// Every `every N scanlines` range is already expanded into one event per occurrence and the whole
 /// schedule is sorted by scanline, so codegen walks it forwards and never has to reason about
@@ -231,8 +241,12 @@ pub const LAST_VISIBLE_SCANLINE: u32 = 239;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     pub name: String,
+    pub strategy: FrameStrategy,
     pub events: Vec<FrameEvent>,
     pub span: Span,
+    /// The `using` clause, which is what a diagnostic about the strategy underlines. A frame that
+    /// omitted the clause carries the frame's own span here.
+    pub strategy_span: Span,
 }
 
 /// One scheduled handler, and the visible scanline it runs on.
@@ -266,6 +280,7 @@ pub fn lower(typed: &TypedProgram) -> Result<Program, Vec<LowerError>> {
     lowerer.predeclare_globals(&typed.program);
     lowerer.reject_recursive_calls(&typed.program);
     lowerer.lower_program(&typed.program);
+    lowerer.check_mmc3_irq_frame();
     if lowerer.errors.is_empty() {
         Ok(lowerer.program)
     } else {
@@ -437,16 +452,21 @@ impl Lowerer {
             return;
         }
         // An omitted strategy is the compiler's to choose (spec section 7.1), and `timed` is the
-        // only one this release can lower, so it is what an omitted clause means.
-        if let Some(strategy) = &frame.strategy {
-            if strategy.value != "timed" {
-                self.error(
-                    strategy.span,
-                    format!("`using {}` is not supported yet", strategy.value),
-                );
-                return;
-            }
-        }
+        // one that needs nothing of the mapper, so it is what an omitted clause means.
+        let (strategy, strategy_span) = match &frame.strategy {
+            Some(strategy) => match strategy.value.as_str() {
+                "timed" => (FrameStrategy::Timed, strategy.span),
+                "irq" => (FrameStrategy::Irq, strategy.span),
+                other => {
+                    self.error(
+                        strategy.span,
+                        format!("`using {other}` is not supported yet"),
+                    );
+                    return;
+                }
+            },
+            None => (FrameStrategy::Timed, span),
+        };
 
         let mut events = Vec::new();
         for event in &frame.events {
@@ -519,8 +539,10 @@ impl Lowerer {
 
         self.program.frame = Some(Frame {
             name: frame.name.value.clone(),
+            strategy,
             events,
             span,
+            strategy_span,
         });
     }
 
@@ -538,6 +560,67 @@ impl Lowerer {
             return None;
         }
         Some(scanline)
+    }
+
+    /// Refuse a `frame ... using irq` the MMC3 would never clock.
+    ///
+    /// The checks themselves are `raster-timing`'s, which owns what the mapper needs; this supplies
+    /// the PPU configuration the program set up and turns the verdict into a spanned diagnostic.
+    /// Nothing is checked on a program that already failed: the configuration is read by walking
+    /// calls, and a program whose recursion was just rejected has no walk that terminates.
+    fn check_mmc3_irq_frame(&mut self) {
+        if !self.errors.is_empty() {
+            return;
+        }
+        let Some(frame) = &self.program.frame else {
+            return;
+        };
+        if frame.strategy != FrameStrategy::Irq {
+            return;
+        }
+        let span = frame.strategy_span;
+        if let Err(error) = validate_mmc3_irq_frame(&self.ppu_configuration()) {
+            self.error(span, mmc3_irq_message(error));
+        }
+    }
+
+    /// What the program leaves in `ppu.ctrl` and `ppu.mask` by the time its frame runs.
+    ///
+    /// The walk is the program's own order — the global initializers, then `main`, stepping into
+    /// each function where it is called — so a configuration written by a helper is read exactly
+    /// as one written inline. A store under an `if` is taken at face value rather than treated as
+    /// unproven: the alternative refuses correct programs, and the store is still the last thing
+    /// the source says about the register.
+    fn ppu_configuration(&self) -> PpuConfiguration {
+        let functions: BTreeMap<Label, &Function> = self
+            .program
+            .functions
+            .iter()
+            .map(|function| (function.label, function))
+            .collect();
+        let mut configuration = PpuConfiguration {
+            // What the reset runtime leaves behind: it stores zero into both before the program's
+            // own code runs, so a program that writes neither has rendering off and one half of
+            // pattern memory, which is exactly what the checks are about.
+            ctrl: RegisterState::Known(0),
+            mask: RegisterState::Known(0),
+        };
+        let mut visiting = Vec::new();
+        collect_ppu_stores(
+            &self.program.global_initializers,
+            &functions,
+            &mut visiting,
+            &mut configuration,
+        );
+        if let Some(main) = &self.program.main {
+            collect_ppu_stores(
+                &main.statements,
+                &functions,
+                &mut visiting,
+                &mut configuration,
+            );
+        }
+        configuration
     }
 
     /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
@@ -1602,5 +1685,86 @@ fn destination_value(destination: Destination) -> Value {
     match destination {
         Destination::Place(place) => Value::Place(place),
         Destination::Register(register) => Value::Register(register),
+    }
+}
+
+/// Record every store to `ppu.ctrl` and `ppu.mask` in `statements`, following calls.
+///
+/// `visiting` is the call stack: `reject_recursive_calls` has already refused a recursive program,
+/// and this walk only runs on one with no errors, so the guard is what makes the recursion provably
+/// finite rather than merely finite in practice.
+fn collect_ppu_stores(
+    statements: &[Statement],
+    functions: &BTreeMap<Label, &Function>,
+    visiting: &mut Vec<Label>,
+    configuration: &mut PpuConfiguration,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Assign {
+                destination: Destination::Register(register),
+                value,
+            } => {
+                let state = match value {
+                    Value::Constant(value) => RegisterState::Known(*value),
+                    _ => RegisterState::Unproven,
+                };
+                match register {
+                    Register::PpuCtrl => configuration.ctrl = state,
+                    Register::PpuMask => configuration.mask = state,
+                    _ => {}
+                }
+            }
+            Statement::Call { target, .. } => {
+                let Some(function) = functions.get(target) else {
+                    continue;
+                };
+                if visiting.contains(target) {
+                    continue;
+                }
+                visiting.push(*target);
+                collect_ppu_stores(&function.statements, functions, visiting, configuration);
+                visiting.pop();
+            }
+            Statement::Timed { body, .. } => {
+                collect_ppu_stores(body, functions, visiting, configuration)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The diagnostic an MMC3 precondition failure reads as, naming the value that caused it.
+///
+/// Each of these is about a ROM that would assemble and never take an interrupt, so the message
+/// says both what the strategy needs and what the program actually wrote.
+fn mmc3_irq_message(error: Mmc3IrqError) -> String {
+    match error {
+        Mmc3IrqError::RenderingDisabled { mask } => {
+            let enabled = match (mask & 0b0000_1000 != 0, mask & 0b0001_0000 != 0) {
+                (true, false) => "enables only the background",
+                (false, true) => "enables only the sprites",
+                _ => "enables neither",
+            };
+            format!(
+                "`using irq` needs background and sprite rendering enabled, \
+                 and `ppu.mask = ${mask:02X}` {enabled}"
+            )
+        }
+        Mmc3IrqError::PatternTablesShareHalf { ctrl } => {
+            let half = if ctrl & 0b0001_0000 != 0 {
+                "$1000"
+            } else {
+                "$0000"
+            };
+            format!(
+                "`using irq` needs the background and sprite pattern tables in opposite halves, \
+                 and `ppu.ctrl = ${ctrl:02X}` puts both at {half}"
+            )
+        }
+        Mmc3IrqError::UnprovenConfiguration { register } => format!(
+            "`using irq` needs a constant `{register}` before the frame, and this program's last \
+             write to it is not one"
+        ),
     }
 }

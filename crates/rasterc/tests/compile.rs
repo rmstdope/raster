@@ -139,3 +139,65 @@ fn a_frame_too_large_for_the_bank_says_the_schedule_is_emitted_three_times() {
         diagnostics[0].notes
     );
 }
+
+/// The counter clocks on filtered PPU A12 rises, so both pattern tables in one half is a ROM that
+/// builds and never interrupts. The diagnostic names the value that did it, because `$00` and `$18`
+/// are both plausible things to have written on purpose.
+#[test]
+fn irq_frame_rejects_same_half_background_and_sprite_patterns() {
+    let source = "main {\n    ppu.ctrl = $18\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.data = $12 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("A12 never rises with one half configured");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` needs the background and sprite pattern tables in opposite halves, \
+         and `ppu.ctrl = $18` puts both at $1000"
+    );
+    assert!(
+        diagnostics[0].span.is_some(),
+        "the diagnostic is source-spanned"
+    );
+}
+
+#[test]
+fn irq_frame_rejects_a_schedule_the_ppu_would_never_clock() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $08\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.data = $12 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("sprite fetches are what raise A12");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` needs background and sprite rendering enabled, \
+         and `ppu.mask = $08` enables only the background"
+    );
+}
+
+/// A register the compiler cannot read is refused rather than assumed: guessing would either
+/// refuse a correct program or pass one that silently never interrupts.
+#[test]
+fn irq_frame_rejects_a_ppu_configuration_it_cannot_prove() {
+    let source = "var setting: u8 = $1e\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = setting\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.data = $12 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("a variable mask cannot be checked");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` needs a constant `ppu.mask` before the frame, and this program's last \
+         write to it is not one"
+    );
+}
+
+/// A `ppu.ctrl` written by a function `main` calls is as good as one written in `main`: the
+/// configuration is read through the calls in the order they run.
+#[test]
+fn irq_frame_reads_a_ppu_configuration_written_by_a_called_function() {
+    let source = "fn configure() {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nmain {\n    configure()\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.data = $12 }\n}\n";
+
+    compile_source(source)
+        .map(|_| ())
+        .expect("the configuration a called function wrote is the one the frame inherits");
+}
