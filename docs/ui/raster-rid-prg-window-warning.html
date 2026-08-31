@@ -1,0 +1,285 @@
+<!doctype html>
+<title>raster-rid — the agreed PRG window warning</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto;
+         margin:.5rem 0 .5rem; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+  .silent { border-left:3px solid #8fd694; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#3f6b46; max-width:56em; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .silent { color:#8fd694; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  }
+</style>
+<main>
+<h1>raster-rid &mdash; warning that a bank data write repointed a PRG window</h1>
+<p class="sub">Agreed with the navigator over three rounds. The caret sits on the
+<code>mmc3.bank_data</code> write, because the select on its own changes nothing and the data write is the
+instruction that moves the window. A definite message when rasterc can see which register is selected, a
+softer one when it cannot, and silence for R0&ndash;R5, which are the CHR windows and the ordinary use of
+these registers.</p>
+
+<h2>1 &middot; R6 selected &mdash; the $8000 window moves</h2>
+<div class="src">main {
+    mmc3.bank_select = 6
+    mmc3.bank_data = 2
+}</div>
+<div class="term"><span class="w">warning: this write repoints the PRG window at $8000</span>
+ <span class="g">--&gt; demo.raster:3:5</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     mmc3.bank_data = 2
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> R6 is selected, so this replaces $8000-$9FFF
+  <span class="g">= note:</span> reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the
+          bytes at $8000 are not the ones it mapped from here on
+  <span class="g">= note:</span> PRG bank switching is not supported yet: banks 0 to 2 hold $FF,
+          and bank 3 is a second view of the fixed bank at $E000</div>
+
+<h2>2 &middot; R7 selected &mdash; the $A000 window moves</h2>
+<div class="src">main {
+    mmc3.bank_select = 7
+    mmc3.bank_data = 0
+}</div>
+<div class="term"><span class="w">warning: this write repoints the PRG window at $A000</span>
+ <span class="g">--&gt; demo.raster:3:5</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     mmc3.bank_data = 0
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> R7 is selected, so this replaces $A000-$BFFF
+  <span class="g">= note:</span> reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the
+          bytes at $A000 are not the ones it mapped from here on
+  <span class="g">= note:</span> PRG bank switching is not supported yet: banks 0 to 2 hold $FF,
+          and bank 3 is a second view of the fixed bank at $E000</div>
+
+<h2>3 &middot; No select at all &mdash; reset left R7 selected</h2>
+<p class="note">Reset's last bank select is <code>$07</code>, so a bank data write with nothing before it
+lands on R7. This is the case an author is least likely to expect, and the one rasterc can name most
+precisely.</p>
+<div class="src">main {
+    mmc3.bank_data = 0
+}</div>
+<div class="term"><span class="w">warning: this write repoints the PRG window at $A000</span>
+ <span class="g">--&gt; bare.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     mmc3.bank_data = 0
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> nothing selects a register before this, and reset selected R7 last
+  <span class="g">= note:</span> reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the
+          bytes at $A000 are not the ones it mapped from here on
+  <span class="g">= note:</span> write <code>mmc3.bank_select</code> with 0 to 5 first to point this at a CHR window</div>
+
+<h2>4 &middot; rasterc cannot see which register is selected</h2>
+<div class="src">main {
+    var which: u8 = 3
+    mmc3.bank_select = which
+    mmc3.bank_data = 2
+}</div>
+<div class="term"><span class="w">warning: rasterc cannot tell whether this bank select changes the mapping mode</span>
+ <span class="g">--&gt; unknown.raster:3:5</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     mmc3.bank_select = which
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^^^^</span> rasterc cannot see this value here, so bits 6 and 7 are unknown
+  <span class="g">= note:</span> bit 6 is PRG mode and bit 7 is CHR A12 inversion; keeping
+          both clear keeps the map reset chose
+
+<span class="w">warning: rasterc cannot tell which bank register this write lands on</span>
+ <span class="g">--&gt; unknown.raster:4:5</span>
+  <span class="g">|</span>
+<span class="g">4 |</span>     mmc3.bank_data = 2
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> the last bank select before this is not one rasterc can see
+  <span class="g">= note:</span> R6 and R7 are the two 8 KiB PRG windows; a write landing on
+          either one repoints $8000 or $A000
+  <span class="g">= note:</span> selecting with a literal 0 to 5 immediately before the write
+          keeps the map reset chose</div>
+<p class="cost">The first warning is the one raster-6jr already ships; the second is this bead's. Two
+warnings for one mistake was weighed and kept: they say different things, and the author who wrote a
+computed select needs both.</p>
+
+<h2>5 &middot; The ordinary CHR case &mdash; silent</h2>
+<div class="src">main {
+    mmc3.bank_select = 0
+    mmc3.bank_data = 3
+    mmc3.bank_select = 2
+    mmc3.bank_data = 9
+}</div>
+<div class="term"><span class="ok">   Compiling</span> demo.raster
+<span class="ok">    Finished</span> demo.nes in 0.04s</div>
+<p class="silent">R0&ndash;R5 are the CHR windows. Nothing is said, on every build, for ever &mdash; this is
+the case the warning must never touch.</p>
+
+<h2>6 &middot; A CHR animation loop &mdash; silent</h2>
+<p class="note">The select is outside the loop and the data write inside it. Nothing in the body writes
+<code>bank_select</code> or calls anything that can, so the selection is still R0 on every iteration.</p>
+<div class="src">main {
+    mmc3.bank_select = 0
+    while frame != 0 {
+        mmc3.bank_data = tile
+    }
+}</div>
+<div class="term"><span class="ok">   Compiling</span> anim.raster
+<span class="ok">    Finished</span> anim.nes in 0.04s</div>
+
+<h2>7 &middot; A loop whose body selects &mdash; the second iteration is what matters</h2>
+<p class="note">On the first iteration R0 is selected; on every one after it, R6. rasterc looks at the body
+before lowering it, sees a <code>bank_select</code> write, and judges the whole body with the selection
+unknown &mdash; which is the only answer true of every iteration.</p>
+<div class="src">main {
+    mmc3.bank_select = 0
+    while count != 0 {
+        mmc3.bank_data = count
+        mmc3.bank_select = 6
+    }
+}</div>
+<div class="term"><span class="w">warning: rasterc cannot tell which bank register this write lands on</span>
+ <span class="g">--&gt; loop.raster:4:9</span>
+  <span class="g">|</span>
+<span class="g">4 |</span>         mmc3.bank_data = count
+  <span class="g">|</span>         <span class="w">^^^^^^^^^^^^^^^^^^^^^^</span> the last bank select before this is not one rasterc can see
+  <span class="g">= note:</span> R6 and R7 are the two 8 KiB PRG windows; a write landing on
+          either one repoints $8000 or $A000
+  <span class="g">= note:</span> selecting with a literal 0 to 5 immediately before the write
+          keeps the map reset chose</div>
+<p class="cost">One warning, not one per iteration: a warning belongs to a source line, and the line
+appears once.</p>
+
+<h2>8 &middot; A helper function</h2>
+<p class="note">A <code>fn</code> can be called with any register selected, so its body starts from an
+unknown selection. The fix is one line inside the helper.</p>
+<div class="src">fn set_chr(tile: u8) {
+    mmc3.bank_data = tile
+}
+
+main {
+    mmc3.bank_select = 0
+    set_chr(3)
+}</div>
+<div class="term"><span class="w">warning: rasterc cannot tell which bank register this write lands on</span>
+ <span class="g">--&gt; helper.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     mmc3.bank_data = tile
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^</span> this function can be called with any register selected
+  <span class="g">= note:</span> R6 and R7 are the two 8 KiB PRG windows; a write landing on
+          either one repoints $8000 or $A000
+  <span class="g">= note:</span> selecting with a literal 0 to 5 in this function, before the
+          write, keeps the map reset chose</div>
+
+<h2>9 &middot; A frame handler</h2>
+<div class="src">frame bars using timed {
+    every 8 scanlines from 0 to 239 {
+        mmc3.bank_data = stripe
+    }
+}</div>
+<div class="term"><span class="w">warning: rasterc cannot tell which bank register this write lands on</span>
+ <span class="g">--&gt; frame.raster:3:9</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>         mmc3.bank_data = stripe
+  <span class="g">|</span>         <span class="w">^^^^^^^^^^^^^^^^^^^^^^^</span> a frame handler runs with any register selected
+  <span class="g">= note:</span> R6 and R7 are the two 8 KiB PRG windows; a write landing on
+          either one repoints $8000 or $A000
+  <span class="g">= note:</span> selecting with a literal 0 to 5 in the handler, before the
+          write, keeps the map reset chose</div>
+
+<h2>10 &middot; A call between the select and the data write</h2>
+<p class="note">Only a call that can reach a <code>bank_select</code> write clears what rasterc knows.
+<code>bump()</code> increments a counter and is transparent; <code>tick()</code> selects, so the write
+after it falls to the softer message.</p>
+<div class="src">fn bump() { counter = counter + 1 }
+fn tick() { mmc3.bank_select = 6 }
+
+main {
+    mmc3.bank_select = 0
+    bump()
+    mmc3.bank_data = 3        // silent: bump() cannot select
+    tick()
+    mmc3.bank_data = 4        // warns: tick() can
+}</div>
+<div class="term"><span class="w">warning: rasterc cannot tell which bank register this write lands on</span>
+ <span class="g">--&gt; calls.raster:9:5</span>
+  <span class="g">|</span>
+<span class="g">9 |</span>     mmc3.bank_data = 4
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> the last bank select before this is not one rasterc can see
+  <span class="g">= note:</span> R6 and R7 are the two 8 KiB PRG windows; a write landing on
+          either one repoints $8000 or $A000
+  <span class="g">= note:</span> selecting with a literal 0 to 5 immediately before the write
+          keeps the map reset chose</div>
+<p class="cost">Carrying <em>which</em> register <code>tick()</code> leaves selected, so this could say
+&ldquo;R6 is selected&rdquo;, was considered and declined: it needs a second evaluator over the syntax tree
+kept in step with the one over the lowering. Filed as a follow-up instead.</p>
+
+<h2>11 &middot; A select that changes the mode <em>and</em> names R6</h2>
+<p class="note">Bits 0 to 2 of a select name the register, so <code>$46</code> selects R6 whatever the mode
+bits say. Two warnings, two lines, two different mistakes.</p>
+<div class="src">main {
+    mmc3.bank_select = $46
+    mmc3.bank_data = 2
+}</div>
+<div class="term"><span class="w">warning: this bank select changes the MMC3 mapping mode</span>
+ <span class="g">--&gt; both.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     mmc3.bank_select = $46
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^^</span> bit 6 moves the fixed PRG bank from $C000 to $8000
+  <span class="g">= note:</span> reset chose PRG mode 0, a linear 32 KiB map with this code
+          in the fixed bank at $E000; clearing bit 6 keeps that map
+  <span class="g">= note:</span> bits 6 and 7 take effect from whichever bank select was
+          written last, not from the bank data that follows
+
+<span class="w">warning: this write repoints the PRG window at $8000</span>
+ <span class="g">--&gt; both.raster:3:5</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     mmc3.bank_data = 2
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> R6 is selected, so this replaces $8000-$9FFF
+  <span class="g">= note:</span> reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the
+          bytes at $8000 are not the ones it mapped from here on
+  <span class="g">= note:</span> PRG bank switching is not supported yet: banks 0 to 2 hold $FF,
+          and bank 3 is a second view of the fixed bank at $E000</div>
+
+<h2>12 &middot; Every string, in one place</h2>
+<div class="src">message  this write repoints the PRG window at $8000
+message  this write repoints the PRG window at $A000
+message  rasterc cannot tell which bank register this write lands on
+
+label    R6 is selected, so this replaces $8000-$9FFF
+label    R7 is selected, so this replaces $A000-$BFFF
+label    nothing selects a register before this, and reset selected R7 last
+label    the last bank select before this is not one rasterc can see
+label    this function can be called with any register selected
+label    a frame handler runs with any register selected
+
+note     reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the
+         bytes at $8000 are not the ones it mapped from here on
+note     reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the
+         bytes at $A000 are not the ones it mapped from here on
+note     PRG bank switching is not supported yet: banks 0 to 2 hold $FF,
+         and bank 3 is a second view of the fixed bank at $E000
+note     R6 and R7 are the two 8 KiB PRG windows; a write landing on
+         either one repoints $8000 or $A000
+note     selecting with a literal 0 to 5 immediately before the write
+         keeps the map reset chose
+note     selecting with a literal 0 to 5 in this function, before the
+         write, keeps the map reset chose
+note     selecting with a literal 0 to 5 in the handler, before the
+         write, keeps the map reset chose
+note     write `mmc3.bank_select` with 0 to 5 first to point this at a CHR window</div>
+</main>
