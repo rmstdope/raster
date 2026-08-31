@@ -39,4 +39,7 @@ behaviour that an emulator cannot establish.
 | Observation | Everything looks ok |
 
 The unrecorded checksum and measured duration make this historical evidence,
-not a bit-for-bit reproducible artifact.
+not a bit-for-bit reproducible artifact. It also predates the reset runtime
+programming the MMC3 CHR bank registers, so the ROM it describes is not the ROM
+this repository builds today. Nothing here is hardware evidence for the current
+ROM.
