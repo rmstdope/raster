@@ -151,3 +151,28 @@ fn a_frame_too_large_for_the_bank_says_the_schedule_is_emitted_three_times() {
         diagnostics[0].notes
     );
 }
+
+#[test]
+fn a_frame_wait_says_what_the_release_can_build() {
+    let diagnostics = compile_source("main {\n    wait vblank\n}\n")
+        .expect_err("frame waits are not in this release");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "only `wait cycles` is supported yet; frame waits arrive with frame scheduling"
+    );
+    assert_eq!(diagnostics[0].notes, [SUPPORTED_SUBSET]);
+}
+
+#[test]
+fn a_string_expression_says_what_the_release_can_build() {
+    let diagnostics = compile_source("main {\n    \"text\"\n}\n")
+        .expect_err("string expressions are not in this release");
+
+    assert!(
+        diagnostics.iter().any(|d| d.message
+            == "string expressions are not supported"
+            && d.notes == [SUPPORTED_SUBSET]),
+        "{diagnostics:?}"
+    );
+}
