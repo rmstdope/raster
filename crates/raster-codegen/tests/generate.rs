@@ -14,6 +14,13 @@ fn generate_source(source: &str) -> raster_codegen::CodegenOutput {
     generate(&lower(&typed).expect("fixture should lower")).expect("fixture should generate")
 }
 
+/// The same, for a fixture whose codegen is expected to fail.
+fn generate_source_result(source: &str) -> Result<raster_codegen::CodegenOutput, CodegenError> {
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    generate(&lower(&typed).expect("fixture should lower"))
+}
+
 #[test]
 fn generates_relocatable_calls_control_flow_arithmetic_and_register_stores() {
     let output = generate_source(
@@ -378,4 +385,27 @@ fn sync_exact_lowers_to_the_documented_de_jitter_poll() {
         .position(|instruction| instruction.opcode == 0x2c && instruction.operand == Some(0x2002))
         .expect("`sync exact` polls $2002");
     assert_eq!(instructions[bit + 1].opcode, 0x10);
+}
+
+#[test]
+fn a_return_inside_a_timed_block_is_refused_by_the_analyser() {
+    // `raster-sema` refuses this too, from the increment that follows — but the analyser is the
+    // backstop, and this asserts it holds on its own, for any construct nobody thought to list.
+    let result = generate_source_result("main { cycles(20) pad { return } }");
+
+    assert!(
+        matches!(
+            result,
+            Err(CodegenError::Timing {
+                error: raster_timing::TimingError::ControlFlowInRegion { opcode: 0x4c, .. },
+                ..
+            })
+        ),
+        "expected a control-flow refusal, got {result:?}"
+    );
+}
+
+#[test]
+fn a_nested_timed_block_is_not_control_flow() {
+    generate_source("main { cycles(40) pad { cycles(20) pad { var v: u8 = 1 } } }");
 }
