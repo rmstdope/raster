@@ -2,8 +2,8 @@ use raster_6502::AddressingMode;
 use raster_codegen::{generate, CodegenError};
 use raster_ir::lower;
 use raster_link::{
-    link_mmc3_ines, FixedBankItem, Label, RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
-    MMC3_PRG_ROM_SIZE,
+    link_mmc3_program, FixedBankItem, Label, RelocationKind, INES_HEADER_SIZE,
+    MMC3_FIXED_BANK_SIZE, MMC3_PRG_ROM_SIZE,
 };
 use raster_sema::analyze;
 use raster_syntax::parse;
@@ -179,8 +179,21 @@ fn allocates_zero_page_deterministically_reserving_hardware_bytes() {
 #[test]
 fn generated_main_links_to_an_executable_register_store() {
     let output = generate_source("main { ppu.mask = 1 }");
-    let rom = link_mmc3_ines(&output.program, output.entry_points, true).unwrap();
+    let rom = link_mmc3_program(&output.program, output.main, true).unwrap();
     let fixed_bank = INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - MMC3_FIXED_BANK_SIZE;
-    assert_eq!(&rom[fixed_bank..fixed_bank + 5], &[0xa9, 1, 0x8d, 1, 0x20]);
-    assert_eq!(&rom[rom.len() - 4..rom.len() - 2], &[0x00, 0xe0]);
+    // The fixed bank now opens with the runtime's reset sequence, and the
+    // program's own first bytes follow the 71-byte prologue.
+    assert_eq!(
+        &rom.image[fixed_bank..fixed_bank + 4],
+        &[0x78, 0xd8, 0xa2, 0x40]
+    );
+    assert_eq!(
+        &rom.image[fixed_bank + 71..fixed_bank + 76],
+        &[0xa9, 1, 0x8d, 1, 0x20]
+    );
+    // Reset enters the runtime, not the main label.
+    assert_eq!(
+        &rom.image[rom.image.len() - 4..rom.image.len() - 2],
+        &[0x00, 0xe0]
+    );
 }

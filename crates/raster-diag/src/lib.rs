@@ -13,7 +13,11 @@ pub struct Span {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
     pub message: String,
-    pub span: Span,
+    /// Where in the source this is about, when there is such a place. Some
+    /// failures — a program with no `main`, a program too large for its bank —
+    /// are about the whole compilation rather than any one span, and render
+    /// without a location line.
+    pub span: Option<Span>,
     pub label: String,
     pub notes: Vec<String>,
 }
@@ -58,8 +62,20 @@ impl Diagnostic {
     pub fn error(message: impl Into<String>, span: Span, label: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            span,
+            span: Some(span),
             label: label.into(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// A diagnostic about the compilation rather than about a place in the
+    /// source.
+    pub fn without_span(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            label: message.clone(),
+            message,
+            span: None,
             notes: Vec::new(),
         }
     }
@@ -73,7 +89,13 @@ impl Diagnostic {
 const NOTE_MARKER: &str = " = note: ";
 
 pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
-    let Span { start, end } = diagnostic.span;
+    let Some(Span { start, end }) = diagnostic.span else {
+        let mut rendered = format!("error: {}\n", diagnostic.message);
+        for note in &diagnostic.notes {
+            rendered.push_str(&render_note(note, " "));
+        }
+        return rendered;
+    };
     assert!(
         start <= end,
         "diagnostic span start must not exceed its end"

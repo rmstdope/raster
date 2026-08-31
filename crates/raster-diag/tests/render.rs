@@ -128,3 +128,21 @@ fn clamps_a_span_to_character_boundaries() {
         )
     );
 }
+
+#[test]
+fn renders_a_diagnostic_without_a_span() {
+    let source = SourceFile::new("fixture.raster", "main {}\n");
+    let diagnostic = Diagnostic::without_span("the program does not fit the MMC3 fixed bank")
+        .with_note("8402 bytes of code, and $E000-$FFFF holds 8186")
+        .with_note("PRG bank switching is not supported yet, so all code lives\nin the fixed bank");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "error: the program does not fit the MMC3 fixed bank\n",
+            "  = note: 8402 bytes of code, and $E000-$FFFF holds 8186\n",
+            "  = note: PRG bank switching is not supported yet, so all code lives\n",
+            "          in the fixed bank\n"
+        )
+    );
+}

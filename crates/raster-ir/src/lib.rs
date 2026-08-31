@@ -368,9 +368,9 @@ impl Lowerer {
                         self.lower_main(block);
                     }
                 }
-                Item::Target(_) => self.error(item.span, "target blocks are not supported"),
-                Item::Import(_) => self.error(item.span, "imports are not supported"),
-                Item::Frame(_) => self.error(item.span, "frame scheduling is not supported"),
+                Item::Target(_) => self.error(item.span, "`target` blocks are not supported yet"),
+                Item::Import(_) => self.error(item.span, "`import` is not supported yet"),
+                Item::Frame(_) => self.error(item.span, "`frame` blocks are not supported yet"),
                 Item::Other(_) => self.error(item.span, "this top-level item is not supported"),
             }
         }
@@ -381,7 +381,7 @@ impl Lowerer {
             Keyword::Group => {
                 self.error(
                     declaration_name_span(declaration),
-                    "group storage is not supported",
+                    "`group` storage is not supported yet",
                 );
             }
             Keyword::Const => {
@@ -429,10 +429,7 @@ impl Lowerer {
             return;
         };
         if function.is_assembly {
-            self.error(
-                function.name.span,
-                "inline assembly functions are not supported",
-            );
+            self.error(function.name.span, "`asm` functions are not supported yet");
             return;
         }
         if function.cycle_spec.is_some() {
@@ -537,33 +534,33 @@ impl Lowerer {
                 body,
             } => self.lower_for(binding, range, step.as_ref(), body, output),
             SyntaxStatement::Loop(block) => {
-                self.error(statement.span, "unbounded loop is not supported");
+                self.error(statement.span, "`loop` is not supported yet");
                 self.enter_scope();
                 let _ = self.lower_statements(block);
                 self.leave_scope();
                 false
             }
             SyntaxStatement::Cycles { body, .. } => {
-                self.error(statement.span, "timing blocks are not supported");
+                self.error(statement.span, "`cycles` blocks are not supported yet");
                 self.enter_scope();
                 let _ = self.lower_statements(body);
                 self.leave_scope();
                 false
             }
             SyntaxStatement::Wait(_) => {
-                self.error(statement.span, "wait statements are not supported");
+                self.error(statement.span, "`wait` statements are not supported yet");
                 false
             }
             SyntaxStatement::Sync(_) => {
-                self.error(statement.span, "sync statements are not supported");
+                self.error(statement.span, "`sync` statements are not supported yet");
                 false
             }
             SyntaxStatement::Break => {
-                self.error(statement.span, "break statements are not supported");
+                self.error(statement.span, "`break` is not supported yet");
                 false
             }
             SyntaxStatement::Continue => {
-                self.error(statement.span, "continue statements are not supported");
+                self.error(statement.span, "`continue` is not supported yet");
                 false
             }
             SyntaxStatement::Return(value) => {
@@ -584,7 +581,7 @@ impl Lowerer {
             Keyword::Group => {
                 self.error(
                     declaration_name_span(declaration),
-                    "group storage is not supported",
+                    "`group` storage is not supported yet",
                 );
             }
             Keyword::Const => {
@@ -839,7 +836,7 @@ impl Lowerer {
                 self.register(base, member).map(Destination::Register)
             }
             SyntaxExpression::Index { base, index } => {
-                self.error(expression.span, "array indexing is not supported");
+                self.error(expression.span, "arrays are not supported yet");
                 let _ = self.lower_value(base);
                 let _ = self.lower_value(index);
                 None
@@ -990,7 +987,7 @@ impl Lowerer {
                 }
             }
             SyntaxExpression::Index { base, index } => {
-                self.error(expression.span, "array indexing is not supported");
+                self.error(expression.span, "arrays are not supported yet");
                 let _ = self.lower_value(base);
                 let _ = self.lower_value(index);
                 Value::Constant(0)
@@ -1067,7 +1064,7 @@ impl Lowerer {
         match &annotation.value {
             Type::Name(name) if name.value == "u8" => true,
             Type::Name(name) if name.value == "u16" => {
-                self.error(name.span, "u16 storage and expressions are not supported");
+                self.error(name.span, "`u16` values are not supported yet");
                 false
             }
             Type::Name(name) if name.value == "bool" => {
@@ -1083,7 +1080,7 @@ impl Lowerer {
                 false
             }
             Type::Array { .. } => {
-                self.error(annotation.span, "array storage is not supported");
+                self.error(annotation.span, "arrays are not supported yet");
                 false
             }
         }

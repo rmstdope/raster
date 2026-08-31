@@ -3,6 +3,10 @@ use std::{
     io::{ErrorKind, Write},
 };
 
+mod compile;
+
+pub use compile::{compile_source, Rom};
+
 use raster_diag::{render, Diagnostic, SourceFile, Span};
 
 const USAGE: &str = "Usage: rasterc <INPUT.raster>\n";
