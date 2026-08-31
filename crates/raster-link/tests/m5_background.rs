@@ -1,6 +1,14 @@
 use std::io::Cursor;
 
-use raster_assets::{decode_background, encode_background, TRANSPARENT_COLOUR};
+use raster_assets::{
+    decode_background, encode_background, IndexedBackground, NesBackground, TRANSPARENT_COLOUR,
+};
+use raster_link::{
+    m5_background_rom, BackgroundData, LinkedRom, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
+    MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
+};
+
+const JMP_ABSOLUTE: u8 = 0x4c;
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 240;
@@ -107,4 +115,70 @@ fn the_fixture_encodes_to_four_subpalettes_and_seventeen_chr_tiles() {
     );
     // tile 0 is reserved blank and the fixture never uses it
     assert!(encoded.nametable().iter().all(|tile| (1..=16).contains(tile)));
+}
+
+fn fixed_bank(rom: &[u8]) -> &[u8] {
+    let offset = INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - MMC3_FIXED_BANK_SIZE;
+    &rom[offset..]
+}
+
+fn linked_fixture() -> (IndexedBackground, NesBackground, LinkedRom) {
+    let indexed = decode_background(Cursor::new(fixture_png())).expect("the fixture decodes");
+    let encoded = encode_background(&indexed).expect("the fixture encodes");
+    let rom = m5_background_rom(BackgroundData {
+        palettes: encoded.palettes(),
+        chr: encoded.chr(),
+        nametable: encoded.nametable(),
+        attributes: encoded.attributes(),
+    })
+    .expect("the M5 program links and fits its bank");
+    (indexed, encoded, rom)
+}
+
+/// The offset of `block` inside `bank`, as one contiguous run.
+fn one_run(bank: &[u8], block: &[u8], what: &str) -> usize {
+    let first = bank
+        .windows(block.len())
+        .position(|window| window == block)
+        .unwrap_or_else(|| panic!("the fixed bank carries the {what} as one contiguous run"));
+    let next = bank[first + 1..]
+        .windows(block.len())
+        .position(|window| window == block);
+    assert_eq!(next, None, "the {what} appears in the fixed bank once");
+    first
+}
+
+#[test]
+fn ships_the_encoded_background_in_the_fixed_bank() {
+    let (_, encoded, rom) = linked_fixture();
+
+    assert_eq!(
+        &rom.image[..INES_HEADER_SIZE],
+        // mapper 4, two 16 KiB PRG banks, zero CHR-ROM banks: CHR RAM
+        &[b'N', b'E', b'S', 0x1a, 2, 0, 0x40, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    );
+
+    let bank = fixed_bank(&rom.image);
+    // The halt loop is the only JMP that targets its own address.
+    let halt = bank
+        .windows(3)
+        .enumerate()
+        .position(|(offset, window)| {
+            window[0] == JMP_ABSOLUTE
+                && u16::from_le_bytes([window[1], window[2]])
+                    == MMC3_FIXED_BANK_START + offset as u16
+        })
+        .expect("the body ends in a JMP halt loop");
+
+    let palettes = one_run(bank, encoded.palettes(), "palettes");
+    let chr = one_run(bank, encoded.chr(), "CHR");
+    let nametable = one_run(bank, encoded.nametable(), "nametable");
+    let attributes = one_run(bank, encoded.attributes(), "attributes");
+
+    assert!(
+        halt < palettes && palettes < chr && chr < nametable && nametable < attributes,
+        "the four blocks follow the halt loop in order: \
+         halt {halt}, palettes {palettes}, CHR {chr}, nametable {nametable}, \
+         attributes {attributes}",
+    );
 }
