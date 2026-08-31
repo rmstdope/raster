@@ -10,6 +10,30 @@ pub struct Span {
     pub end: usize,
 }
 
+/// Why the compiler refused a program, in a form the compiler itself can test.
+///
+/// The wording of a refusal is free to change; this is not. `rasterc` chooses
+/// which note to attach by asking this, so a reworded message cannot silently
+/// stop explaining itself — which is exactly what a `message.ends_with(...)`
+/// test allowed, twice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Refusal {
+    /// The language specification defines this construct and this release does
+    /// not compile it *anywhere*. These carry the list of what the release can
+    /// build instead.
+    NotInThisRelease,
+    /// The construct is fine, and a timed region cannot charge its cost,
+    /// because the region is costed as straight-line code. Only the cost-model
+    /// gaps: a hardware wait has no cost to measure ever, and a placement rule
+    /// is a rule, so both of those are `Rejected` even though their messages
+    /// mention a timed region.
+    TimedRegionCost,
+    /// A mistake in the program, or something Raster does not intend to do.
+    /// Carries no note: the message already says what to do instead, and a
+    /// list of supported constructs beside it would be noise.
+    Rejected,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
     pub message: String,

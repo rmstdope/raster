@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use raster_diag::Refusal;
 use raster_sema::TypedProgram;
 use raster_syntax::{
     Block, CycleBound, Declaration, Expression as SyntaxExpression, Frame as SyntaxFrame,
@@ -258,6 +259,7 @@ pub struct Program {
 pub struct LowerError {
     pub message: String,
     pub span: Span,
+    pub refusal: Refusal,
 }
 
 pub fn lower(typed: &TypedProgram) -> Result<Program, Vec<LowerError>> {
@@ -309,10 +311,26 @@ impl Lowerer {
         }
     }
 
+    /// Refuse the program. The default kind is `Rejected`: a mistake, or
+    /// something Raster does not intend to do. A construct the specification
+    /// defines and this release does not compile goes through
+    /// `not_in_this_release` instead, so that the author is told what the
+    /// release *can* build.
     fn error(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::Rejected);
+    }
+
+    /// Refuse a construct the specification defines and this release does not
+    /// compile anywhere.
+    fn not_in_this_release(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::NotInThisRelease);
+    }
+
+    fn refuse(&mut self, span: Span, message: impl Into<String>, refusal: Refusal) {
         self.errors.push(LowerError {
             message: message.into(),
             span,
+            refusal,
         });
     }
 
@@ -418,8 +436,12 @@ impl Lowerer {
                         self.lower_main(block);
                     }
                 }
-                Item::Target(_) => self.error(item.span, "`target` blocks are not supported yet"),
-                Item::Import(_) => self.error(item.span, "`import` is not supported yet"),
+                Item::Target(_) => {
+                    self.not_in_this_release(item.span, "`target` blocks are not supported yet")
+                }
+                Item::Import(_) => {
+                    self.not_in_this_release(item.span, "`import` is not supported yet")
+                }
                 Item::Frame(frame) => self.lower_frame(frame, item.span),
                 Item::Other(_) => self.error(item.span, "this top-level item is not supported"),
             }
@@ -433,14 +455,14 @@ impl Lowerer {
     /// that cannot be built, rather than left for codegen to discover with nothing to point at.
     fn lower_frame(&mut self, frame: &SyntaxFrame, span: Span) {
         if self.program.frame.is_some() {
-            self.error(span, "only one `frame` is supported yet");
+            self.not_in_this_release(span, "only one `frame` is supported yet");
             return;
         }
         // An omitted strategy is the compiler's to choose (spec section 7.1), and `timed` is the
         // only one this release can lower, so it is what an omitted clause means.
         if let Some(strategy) = &frame.strategy {
             if strategy.value != "timed" {
-                self.error(
+                self.not_in_this_release(
                     strategy.span,
                     format!("`using {}` is not supported yet", strategy.value),
                 );
@@ -453,7 +475,7 @@ impl Lowerer {
             match &event.value {
                 SyntaxFrameEvent::At { position, body } => match position {
                     FramePosition::Vblank(span) => {
-                        self.error(*span, "`at vblank` is not supported yet");
+                        self.not_in_this_release(*span, "`at vblank` is not supported yet");
                     }
                     FramePosition::Scanline(value) => {
                         if let Some(scanline) = self.visible_scanline(value) {
@@ -551,7 +573,7 @@ impl Lowerer {
     fn lower_top_level_declaration(&mut self, declaration: &Declaration) {
         match declaration.kind {
             Keyword::Group => {
-                self.error(
+                self.not_in_this_release(
                     declaration_name_span(declaration),
                     "`group` storage is not supported yet",
                 );
@@ -601,20 +623,20 @@ impl Lowerer {
             return;
         };
         if function.is_assembly {
-            self.error(function.name.span, "`asm` functions are not supported yet");
+            self.not_in_this_release(function.name.span, "`asm` functions are not supported yet");
             return;
         }
         if function.cycle_spec.is_some() {
-            self.error(
+            self.not_in_this_release(
                 function.name.span,
                 "function timing specifications are not supported",
             );
         }
         if function.storage.is_some() {
-            self.error(function.name.span, "function storage is not supported");
+            self.not_in_this_release(function.name.span, "function storage is not supported");
         }
         if !function.employs.is_empty() {
-            self.error(
+            self.not_in_this_release(
                 function.name.span,
                 "function group employment is not supported",
             );
@@ -706,7 +728,7 @@ impl Lowerer {
                 body,
             } => self.lower_for(binding, range, step.as_ref(), body, output),
             SyntaxStatement::Loop(block) => {
-                self.error(statement.span, "`loop` is not supported yet");
+                self.not_in_this_release(statement.span, "`loop` is not supported yet");
                 self.enter_scope();
                 let _ = self.lower_statements(block);
                 self.leave_scope();
@@ -738,7 +760,7 @@ impl Lowerer {
                 false
             }
             SyntaxStatement::Wait(_) => {
-                self.error(
+                self.not_in_this_release(
                     statement.span,
                     "only `wait cycles` is supported yet; frame waits arrive with frame scheduling",
                 );
@@ -749,11 +771,11 @@ impl Lowerer {
                 false
             }
             SyntaxStatement::Break => {
-                self.error(statement.span, "`break` is not supported yet");
+                self.not_in_this_release(statement.span, "`break` is not supported yet");
                 false
             }
             SyntaxStatement::Continue => {
-                self.error(statement.span, "`continue` is not supported yet");
+                self.not_in_this_release(statement.span, "`continue` is not supported yet");
                 false
             }
             SyntaxStatement::Return(value) => {
@@ -772,7 +794,7 @@ impl Lowerer {
     fn lower_local_declaration(&mut self, declaration: &Declaration, output: &mut Vec<Statement>) {
         match declaration.kind {
             Keyword::Group => {
-                self.error(
+                self.not_in_this_release(
                     declaration_name_span(declaration),
                     "`group` storage is not supported yet",
                 );
@@ -1029,7 +1051,7 @@ impl Lowerer {
                 self.register(base, member).map(Destination::Register)
             }
             SyntaxExpression::Index { base, index } => {
-                self.error(expression.span, "arrays are not supported yet");
+                self.not_in_this_release(expression.span, "arrays are not supported yet");
                 let _ = self.lower_value(base);
                 let _ = self.lower_value(index);
                 None
@@ -1061,7 +1083,7 @@ impl Lowerer {
                 return self.condition(left, comparison, right, expression.span);
             }
         }
-        self.error(
+        self.not_in_this_release(
             expression.span,
             "bool expressions are not supported; use a u8 comparison",
         );
@@ -1108,15 +1130,18 @@ impl Lowerer {
                 }
             },
             SyntaxExpression::String(_) => {
-                self.error(expression.span, "string expressions are not supported");
+                self.not_in_this_release(expression.span, "string expressions are not supported");
                 Value::Constant(0)
             }
             SyntaxExpression::Character(_) => {
-                self.error(expression.span, "character expressions are not supported");
+                self.not_in_this_release(
+                    expression.span,
+                    "character expressions are not supported",
+                );
                 Value::Constant(0)
             }
             SyntaxExpression::Boolean(_) => {
-                self.error(expression.span, "bool expressions are not supported");
+                self.not_in_this_release(expression.span, "bool expressions are not supported");
                 Value::Constant(0)
             }
             SyntaxExpression::Prefix { operator, operand } => match operator.value {
@@ -1130,7 +1155,7 @@ impl Lowerer {
                     operand: Box::new(self.lower_value(operand)),
                 },
                 Operator::Bang => {
-                    self.error(operator.span, "bool expressions are not supported");
+                    self.not_in_this_release(operator.span, "bool expressions are not supported");
                     let _ = self.lower_value(operand);
                     Value::Constant(0)
                 }
@@ -1180,7 +1205,7 @@ impl Lowerer {
                 }
             }
             SyntaxExpression::Index { base, index } => {
-                self.error(expression.span, "arrays are not supported yet");
+                self.not_in_this_release(expression.span, "arrays are not supported yet");
                 let _ = self.lower_value(base);
                 let _ = self.lower_value(index);
                 Value::Constant(0)
@@ -1238,7 +1263,7 @@ impl Lowerer {
             ("mmc3", "irq_disable") => Register::Mmc3IrqDisable,
             ("mmc3", "irq_enable") => Register::Mmc3IrqEnable,
             _ => {
-                self.error(member.span, "this byte register is not supported");
+                self.not_in_this_release(member.span, "this byte register is not supported");
                 return None;
             }
         };
@@ -1257,11 +1282,14 @@ impl Lowerer {
         match &annotation.value {
             Type::Name(name) if name.value == "u8" => true,
             Type::Name(name) if name.value == "u16" => {
-                self.error(name.span, "`u16` values are not supported yet");
+                self.not_in_this_release(name.span, "`u16` values are not supported yet");
                 false
             }
             Type::Name(name) if name.value == "bool" => {
-                self.error(name.span, "bool storage and expressions are not supported");
+                self.not_in_this_release(
+                    name.span,
+                    "bool storage and expressions are not supported",
+                );
                 false
             }
             Type::Name(name) if name.value == "void" => {
@@ -1273,7 +1301,7 @@ impl Lowerer {
                 false
             }
             Type::Array { .. } => {
-                self.error(annotation.span, "arrays are not supported yet");
+                self.not_in_this_release(annotation.span, "arrays are not supported yet");
                 false
             }
         }
@@ -1294,7 +1322,7 @@ impl Lowerer {
             None => true,
             Some(storage) if storage.value == "zp" => true,
             Some(storage) => {
-                self.error(storage.span, "only `in zp` storage is supported");
+                self.not_in_this_release(storage.span, "only `in zp` storage is supported");
                 false
             }
         }

@@ -1,3 +1,4 @@
+use raster_diag::Refusal;
 use raster_sema::analyze;
 use raster_syntax::parse;
 
@@ -511,4 +512,90 @@ fn return_inside_a_frame_handler_is_refused_like_any_other_timed_block() {
 
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0].message, RETURN_IN_A_TIMED_BLOCK);
+}
+
+/// Every refusal a timed region raises, and the kind it must carry.
+///
+/// A `TimedRegionCost` refusal is a cost-model gap: the construct is fine, and a region costed as
+/// straight-line code cannot price it, so `rasterc` says so beside the diagnostic. The three
+/// `Rejected` ones deliberately say nothing — two hardware waits have no cost to measure ever, so
+/// "once their cost can be measured" would promise what the compiler cannot deliver, and `sync
+/// exact` in the wrong place is a placement rule whose message already says where to put it.
+///
+/// This is a table rather than a sentence in the source because the kind is what `rasterc` asks:
+/// moving one of these back to an unclassified refusal takes the note away silently, which is the
+/// failure this bead exists to close.
+#[test]
+fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
+    use raster_diag::Refusal::{Rejected, TimedRegionCost};
+
+    let cases: &[(Refusal, &str, &str)] = &[
+        (
+            TimedRegionCost,
+            "an unbounded loop has no provable cycle cost inside a timed region",
+            "main {\n    cycles(20) pad {\n        loop {}\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "branch arms inside a timed region cannot yet be balanced",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        if level == 1 { level = 2 }\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "a `while` loop's trip count cannot be proven inside a timed region",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        while level != 0 { level = level - 1 }\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "a `for` loop inside a timed region compiles to a loop whose cost is not yet proven",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        for index in 0..3 { level = level + 1 }\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "`wait cycles` inside a timed region spends its cycles in a loop",
+            "main {\n    cycles(20) pad {\n        wait cycles(4)\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "multiplication, division and remainder inside a timed region compile to loops",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        level = level * 2\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "a shift inside a timed region compiles to a loop whose cost is not yet proven",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        level = level >> 1\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "cannot be called inside a timed region yet",
+            "fn helper() {}\nmain {\n    cycles(20) pad {\n        helper()\n    }\n}\n",
+        ),
+        (
+            Rejected,
+            "`wait scanline` has no provable cost inside a timed region",
+            "main {\n    cycles(20) pad {\n        wait scanline 10\n    }\n}\n",
+        ),
+        (
+            Rejected,
+            "`wait vblank` has no provable cost inside a timed region",
+            "main {\n    cycles(20) pad {\n        wait vblank\n    }\n}\n",
+        ),
+        (
+            Rejected,
+            "`sync exact` waits an unpredictable number of cycles",
+            "main {\n    cycles(20) pad {\n        sync exact\n    }\n}\n",
+        ),
+    ];
+
+    for (refusal, expected, source) in cases {
+        let errors = errors_with_spans(source);
+        let refused = errors
+            .iter()
+            .find(|error| error.message.contains(expected))
+            .unwrap_or_else(|| panic!("expected `{expected}` in {errors:?}"));
+        assert_eq!(
+            refused.refusal, *refusal,
+            "`{expected}` decides its note by this kind"
+        );
+    }
 }

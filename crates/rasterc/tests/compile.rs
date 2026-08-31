@@ -13,7 +13,9 @@ fn compiles_the_demo_to_the_same_rom_as_m1() {
 
 const SUPPORTED_SUBSET: &str = concat!(
     "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
-    "arithmetic and `ppu.*` / `mmc3.*` register writes"
+    "arithmetic, and `ppu.*` / `mmc3.*` register writes; timed regions\n",
+    "with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n",
+    "`frame` of `every ... scanlines` events"
 );
 
 #[test]
@@ -149,5 +151,68 @@ fn a_frame_too_large_for_the_bank_says_the_schedule_is_emitted_three_times() {
             .any(|note| note.contains("costs three times its own size")),
         "the author is owed the reason their program measures three times its size: {:?}",
         diagnostics[0].notes
+    );
+}
+
+#[test]
+fn a_frame_wait_says_what_the_release_can_build() {
+    let diagnostics = compile_source("main {\n    wait vblank\n}\n")
+        .expect_err("frame waits are not in this release");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "only `wait cycles` is supported yet; frame waits arrive with frame scheduling"
+    );
+    assert_eq!(diagnostics[0].notes, [SUPPORTED_SUBSET]);
+}
+
+#[test]
+fn a_string_expression_says_what_the_release_can_build() {
+    let diagnostics = compile_source("main {\n    \"text\"\n}\n")
+        .expect_err("string expressions are not in this release");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message == "string expressions are not supported"
+                && d.notes == [SUPPORTED_SUBSET]),
+        "{diagnostics:?}"
+    );
+}
+
+const TIMED_REGION_COST: &str = concat!(
+    "a timed region is costed as straight-line code; loops, branches\n",
+    "and calls will be admitted once their cost can be measured"
+);
+
+#[test]
+fn a_timed_region_says_why_it_cannot_charge_a_loop() {
+    let diagnostics = compile_source(
+        "var level: u8\nmain {\n    sync exact\n    cycles(20) pad {\n        level = level >> 1\n    }\n}\n",
+    )
+    .expect_err("a shift compiles to a loop");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "a shift inside a timed region compiles to a loop whose cost is not yet proven"
+    );
+    assert_eq!(diagnostics[0].notes, [TIMED_REGION_COST]);
+}
+
+#[test]
+fn a_hardware_wait_inside_a_timed_region_carries_no_note() {
+    let diagnostics = compile_source(
+        "main {\n    sync exact\n    cycles(20) pad {\n        wait vblank\n    }\n}\n",
+    )
+    .expect_err("a vblank wait has no provable cost");
+
+    let waited = diagnostics
+        .iter()
+        .find(|d| d.message == "`wait vblank` has no provable cost inside a timed region")
+        .expect("the vblank wait is refused");
+    assert!(
+        waited.notes.is_empty(),
+        "a wait has no cost to measure ever, so the note would promise nothing: {:?}",
+        waited.notes
     );
 }

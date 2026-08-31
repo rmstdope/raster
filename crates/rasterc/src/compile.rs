@@ -4,7 +4,7 @@
 //! source is testable from a string.
 
 use raster_codegen::{generate_with_isa, CodegenError};
-use raster_diag::{Diagnostic, Span};
+use raster_diag::{Diagnostic, Refusal, Span};
 use raster_ir::lower;
 use raster_link::{link_mmc3_program, InterruptVectors, LinkError};
 use raster_sema::analyze;
@@ -12,10 +12,16 @@ use raster_syntax::parse;
 use raster_timing::TimingError;
 
 /// What this release of the compiler can build, listed once per run beside the
-/// first construct it had to refuse.
+/// first construct it had to refuse for not being in it.
 const SUPPORTED_SUBSET: &str = "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n\
-                                arithmetic and `ppu.*` / `mmc3.*` register writes";
-const UNSUPPORTED_SUFFIX: &str = "not supported yet";
+                                arithmetic, and `ppu.*` / `mmc3.*` register writes; timed regions\n\
+                                with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n\
+                                `frame` of `every ... scanlines` events";
+
+/// Why a timed region refuses a construct that is fine everywhere else, said
+/// once per run beside the first of them.
+const TIMED_REGION_COST: &str = "a timed region is costed as straight-line code; loops, branches\n\
+                                 and calls will be admitted once their cost can be measured";
 
 /// Whether this release restricts itself to official opcodes.
 ///
@@ -45,16 +51,30 @@ pub struct Rom {
 /// a file with both a parse error and an unsupported construct reports only the
 /// parse errors: the later stages were never given a program worth judging.
 pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
-    let syntax = parse(source)
-        .map_err(|errors| spanned(errors.into_iter().map(|e| (e.message, e.span)), source))?;
-    let typed = analyze(&syntax)
-        .map_err(|errors| spanned(errors.into_iter().map(|e| (e.message, e.span)), source))?;
-    let ir = lower(&typed)
-        .map_err(|errors| spanned(errors.into_iter().map(|e| (e.message, e.span)), source))?;
+    let syntax = parse(source).map_err(|errors| {
+        spanned(
+            errors
+                .into_iter()
+                .map(|e| (e.message, e.span, Refusal::Rejected)),
+            source,
+        )
+    })?;
+    let typed = analyze(&syntax).map_err(|errors| {
+        spanned(
+            errors.into_iter().map(|e| (e.message, e.span, e.refusal)),
+            source,
+        )
+    })?;
+    let ir = lower(&typed).map_err(|errors| {
+        spanned(
+            errors.into_iter().map(|e| (e.message, e.span, e.refusal)),
+            source,
+        )
+    })?;
     let output = generate_with_isa(&ir, LEGAL_ISA)
-        .map_err(|error| noted(vec![codegen_diagnostic(error, source)]))?;
+        .map_err(|error| vec![codegen_diagnostic(error, source)])?;
     let rom = link_mmc3_program(&output.program, output.main, LEGAL_ISA)
-        .map_err(|error| noted(vec![link_diagnostic(error, ir.frame.is_some())]))?;
+        .map_err(|error| vec![link_diagnostic(error, ir.frame.is_some())])?;
 
     Ok(Rom {
         image: rom.image,
@@ -69,29 +89,49 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
 /// crates, one of which has a default span for a declaration with no name, and a
 /// panic in the renderer would show the author a backtrace instead of a mistake.
 fn spanned(
-    errors: impl Iterator<Item = (String, raster_syntax::Span)>,
+    errors: impl Iterator<Item = (String, raster_syntax::Span, Refusal)>,
     source: &str,
 ) -> Vec<Diagnostic> {
     noted(
         errors
-            .map(|(message, span)| {
+            .map(|(message, span, refusal)| {
                 let span = Span::clamped(span.start as usize, span.end as usize, source);
-                Diagnostic::error(message.clone(), span, message)
+                (Diagnostic::error(message.clone(), span, message), refusal)
             })
             .collect(),
     )
 }
 
-/// Say once, beside the first construct this release had to refuse, what it can
-/// build instead. Twice would be noise, and never would leave "yet" unexplained.
-fn noted(mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
-    if let Some(first) = diagnostics
-        .iter_mut()
-        .find(|diagnostic| diagnostic.message.ends_with(UNSUPPORTED_SUFFIX))
-    {
-        first.notes.push(SUPPORTED_SUBSET.to_owned());
+/// The note a refusal of this kind carries, if it carries one.
+fn note_for(refusal: Refusal) -> Option<&'static str> {
+    match refusal {
+        Refusal::NotInThisRelease => Some(SUPPORTED_SUBSET),
+        Refusal::TimedRegionCost => Some(TIMED_REGION_COST),
+        Refusal::Rejected => None,
     }
+}
+
+/// Say once, beside the first refusal of its kind, why the compiler said no.
+/// Twice would be noise, and never would leave "yet" unexplained.
+///
+/// Stages run in order and the first failing stage is the last to run, so a run
+/// cannot today contain both a semantic refusal and a lowering one. This does
+/// not rely on that: each kind is said once, in the order the diagnostics
+/// arrive, so a refusal moved between stages keeps its note.
+fn noted(diagnostics: Vec<(Diagnostic, Refusal)>) -> Vec<Diagnostic> {
+    let mut said: Vec<Refusal> = Vec::new();
     diagnostics
+        .into_iter()
+        .map(|(mut diagnostic, refusal)| {
+            if let Some(note) = note_for(refusal) {
+                if !said.contains(&refusal) {
+                    said.push(refusal);
+                    diagnostic.notes.push(note.to_owned());
+                }
+            }
+            diagnostic
+        })
+        .collect()
 }
 
 fn codegen_diagnostic(error: CodegenError, source: &str) -> Diagnostic {

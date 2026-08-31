@@ -7,6 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+raster-diag = { path = "../raster-diag" }
 raster-sema = { path = "../raster-sema" }
 raster-timing = { path = "../raster-timing" }
 raster-syntax = { path = "../raster-syntax" }
