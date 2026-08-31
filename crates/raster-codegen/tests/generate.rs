@@ -184,3 +184,140 @@ fn generated_main_links_to_an_executable_register_store() {
     assert_eq!(&rom[fixed_bank..fixed_bank + 5], &[0xa9, 1, 0x8d, 1, 0x20]);
     assert_eq!(&rom[rom.len() - 4..rom.len() - 2], &[0x00, 0xe0]);
 }
+
+fn instructions_of(items: &[FixedBankItem]) -> Vec<raster_6502::Instruction> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+            FixedBankItem::Label(_) => None,
+        })
+        .collect()
+}
+
+#[test]
+fn timed_region_emits_analyzed_bytes_without_post_analysis_changes() {
+    let output = generate_source(
+        r#"
+            main {
+                sync exact
+                cycles(20) pad {
+                    ppu.mask = 1
+                }
+            }
+        "#,
+    );
+    let instructions = instructions_of(&output.program.items);
+
+    // `SEI` masks interrupts around a region that did not ask to stay interruptible, and `CLI`
+    // restores them. Neither is charged to the budget: the block's own code is what is measured.
+    let sei = instructions
+        .iter()
+        .position(|instruction| instruction.opcode == 0x78)
+        .expect("a timed region is entered with interrupts masked");
+    let cli = instructions
+        .iter()
+        .position(|instruction| instruction.opcode == 0x58)
+        .expect("a timed region restores interrupts on the way out");
+    assert!(sei < cli);
+
+    // Between them stands exactly what `raster-timing` analysed: `LDA #1`, `STA $2001`, and the
+    // padding it returned. Nothing is added, removed or reordered after the measurement.
+    let region = &instructions[sei + 1..cli];
+    let body = vec![
+        raster_6502::Instruction {
+            opcode: 0xa9,
+            mode: AddressingMode::Immediate,
+            operand: Some(1),
+        },
+        raster_6502::Instruction {
+            opcode: 0x8d,
+            mode: AddressingMode::Absolute,
+            operand: Some(0x2001),
+        },
+    ];
+    let mut expected = body.clone();
+    expected.extend(
+        raster_timing::analyze(
+            &raster_timing::TimedRegion {
+                constraint: raster_timing::CycleConstraint::Exact(20),
+                pad: true,
+                interruptible: false,
+                instructions: body,
+            },
+            false,
+        )
+        .expect("the fixture is within its budget")
+        .padding,
+    );
+    assert_eq!(region, expected.as_slice());
+    assert_eq!(
+        raster_6502::cycles(region, raster_6502::CycleContext::default()),
+        20
+    );
+}
+
+#[test]
+fn an_interruptible_region_keeps_interrupts_enabled() {
+    let output = generate_source("main { cycles(10) pad interruptible { var value: u8 = 1 } }");
+    let instructions = instructions_of(&output.program.items);
+
+    assert!(!instructions
+        .iter()
+        .any(|instruction| instruction.opcode == 0x78 || instruction.opcode == 0x58));
+}
+
+#[test]
+fn a_region_over_its_budget_is_reported_with_its_cost_and_span() {
+    let source = "main { sync exact\n cycles(2) { ppu.mask = 1 } }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let error = generate(&lower(&typed).expect("fixture should lower"))
+        .expect_err("an over-budget region is rejected");
+
+    let CodegenError::Timing { error, span } = error else {
+        panic!("an over-budget region is a timing error, got {error:?}")
+    };
+    assert_eq!(
+        error,
+        raster_timing::TimingError::OverBudget {
+            measured_cycles: 6,
+            budget: 2
+        }
+    );
+    // The span underlines the header alone, as spec section 14 shows.
+    assert_eq!(&source[span.start as usize..span.end as usize], "cycles(2)");
+}
+
+#[test]
+fn a_report_region_carries_its_measured_cost_out_under_its_label() {
+    let output = generate_source("main { sync exact\n cycles(?) hblank { ppu.mask = 1 } }");
+    assert_eq!(output.reports, vec![("hblank".to_owned(), 6)]);
+}
+
+#[test]
+fn wait_cycles_emits_a_delay_of_exactly_the_requested_length() {
+    let output = generate_source("main { wait cycles(40) }");
+    let instructions = instructions_of(&output.program.items);
+    let delay = raster_timing::synthesize_delay(40, false).expect("a 40 cycle delay");
+
+    assert!(
+        instructions
+            .windows(delay.len())
+            .any(|window| window == delay.as_slice()),
+        "the synthesized delay is emitted verbatim"
+    );
+}
+
+#[test]
+fn sync_exact_lowers_to_the_documented_de_jitter_poll() {
+    let output = generate_source("main { sync exact }");
+    let instructions = instructions_of(&output.program.items);
+
+    // `BIT $2002` then `BPL` back to it: the read-and-branch de-jitter of spec section 6.6.
+    let bit = instructions
+        .iter()
+        .position(|instruction| instruction.opcode == 0x2c && instruction.operand == Some(0x2002))
+        .expect("`sync exact` polls $2002");
+    assert_eq!(instructions[bit + 1].opcode, 0x10);
+}

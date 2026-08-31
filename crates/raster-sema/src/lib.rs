@@ -312,11 +312,6 @@ impl Analyzer {
         !self.timed_regions.is_empty()
     }
 
-    /// Whether the innermost timed region carries `pad`, which is what permits an unbalanced branch.
-    fn timed_region_pads(&self) -> bool {
-        self.timed_regions.last().copied().unwrap_or(false)
-    }
-
     /// Reject an expression a timed region cannot be charged for unless it is a known constant.
     fn require_static_in_timed_region(&mut self, expression: &Spanned<Expression>, message: &str) {
         if self.in_timed_region() && self.evaluate_constant(expression).is_none() {
@@ -345,11 +340,11 @@ impl Analyzer {
                 then_body,
                 else_body,
             } => {
-                if self.in_timed_region() && !self.timed_region_pads() {
+                if self.in_timed_region() {
                     self.error(
                         statement_span,
-                        "branch arms inside a timed region cannot be proven to cost the same; \
-                         add `pad` so the cheaper arm is filled",
+                        "branch arms inside a timed region cannot yet be balanced, because each \
+                         path through them costs a different number of cycles",
                     );
                 }
                 self.require_type(condition, ValueType::Bool, "condition must have type bool");
@@ -393,7 +388,13 @@ impl Analyzer {
                 self.check_block_statements(body);
                 self.leave_scope();
             }
-            Statement::Cycles { spec, body, .. } => {
+            Statement::Cycles { spec, body, label } => {
+                if matches!(spec.bound, CycleBound::Inferred(_)) && label.is_none() {
+                    self.error(
+                        spec.span,
+                        "`cycles(?)` needs a label to report its measured cost under",
+                    );
+                }
                 self.check_cycle_bound(&spec.bound);
                 self.timed_regions.push(spec.pad);
                 self.check_block(body);

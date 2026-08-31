@@ -318,6 +318,7 @@ dependencies = [
  "raster-link",
  "raster-sema",
  "raster-syntax",
+ "raster-timing",
 ]
 
 [[package]]
@@ -337,6 +338,7 @@ version = "0.1.0"
 dependencies = [
  "raster-sema",
  "raster-syntax",
+ "raster-timing",
 ]
 
 [[package]]

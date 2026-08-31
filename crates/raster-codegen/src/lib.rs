@@ -5,13 +5,14 @@ use raster_6502::{
     Instruction,
 };
 use raster_ir::{
-    BinaryOperator, Comparison, Condition, Destination, Label as IrLabel, Main, Place, Program,
-    Statement, UnaryOperator, Value,
+    BinaryOperator, Comparison, Condition, CycleConstraint, Destination, Label as IrLabel, Main,
+    Place, Program, Statement, UnaryOperator, Value,
 };
 use raster_link::{
     EntryPoints, FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind,
 };
 use raster_syntax::Span;
+use raster_timing::{analyze, synthesize_delay, TimedRegion, TimingError};
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
 
@@ -20,6 +21,8 @@ pub struct CodegenOutput {
     pub program: RelocatableProgram,
     pub entry_points: EntryPoints,
     pub zero_page: BTreeMap<Place, u8>,
+    /// The measured cost of each `cycles(?)` region, in the order the regions were generated.
+    pub reports: Vec<(String, u32)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,9 +42,33 @@ pub enum CodegenError {
         expected: usize,
         actual: usize,
     },
+    /// A region could not be given a provable cost, or could not be padded to its budget.
+    Timing {
+        error: TimingError,
+        span: Span,
+    },
 }
 
+/// `SEI`, which masks IRQs while a region that did not opt out is running.
+const SEI: u8 = 0x78;
+/// `CLI`, which restores them on the way out.
+const CLI: u8 = 0x58;
+/// `BIT $2002`, the PPU status read that the de-jitter poll spins on.
+const BIT_ABSOLUTE: u8 = 0x2c;
+/// `BPL`, taken while the vblank flag is clear.
+const BPL: u8 = 0x10;
+const PPU_STATUS: u16 = 0x2002;
+
+/// Generate code, allowing the undocumented `NOP` forms that make padding compact.
 pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
+    generate_with_isa(program, false)
+}
+
+/// Generate code, restricted to official opcodes when `legal_isa` is set.
+pub fn generate_with_isa(
+    program: &Program,
+    legal_isa: bool,
+) -> Result<CodegenOutput, CodegenError> {
     let zero_page = allocate_zero_page(program)?;
     let main = program.main.as_ref().ok_or(CodegenError::MissingMain)?;
     let function_parameters = program
@@ -54,6 +81,8 @@ pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
         zero_page: &zero_page,
         function_parameters,
         next_internal_label: next_internal_label(program),
+        legal_isa,
+        reports: Vec::new(),
     };
 
     for function in &program.functions {
@@ -63,6 +92,7 @@ pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
     }
 
     generator.main(main, &program.global_initializers)?;
+    let reports = std::mem::take(&mut generator.reports);
     Ok(CodegenOutput {
         program: generator.output,
         entry_points: EntryPoints {
@@ -71,6 +101,7 @@ pub fn generate(program: &Program) -> Result<CodegenOutput, CodegenError> {
             irq: link_label(main.label),
         },
         zero_page,
+        reports,
     })
 }
 
@@ -97,6 +128,8 @@ struct Generator<'a> {
     zero_page: &'a BTreeMap<Place, u8>,
     function_parameters: BTreeMap<IrLabel, Vec<Place>>,
     next_internal_label: u32,
+    legal_isa: bool,
+    reports: Vec<(String, u32)>,
 }
 
 impl Generator<'_> {
@@ -142,6 +175,26 @@ impl Generator<'_> {
                 if_false,
             } => self.branch_if_false(condition, *if_false)?,
             Statement::Jump { target } => self.jump(*target),
+            Statement::Timed {
+                constraint,
+                pad,
+                interruptible,
+                body,
+                span,
+            } => self.timed_region(constraint, *pad, *interruptible, body, *span, halt_label)?,
+            Statement::Delay { cycles, span } => {
+                let delay = synthesize_delay(*cycles, self.legal_isa)
+                    .map_err(|error| CodegenError::Timing { error, span: *span })?;
+                self.emit_all(&delay);
+            }
+            Statement::SyncExact => {
+                // Spec section 6.6's read-and-branch de-jitter: spin on the PPU status register
+                // until its vblank flag is set, which lands every entry on the same alignment.
+                let poll = self.internal_label();
+                self.emit_label(poll);
+                self.emit(BIT_ABSOLUTE, Absolute, Some(PPU_STATUS));
+                self.branch(BPL, poll);
+            }
             Statement::Return(value) => {
                 if let Some(value) = value {
                     self.value(value)?;
@@ -154,6 +207,69 @@ impl Generator<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Emit a timed region, then hold the analysis's verdict as the region's final form.
+    ///
+    /// The body is generated first, measured through `raster-timing`, and the padding it returns is
+    /// appended verbatim — nothing is added, removed or reordered afterwards, which is what makes
+    /// the emitted bytes and the predicted cost the same artefact.
+    ///
+    /// `SEI` and `CLI` sit outside the measured window: they are the compiler's own interrupt
+    /// masking, not the block's work, so the budget stays the cost of what was written.
+    fn timed_region(
+        &mut self,
+        constraint: &CycleConstraint,
+        pad: bool,
+        interruptible: bool,
+        body: &[Statement],
+        span: Span,
+        halt_label: Option<IrLabel>,
+    ) -> Result<(), CodegenError> {
+        if !interruptible {
+            self.emit(SEI, Implied, None);
+        }
+
+        let start = self.output.items.len();
+        self.statements(body, halt_label)?;
+        let instructions = self.output.items[start..]
+            .iter()
+            .filter_map(|item| match item {
+                FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+                FixedBankItem::Label(_) => None,
+            })
+            .collect();
+
+        let report = analyze(
+            &TimedRegion {
+                constraint: constraint.clone(),
+                pad,
+                interruptible,
+                instructions,
+            },
+            self.legal_isa,
+        )
+        .map_err(|error| CodegenError::Timing { error, span })?;
+
+        let padding = report.padding.clone();
+        self.emit_all(&padding);
+        if let Some(label) = report.label {
+            self.reports.push((label, report.measured_cycles));
+        }
+
+        if !interruptible {
+            self.emit(CLI, Implied, None);
+        }
+        Ok(())
+    }
+
+    fn emit_all(&mut self, instructions: &[Instruction]) {
+        for instruction in instructions {
+            self.output.items.push(FixedBankItem::Instruction {
+                instruction: *instruction,
+                relocation: None,
+            });
+        }
     }
 
     fn value(&mut self, value: &Value) -> Result<(), CodegenError> {
@@ -460,9 +576,16 @@ fn next_internal_label(program: &Program) -> u32 {
         )
         .chain(program.main.iter().flat_map(|main| main.statements.iter()))
     {
-        if let Statement::Label(label) = statement {
-            maximum = maximum.max(label.0);
-        }
+        maximum = maximum.max(highest_label(statement));
     }
     maximum + 1
+}
+
+/// The highest label a statement carries, looking inside timed regions as well.
+fn highest_label(statement: &Statement) -> u32 {
+    match statement {
+        Statement::Label(label) => label.0,
+        Statement::Timed { body, .. } => body.iter().map(highest_label).max().unwrap_or(0),
+        _ => 0,
+    }
 }

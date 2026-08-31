@@ -10,6 +10,7 @@ workspace = true
 raster-6502 = { path = "../raster-6502" }
 raster-ir = { path = "../raster-ir" }
 raster-link = { path = "../raster-link" }
+raster-timing = { path = "../raster-timing" }
 raster-syntax = { path = "../raster-syntax" }
 
 [dev-dependencies]

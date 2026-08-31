@@ -239,7 +239,6 @@ fn accepts_a_provable_timed_region() {
             main {
                 sync exact
                 cycles(100) pad {
-                    if count == 1 { count = 2 } else { count = 3 }
                     shade()
                     count = count * 2
                     for i in 0..LIMIT { count = count + 1 }
@@ -286,6 +285,23 @@ fn rejects_an_unknown_sync_strategy() {
         diagnostics
             .iter()
             .any(|message| message.contains("unknown sync strategy `approximately`")),
+        "got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_a_report_region_without_a_label() {
+    let diagnostics = errors(
+        r#"
+            main {
+                cycles(?) { }
+            }
+        "#,
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("`cycles(?)` needs a label")),
         "got {diagnostics:?}"
     );
 }

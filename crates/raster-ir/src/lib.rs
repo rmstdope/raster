@@ -6,6 +6,7 @@ use raster_syntax::{
     Item, Keyword, Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement,
     Type, Wait,
 };
+pub use raster_timing::CycleConstraint;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Place(pub u32);
@@ -177,6 +178,25 @@ pub enum Statement {
         target: Label,
     },
     Return(Option<Value>),
+    /// A region whose generated code must satisfy a cycle budget.
+    ///
+    /// The body stays nested rather than flattened because its cost is measured as a unit, and
+    /// codegen must be able to tell the region's own instructions from what surrounds them.
+    Timed {
+        constraint: CycleConstraint,
+        pad: bool,
+        interruptible: bool,
+        body: Vec<Statement>,
+        /// The `cycles(...)` header, which is what a budget diagnostic underlines.
+        span: Span,
+    },
+    /// `wait cycles(N)`: spend exactly this many cycles doing nothing.
+    Delay {
+        cycles: u32,
+        span: Span,
+    },
+    /// `sync exact`: de-jitter against the PPU before a timed region.
+    SyncExact,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -543,19 +563,40 @@ impl Lowerer {
                 self.leave_scope();
                 false
             }
-            SyntaxStatement::Cycles { body, .. } => {
-                self.error(statement.span, "timing blocks are not supported");
+            SyntaxStatement::Cycles { spec, label, body } => {
+                let constraint = self.cycle_constraint(spec, label.as_ref());
                 self.enter_scope();
-                let _ = self.lower_statements(body);
+                let (statements, always_returns) = self.lower_statements(body);
                 self.leave_scope();
+                if let Some(constraint) = constraint {
+                    output.push(Statement::Timed {
+                        constraint,
+                        pad: spec.pad,
+                        interruptible: spec.interruptible,
+                        body: statements,
+                        span: spec.span,
+                    });
+                }
+                always_returns
+            }
+            SyntaxStatement::Wait(Wait::Cycles(value)) => {
+                if let Some(cycles) = self.constant_value_u32(value) {
+                    output.push(Statement::Delay {
+                        cycles,
+                        span: value.span,
+                    });
+                }
                 false
             }
             SyntaxStatement::Wait(_) => {
-                self.error(statement.span, "wait statements are not supported");
+                self.error(
+                    statement.span,
+                    "only `wait cycles` is supported; frame waits arrive with frame scheduling",
+                );
                 false
             }
             SyntaxStatement::Sync(_) => {
-                self.error(statement.span, "sync statements are not supported");
+                output.push(Statement::SyncExact);
                 false
             }
             SyntaxStatement::Break => {
@@ -1107,6 +1148,22 @@ impl Lowerer {
                 self.error(storage.span, "only `in zp` storage is supported");
                 false
             }
+        }
+    }
+
+    fn cycle_constraint(
+        &mut self,
+        spec: &raster_syntax::CycleSpec,
+        label: Option<&Spanned<String>>,
+    ) -> Option<CycleConstraint> {
+        match &spec.bound {
+            CycleBound::Exact(value) => self.constant_value_u32(value).map(CycleConstraint::Exact),
+            CycleBound::AtMost(value) => {
+                self.constant_value_u32(value).map(CycleConstraint::AtMost)
+            }
+            CycleBound::Inferred(_) => Some(CycleConstraint::Report {
+                label: label.map(|label| label.value.clone()).unwrap_or_default(),
+            }),
         }
     }
 
