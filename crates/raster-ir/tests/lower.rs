@@ -614,3 +614,43 @@ fn every_compound_operator_names_itself_in_the_refusal() {
         );
     }
 }
+
+#[test]
+fn every_write_only_register_refuses_a_read_and_every_readable_one_does_not() {
+    for (register, name, _address, _write_only) in REGISTERS {
+        let source = format!("main {{ var v: u8 = {name} }}");
+        let syntax = parse(&source).expect("fixture should parse");
+        let typed = analyze(&syntax).expect("fixture should analyze");
+        let result = lower(&typed);
+        if register.is_write_only() {
+            let failure = result.expect_err(name);
+            assert_eq!(failure.errors.len(), 1, "{name}");
+            assert_eq!(failure.errors[0].message, format!("`{name}` cannot be read"));
+        } else {
+            assert!(result.is_ok(), "{name} reads");
+        }
+    }
+}
+
+#[test]
+fn two_write_only_reads_on_one_line_are_two_errors_in_source_order() {
+    let errors = lower_errors("main {\n    ppu.ctrl = ppu.mask | ppu.scroll\n}\n");
+
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].message, "`ppu.mask` cannot be read");
+    assert_eq!(errors[1].message, "`ppu.scroll` cannot be read");
+    // `lower_value`'s `Infix` arm lowers left before right, so the errors come
+    // out the way the author reads the line.
+    assert!(errors[0].span.start < errors[1].span.start);
+}
+
+#[test]
+fn writing_a_write_only_register_is_still_fine() {
+    // The whole point of the rule is that it is about reads. Every one of the
+    // thirteen may still be written, and this is the test that goes red if the
+    // check is ever attached to `lower_destination` instead.
+    let program = lower_source(
+        "main {\n    ppu.mask = $1E\n    mmc3.bank_select = $06\n    ppu.addr = $00\n}\n",
+    );
+    assert!(program.main.is_some());
+}
