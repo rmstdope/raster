@@ -10,6 +10,12 @@ fn lower_source(source: &str) -> raster_ir::Program {
     lower(&typed).expect("fixture should lower")
 }
 
+fn lower_errors(source: &str) -> Vec<raster_ir::LowerError> {
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    lower(&typed).expect_err("fixture should not lower")
+}
+
 #[test]
 fn lowers_scoped_control_flow_and_calls() {
     let program = lower_source(
@@ -102,4 +108,59 @@ fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
     assert!(errors
         .iter()
         .all(|error| error.span.end >= error.span.start));
+}
+
+#[test]
+fn rejects_for_steps_that_wrap_before_the_range_ends() {
+    let errors = lower_errors("main { for index in 250..255 step 10 {} }");
+
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("overflow")));
+}
+
+#[test]
+fn rejects_direct_and_mutually_recursive_calls() {
+    for source in [
+        "fn recurse() { recurse() } main {}",
+        "fn first() { second() } fn second() { first() } main {}",
+    ] {
+        let errors = lower_errors(source);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("recursive")),
+            "expected recursion error in {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn lowers_forward_non_recursive_calls() {
+    let program = lower_source(
+        r#"
+            fn first() { second() }
+            fn second() {}
+            main { first() }
+        "#,
+    );
+
+    assert_eq!(program.functions.len(), 2);
+}
+
+#[test]
+fn rejects_u8_functions_that_can_fall_through() {
+    let errors = lower_errors("fn value() -> u8 {} main {}");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("fall through")));
+
+    lower_source(
+        r#"
+            fn choose(value: u8) -> u8 {
+                if value == 0 { return 1 } else { return 2 }
+            }
+            main {}
+        "#,
+    );
 }

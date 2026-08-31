@@ -147,6 +147,19 @@ fn reports_relocation_and_assembly_errors() {
         Err(LinkError::FixedBankTooLarge { .. })
     ));
 
+    let after_limit = Label(5);
+    let mut items = (0..MMC3_FIXED_BANK_SIZE)
+        .map(|_| FixedBankItem::Instruction {
+            instruction: instruction(0xea, Implied),
+            relocation: None,
+        })
+        .collect::<Vec<_>>();
+    items.push(FixedBankItem::Label(after_limit));
+    assert!(matches!(
+        link_fixed_bank(&RelocatableProgram { items }, true),
+        Err(LinkError::FixedBankTooLarge { .. })
+    ));
+
     assert_eq!(
         link_fixed_bank(
             &RelocatableProgram {

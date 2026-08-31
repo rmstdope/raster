@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use raster_sema::TypedProgram;
 use raster_syntax::{
-    Block, Declaration, Expression as SyntaxExpression, Function as SyntaxFunction, Item, Keyword,
-    Operator, Span, Spanned, Statement as SyntaxStatement, Type,
+    Block, CycleBound, Declaration, Expression as SyntaxExpression, Function as SyntaxFunction,
+    Item, Keyword, Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement,
+    Type, Wait,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -211,6 +212,7 @@ pub fn lower(typed: &TypedProgram) -> Result<Program, Vec<LowerError>> {
     let mut lowerer = Lowerer::new();
     lowerer.predeclare_labels(&typed.program);
     lowerer.predeclare_globals(&typed.program);
+    lowerer.reject_recursive_calls(&typed.program);
     lowerer.lower_program(&typed.program);
     if lowerer.errors.is_empty() {
         Ok(lowerer.program)
@@ -317,6 +319,39 @@ impl Lowerer {
         }
     }
 
+    fn reject_recursive_calls(&mut self, syntax: &SyntaxProgram) {
+        let call_graph = function_call_graph(syntax);
+        let mut visit_states = BTreeMap::new();
+        for function in call_graph.keys() {
+            self.find_recursive_calls(function, &call_graph, &mut visit_states);
+        }
+    }
+
+    fn find_recursive_calls(
+        &mut self,
+        function: &str,
+        call_graph: &BTreeMap<String, Vec<FunctionCall>>,
+        visit_states: &mut BTreeMap<String, VisitState>,
+    ) {
+        if visit_states.get(function) == Some(&VisitState::Visited) {
+            return;
+        }
+        visit_states.insert(function.to_owned(), VisitState::Visiting);
+        for call in &call_graph[function] {
+            if !call_graph.contains_key(&call.target) {
+                continue;
+            }
+            match visit_states.get(&call.target) {
+                Some(VisitState::Visiting) => {
+                    self.error(call.span, "recursive function calls are not supported");
+                }
+                Some(VisitState::Visited) => {}
+                None => self.find_recursive_calls(&call.target, call_graph, visit_states),
+            }
+        }
+        visit_states.insert(function.to_owned(), VisitState::Visited);
+    }
+
     fn lower_program(&mut self, syntax: &raster_syntax::Program) {
         let mut main_count = 0usize;
         for item in &syntax.items {
@@ -415,6 +450,12 @@ impl Lowerer {
         }
         if !self.function_return_is_supported(function) {
             return;
+        }
+        if function_returns_u8(function) && !block_always_returns(&function.body) {
+            self.error(
+                function.name.span,
+                "u8-returning functions cannot fall through without returning",
+            );
         }
 
         self.enter_scope();
@@ -641,11 +682,21 @@ impl Lowerer {
         let Some(end) = self.constant_value(end) else {
             return;
         };
+        let step_span = step.map(|step| step.span).unwrap_or(range.span);
         let step = step.and_then(|step| self.constant_value(step)).unwrap_or(1);
         if start >= end || step == 0 {
             self.error(
                 range.span,
                 "for ranges must advance through a finite u8 range",
+            );
+            return;
+        }
+        let last_counter = u16::from(start)
+            + ((u16::from(end) - 1 - u16::from(start)) / u16::from(step)) * u16::from(step);
+        if last_counter + u16::from(step) > u16::from(u8::MAX) {
+            self.error(
+                step_span,
+                "for step would overflow before the range terminates",
             );
             return;
         }
@@ -1102,6 +1153,169 @@ impl Lowerer {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).copied())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FunctionCall {
+    target: String,
+    span: Span,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum VisitState {
+    Visiting,
+    Visited,
+}
+
+fn function_call_graph(syntax: &SyntaxProgram) -> BTreeMap<String, Vec<FunctionCall>> {
+    syntax
+        .items
+        .iter()
+        .filter_map(|item| match &item.value {
+            Item::Function(function) => {
+                let mut calls = Vec::new();
+                collect_calls_in_block(&function.body, &mut calls);
+                Some((function.name.value.clone(), calls))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn collect_calls_in_block(block: &Block, calls: &mut Vec<FunctionCall>) {
+    for statement in &block.statements {
+        collect_calls_in_statement(&statement.value, calls);
+    }
+}
+
+fn collect_calls_in_statement(statement: &SyntaxStatement, calls: &mut Vec<FunctionCall>) {
+    match statement {
+        SyntaxStatement::Declaration(declaration) => {
+            if let Some(initializer) = &declaration.initializer {
+                collect_calls_in_expression(initializer, calls);
+            }
+            if let Some(body) = &declaration.body {
+                collect_calls_in_block(body, calls);
+            }
+        }
+        SyntaxStatement::Block(block) | SyntaxStatement::Loop(block) => {
+            collect_calls_in_block(block, calls);
+        }
+        SyntaxStatement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_calls_in_expression(condition, calls);
+            collect_calls_in_block(then_body, calls);
+            if let Some(else_body) = else_body {
+                collect_calls_in_block(else_body, calls);
+            }
+        }
+        SyntaxStatement::While { condition, body } => {
+            collect_calls_in_expression(condition, calls);
+            collect_calls_in_block(body, calls);
+        }
+        SyntaxStatement::For {
+            range, step, body, ..
+        } => {
+            collect_calls_in_expression(range, calls);
+            if let Some(step) = step {
+                collect_calls_in_expression(step, calls);
+            }
+            collect_calls_in_block(body, calls);
+        }
+        SyntaxStatement::Cycles { spec, body, .. } => {
+            collect_calls_in_cycle_bound(&spec.bound, calls);
+            collect_calls_in_block(body, calls);
+        }
+        SyntaxStatement::Wait(Wait::Cycles(value) | Wait::Scanline(value)) => {
+            collect_calls_in_expression(value, calls);
+        }
+        SyntaxStatement::Return(Some(value)) | SyntaxStatement::Expression(value) => {
+            collect_calls_in_expression(value, calls);
+        }
+        SyntaxStatement::Wait(Wait::Vblank(_))
+        | SyntaxStatement::Sync(_)
+        | SyntaxStatement::Return(None)
+        | SyntaxStatement::Break
+        | SyntaxStatement::Continue => {}
+    }
+}
+
+fn collect_calls_in_cycle_bound(bound: &CycleBound, calls: &mut Vec<FunctionCall>) {
+    match bound {
+        CycleBound::Exact(value) | CycleBound::AtMost(value) => {
+            collect_calls_in_expression(value, calls);
+        }
+        CycleBound::Inferred(_) => {}
+    }
+}
+
+fn collect_calls_in_expression(
+    expression: &Spanned<SyntaxExpression>,
+    calls: &mut Vec<FunctionCall>,
+) {
+    match &expression.value {
+        SyntaxExpression::Prefix { operand, .. } => collect_calls_in_expression(operand, calls),
+        SyntaxExpression::Infix { left, right, .. }
+        | SyntaxExpression::Index {
+            base: left,
+            index: right,
+        }
+        | SyntaxExpression::Range {
+            start: left,
+            end: right,
+        } => {
+            collect_calls_in_expression(left, calls);
+            collect_calls_in_expression(right, calls);
+        }
+        SyntaxExpression::Call { callee, arguments } => {
+            if let SyntaxExpression::Name(name) = &callee.value {
+                calls.push(FunctionCall {
+                    target: name.value.clone(),
+                    span: name.span,
+                });
+            }
+            collect_calls_in_expression(callee, calls);
+            for argument in arguments {
+                collect_calls_in_expression(argument, calls);
+            }
+        }
+        SyntaxExpression::Member { base, .. } => collect_calls_in_expression(base, calls),
+        SyntaxExpression::Name(_)
+        | SyntaxExpression::Number(_)
+        | SyntaxExpression::String(_)
+        | SyntaxExpression::Character(_)
+        | SyntaxExpression::Boolean(_) => {}
+    }
+}
+
+fn function_returns_u8(function: &SyntaxFunction) -> bool {
+    matches!(
+        function.return_type.as_ref().map(|return_type| &return_type.value),
+        Some(Type::Name(name)) if name.value == "u8"
+    )
+}
+
+fn block_always_returns(block: &Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| statement_always_returns(&statement.value))
+}
+
+fn statement_always_returns(statement: &SyntaxStatement) -> bool {
+    match statement {
+        SyntaxStatement::Return(_) => true,
+        SyntaxStatement::Block(block) => block_always_returns(block),
+        SyntaxStatement::If {
+            then_body,
+            else_body: Some(else_body),
+            ..
+        } => block_always_returns(then_body) && block_always_returns(else_body),
+        _ => false,
     }
 }
 

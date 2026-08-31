@@ -92,10 +92,27 @@ pub fn link_mmc3_ines(
 fn measure_labels(program: &RelocatableProgram) -> Result<BTreeMap<Label, u16>, LinkError> {
     let mut labels = BTreeMap::new();
     let mut offset = 0usize;
+    let maximum = MMC3_FIXED_BANK_SIZE - 6;
     for item in &program.items {
         match item {
             FixedBankItem::Label(label) => {
-                let address = MMC3_FIXED_BANK_START + offset as u16;
+                if offset > maximum {
+                    return Err(LinkError::FixedBankTooLarge {
+                        actual: offset,
+                        maximum,
+                    });
+                }
+                let address_offset =
+                    u16::try_from(offset).map_err(|_| LinkError::FixedBankTooLarge {
+                        actual: offset,
+                        maximum,
+                    })?;
+                let address = MMC3_FIXED_BANK_START.checked_add(address_offset).ok_or(
+                    LinkError::FixedBankTooLarge {
+                        actual: offset,
+                        maximum,
+                    },
+                )?;
                 if labels.insert(*label, address).is_some() {
                     return Err(LinkError::DuplicateLabel { label: *label });
                 }
@@ -106,7 +123,6 @@ fn measure_labels(program: &RelocatableProgram) -> Result<BTreeMap<Label, u16>, 
         }
     }
 
-    let maximum = MMC3_FIXED_BANK_SIZE - 6;
     if offset > maximum {
         return Err(LinkError::FixedBankTooLarge {
             actual: offset,
