@@ -4,6 +4,7 @@ use tetanes_core::{
     common::NesRegion,
     control_deck::{Config, ControlDeck, Error, HeadlessMode, Result as EmuResult},
     memory::RamState,
+    video::VideoFilter,
 };
 
 pub const FRAME_WIDTH: usize = 256;
@@ -50,6 +51,9 @@ fn load(rom_name: &str, rom: &[u8]) -> EmuResult<ControlDeck> {
         ram_state: RamState::AllZeros,
         headless_mode: HeadlessMode::NO_AUDIO,
         sram_dir: None,
+        // Named explicitly: `VideoFilter::Ntsc` is the `#[default]`, and it is a
+        // composite simulation whose colours match no palette table.
+        filter: VideoFilter::Pixellate,
         ..Default::default()
     });
     let mut reader = rom;

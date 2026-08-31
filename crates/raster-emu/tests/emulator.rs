@@ -116,3 +116,30 @@ fn reports_a_palette_entry_for_every_pixel() {
     }
     assert_eq!(frame.as_indices(), repeated_frame.as_indices());
 }
+
+#[test]
+fn renders_one_flat_colour_per_palette_entry() {
+    let frame = render_after_frames(
+        "loop.nes",
+        &nrom(),
+        NonZeroU32::new(2).expect("two is non-zero"),
+    )
+    .expect("the NROM should load and render");
+    let rgba = frame.as_rgba();
+
+    // Any two pixels sharing a palette entry must share an RGBA value: the
+    // RGBA view is a per-pixel palette lookup, not a filter that blends
+    // neighbours. Column 0 is included, since a composite filter blacks it out.
+    let mut seen: [Option<[u8; 4]>; 512] = [None; 512];
+    for (index, &entry) in frame.as_indices().iter().enumerate() {
+        let colour: [u8; 4] = rgba[index * 4..index * 4 + 4]
+            .try_into()
+            .expect("four channels");
+        let known = seen[usize::from(entry)].get_or_insert(colour);
+        assert_eq!(
+            *known,
+            colour,
+            "pixel {index} shows a second colour for palette entry {entry:#05x}"
+        );
+    }
+}
