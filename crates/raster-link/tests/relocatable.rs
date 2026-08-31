@@ -327,3 +327,21 @@ fn counts_data_against_the_fixed_bank_budget() {
         })
     );
 }
+
+#[test]
+fn the_refusal_counts_every_item_and_not_the_walk_to_the_first_label() {
+    // The refusal fires at the first label past the limit, so everything after
+    // that label used to go uncounted and `actual` was a lower bound.
+    let items = vec![
+        FixedBankItem::Data(vec![0x00; MMC3_FIXED_BANK_CODE_SIZE + 1]),
+        FixedBankItem::Label(Label(1)),
+        FixedBankItem::Data(vec![0x00; 500]),
+    ];
+    assert_eq!(
+        link_fixed_bank(&RelocatableProgram { items }, true),
+        Err(LinkError::FixedBankTooLarge {
+            actual: MMC3_FIXED_BANK_CODE_SIZE + 501,
+            maximum: MMC3_FIXED_BANK_CODE_SIZE,
+        })
+    );
+}

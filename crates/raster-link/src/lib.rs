@@ -149,26 +149,26 @@ fn measure_labels(program: &RelocatableProgram) -> Result<BTreeMap<Label, u16>, 
     let mut labels = BTreeMap::new();
     let mut offset = 0usize;
     let maximum = MMC3_FIXED_BANK_CODE_SIZE;
+    // `offset` is only how far this walk has got. The refusal below fires at the
+    // first label past `maximum`, and every item after that label is never
+    // reached - so `offset` is a lower bound on the program. The author is told
+    // how many bytes to delete from this figure, so it has to be the whole
+    // program and not the part this walk had counted; `items_len` is what
+    // `emit_fixed_bank` goes on to emit.
+    let too_large = || LinkError::FixedBankTooLarge {
+        actual: items_len(&program.items),
+        maximum,
+    };
     for item in &program.items {
         match item {
             FixedBankItem::Label(label) => {
                 if offset > maximum {
-                    return Err(LinkError::FixedBankTooLarge {
-                        actual: offset,
-                        maximum,
-                    });
+                    return Err(too_large());
                 }
-                let address_offset =
-                    u16::try_from(offset).map_err(|_| LinkError::FixedBankTooLarge {
-                        actual: offset,
-                        maximum,
-                    })?;
-                let address = MMC3_FIXED_BANK_START.checked_add(address_offset).ok_or(
-                    LinkError::FixedBankTooLarge {
-                        actual: offset,
-                        maximum,
-                    },
-                )?;
+                let address_offset = u16::try_from(offset).map_err(|_| too_large())?;
+                let address = MMC3_FIXED_BANK_START
+                    .checked_add(address_offset)
+                    .ok_or_else(too_large)?;
                 if labels.insert(*label, address).is_some() {
                     return Err(LinkError::DuplicateLabel { label: *label });
                 }
@@ -181,10 +181,7 @@ fn measure_labels(program: &RelocatableProgram) -> Result<BTreeMap<Label, u16>, 
     }
 
     if offset > maximum {
-        return Err(LinkError::FixedBankTooLarge {
-            actual: offset,
-            maximum,
-        });
+        return Err(too_large());
     }
     Ok(labels)
 }

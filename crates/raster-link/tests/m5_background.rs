@@ -269,4 +269,14 @@ fn refuses_a_background_whose_data_would_reach_the_vector_table() {
         background(&vec![0u8; 6517]),
         Err(LinkError::FixedBankTooLarge { .. })
     ));
+
+    // The figure `m5_background_rom`'s doc comment quotes. It is the whole
+    // program, not the walk to the first label past the limit.
+    assert_eq!(
+        background(&vec![0u8; 8192]),
+        Err(LinkError::FixedBankTooLarge {
+            actual: 9953,
+            maximum: MMC3_FIXED_BANK_CODE_SIZE,
+        })
+    );
 }
