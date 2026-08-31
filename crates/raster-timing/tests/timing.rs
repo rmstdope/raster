@@ -309,3 +309,67 @@ fn a_counted_loop_takes_its_branch_once_however_long_it_runs() {
         );
     }
 }
+
+#[test]
+fn a_scanline_starts_a_whole_number_of_cycles_after_the_frame_origin() {
+    // Vblank is twenty scanlines and the pre-render line is one more, so the visible picture
+    // starts twenty-one scanlines after the origin the vblank poll establishes.
+    assert_eq!(raster_timing::scanline_origin_cycles(0), 2387);
+    // 341 dots is 113.667 CPU cycles, so consecutive scanlines are 114, 113, 114 apart and every
+    // three of them are exactly 341 cycles.
+    let starts: Vec<_> = (0..4).map(raster_timing::scanline_origin_cycles).collect();
+    assert_eq!(starts, vec![2387, 2501, 2614, 2728]);
+    assert_eq!(starts[3] - starts[0], 341);
+}
+
+#[test]
+fn a_timed_frame_schedule_puts_every_handler_on_its_own_scanline() {
+    let scanlines = [0, 8, 9, 10, 200];
+    let schedule = raster_timing::plan_timed_frame(&scanlines);
+
+    let mut position = 0;
+    for (handler, scanline) in schedule.iter().zip(scanlines) {
+        position += handler.delay_cycles;
+        assert_eq!(
+            position,
+            raster_timing::scanline_origin_cycles(scanline),
+            "the handler for scanline {scanline} starts where the scanline does"
+        );
+        position += handler.budget_cycles;
+    }
+}
+
+#[test]
+fn adjacent_handlers_carry_the_correction_that_keeps_the_frame_budget_exact() {
+    let schedule = raster_timing::plan_timed_frame(&[0, 1, 2, 3]);
+    let budgets: Vec<_> = schedule
+        .iter()
+        .map(|handler| handler.budget_cycles)
+        .collect();
+
+    // A flat 114 every line would drift a third of a cycle a line; 114, 113, 114 does not.
+    assert_eq!(budgets, vec![114, 113, 114, 114]);
+    assert_eq!(budgets[0] + budgets[1] + budgets[2], 341);
+    // Back-to-back handlers leave no gap to delay through.
+    assert!(schedule[1..]
+        .iter()
+        .all(|handler| handler.delay_cycles == 0));
+}
+
+#[test]
+fn a_handler_with_room_after_it_gets_one_scanline_body_and_a_delay_to_the_next() {
+    let schedule = raster_timing::plan_timed_frame(&[60, 120]);
+
+    assert_eq!(schedule[0].budget_cycles, 114);
+    assert_eq!(schedule[1].budget_cycles, 114);
+    assert_eq!(
+        schedule[0].delay_cycles,
+        raster_timing::scanline_origin_cycles(60)
+    );
+    assert_eq!(
+        schedule[1].delay_cycles,
+        raster_timing::scanline_origin_cycles(120)
+            - raster_timing::scanline_origin_cycles(60)
+            - 114
+    );
+}

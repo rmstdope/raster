@@ -179,6 +179,85 @@ pub fn worst_case_cycles(instructions: &[Instruction]) -> u32 {
     cycles(instructions, context)
 }
 
+/// PPU dots in one NTSC scanline — spec Appendix A.
+pub const DOTS_PER_SCANLINE: u32 = 341;
+/// PPU dots the console draws while the CPU spends one cycle.
+pub const DOTS_PER_CPU_CYCLE: u32 = 3;
+/// Scanlines from the start of vblank to the top of the next visible picture: the twenty vblank
+/// lines 241-260 and the pre-render line 261.
+pub const SCANLINES_FROM_VBLANK_TO_PICTURE: u32 = 21;
+/// The cycles a timed frame gives a handler that has a whole scanline to itself.
+///
+/// A scanline is 113.667 cycles, not 114, so a schedule of nothing but 114-cycle bodies drifts a
+/// third of a cycle a line — 80 cycles, most of a scanline, over a visible picture.
+/// [`plan_timed_frame`] is what spends 113 where the drift would otherwise accumulate.
+pub const SCANLINE_BODY_CYCLES: u32 = 114;
+
+/// The CPU cycles in `scanlines` NTSC scanlines, to the nearest cycle.
+///
+/// 341 dots is not a whole number of CPU cycles, so this rounds; the error never exceeds half a
+/// cycle however many scanlines are asked for, because the rounding is applied to the total rather
+/// than accumulated line by line.
+pub const fn scanline_cycles(scanlines: u32) -> u32 {
+    (scanlines * DOTS_PER_SCANLINE + DOTS_PER_CPU_CYCLE / 2) / DOTS_PER_CPU_CYCLE
+}
+
+/// The cycle, counted from a timed frame's origin, at which `scanline` of the picture begins.
+///
+/// The origin is where the frame's vblank poll leaves the CPU, which is the start of vblank give or
+/// take the poll's own granularity. The visible picture starts
+/// [`SCANLINES_FROM_VBLANK_TO_PICTURE`] scanlines later.
+pub const fn scanline_origin_cycles(scanline: u32) -> u32 {
+    scanline_cycles(SCANLINES_FROM_VBLANK_TO_PICTURE + scanline)
+}
+
+/// Where one handler of a timed frame sits: what to spend before it, and what it must cost.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScheduledHandler {
+    /// Cycles to spend doing nothing before the handler starts. Zero when the previous handler
+    /// runs into this one, which is what back-to-back scanlines do.
+    pub delay_cycles: u32,
+    /// The exact cost the handler is padded to.
+    pub budget_cycles: u32,
+}
+
+/// Place every handler of a timed frame, given the scanlines it is scheduled on.
+///
+/// `scanlines` must be sorted and free of duplicates, which is what `raster-ir` hands over. Each
+/// handler starts exactly where its scanline does, so the frame's accumulated budget is the
+/// picture's own and not a sum of roundings: a handler is padded to a whole scanline body where the
+/// next one is far enough away, and to the exact distance to the next where it is not.
+pub fn plan_timed_frame(scanlines: &[u32]) -> Vec<ScheduledHandler> {
+    debug_assert!(
+        scanlines.windows(2).all(|pair| pair[0] < pair[1]),
+        "a frame schedule is sorted and has one handler per scanline"
+    );
+    let mut schedule = Vec::with_capacity(scanlines.len());
+    let mut position = 0;
+    for (index, &scanline) in scanlines.iter().enumerate() {
+        let start = scanline_origin_cycles(scanline);
+        let distance_to_next = scanlines
+            .get(index + 1)
+            .map_or(SCANLINE_BODY_CYCLES, |&next| {
+                scanline_origin_cycles(next) - start
+            });
+        // A gap of one cycle has no instruction short enough to spend it, so a handler one cycle
+        // short of the next scanline is widened to reach it rather than left with an unspendable
+        // remainder.
+        let budget_cycles = if distance_to_next <= SCANLINE_BODY_CYCLES + 1 {
+            distance_to_next
+        } else {
+            SCANLINE_BODY_CYCLES
+        };
+        schedule.push(ScheduledHandler {
+            delay_cycles: start - position,
+            budget_cycles,
+        });
+        position = start + budget_cycles;
+    }
+    schedule
+}
+
 /// The most iterations one counted loop runs: `LDX #$00` decrements to 255 first.
 pub const MAX_ITERATIONS: u32 = 256;
 

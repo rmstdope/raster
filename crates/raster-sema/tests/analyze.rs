@@ -357,3 +357,32 @@ fn sync_exact_need_not_sit_immediately_before_the_region_it_guards() {
     .expect("fixture should parse");
     analyze(&program).expect("a `sync exact` earlier in the block still guards the region");
 }
+
+#[test]
+fn a_frame_handler_is_entered_synchronized_and_needs_no_sync_of_its_own() {
+    // Outside a frame the rule of spec section 6.6 still bites.
+    let diagnostics = errors(
+        r#"
+            main { cycles(114) pad { ppu.mask = $1e } }
+        "#,
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("`sync exact` is required")),
+        "expected the jitter rule in {diagnostics:?}"
+    );
+
+    // Inside one it does not: the frame synchronizes on vblank and counts every handler's position
+    // in cycles from there, which is the whole of what the construct is for.
+    let program = parse(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 60 { cycles(114) pad { ppu.mask = $1e } }
+            }
+        "#,
+    )
+    .expect("valid fixture should parse");
+    analyze(&program).expect("a frame handler carries its own synchronization");
+}

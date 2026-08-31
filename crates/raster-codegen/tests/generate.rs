@@ -381,3 +381,147 @@ fn sync_exact_lowers_to_the_documented_de_jitter_poll() {
         .expect("`sync exact` polls $2002");
     assert_eq!(instructions[bit + 1].opcode, 0x10);
 }
+
+/// `PHP` opens a region the compiler masked interrupts around, and `PLP` closes it.
+const PHP: u8 = 0x08;
+const PLP: u8 = 0x28;
+/// `BIT $2002`, which the de-jitter poll spins on.
+const BIT_ABSOLUTE: u8 = 0x2c;
+/// `STA`, absolute — how every `ppu.*` write reaches its register.
+const STA_ABSOLUTE: u8 = 0x8d;
+
+fn instructions(source: &str) -> Vec<raster_6502::Instruction> {
+    generate_source(source)
+        .program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+            FixedBankItem::Label(_) => None,
+        })
+        .collect()
+}
+
+/// The cost of each timed region in the emitted stream, in order. The fixtures here nest none, so
+/// every `PHP` is closed by the next `PLP`.
+fn timed_region_costs(instructions: &[raster_6502::Instruction]) -> Vec<u32> {
+    let mut costs = Vec::new();
+    let mut start = None;
+    for (index, instruction) in instructions.iter().enumerate() {
+        match instruction.opcode {
+            PHP => start = Some(index),
+            PLP => {
+                if let Some(start) = start.take() {
+                    costs.push(raster_timing::worst_case_cycles(
+                        &instructions[start..=index],
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    costs
+}
+
+#[test]
+fn timed_lowering_repeats_a_114_cycle_scanline_body() {
+    let instructions = instructions(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 4 scanlines from 100 to 108 { ppu.addr = $3f }
+            }
+        "#,
+    );
+
+    // One body per occurrence — 100, 104 and 108 — each padded to a whole scanline.
+    assert_eq!(timed_region_costs(&instructions), vec![114, 114, 114]);
+}
+
+#[test]
+fn timed_frame_requires_sync_before_rendering_ppu_write() {
+    let instructions = instructions(
+        r#"
+            main { var value: u8 = 0 }
+            frame bars using timed {
+                at scanline 60 { ppu.addr = $3f }
+            }
+        "#,
+    );
+
+    let sync = instructions
+        .iter()
+        .position(|instruction| {
+            instruction.opcode == BIT_ABSOLUTE && instruction.operand == Some(0x2002)
+        })
+        .expect("a timed frame de-jitters against the PPU before it runs a handler");
+    let write = instructions
+        .iter()
+        .position(|instruction| {
+            instruction.opcode == STA_ABSOLUTE && instruction.operand == Some(0x2006)
+        })
+        .expect("the handler writes a PPU register");
+
+    assert!(
+        sync < write,
+        "the frame's PPU write must follow the synchronization, not precede it"
+    );
+}
+
+#[test]
+fn a_timed_frame_delays_from_the_origin_to_each_handlers_scanline() {
+    let output = generate_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 60 { ppu.addr = $3f }
+                at scanline 120 { ppu.addr = $00 }
+            }
+        "#,
+    );
+    let instructions: Vec<_> = output
+        .program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+            FixedBankItem::Label(_) => None,
+        })
+        .collect();
+
+    // Two delays and two handlers: the delay loops are the only `LDX #` immediates a fixture with
+    // no arithmetic in it produces.
+    let schedule = raster_timing::plan_timed_frame(&[60, 120]);
+    assert_eq!(schedule.len(), 2);
+    assert!(schedule.iter().all(|handler| handler.delay_cycles > 0));
+    assert_eq!(timed_region_costs(&instructions), vec![114, 114]);
+}
+
+#[test]
+fn a_handler_that_does_not_fit_its_scanline_names_its_cost_and_its_budget() {
+    let syntax = parse(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 60 {
+                    cycles(200) pad { ppu.addr = $3f }
+                }
+            }
+        "#,
+    )
+    .expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let error = generate(&lower(&typed).expect("fixture should lower"))
+        .expect_err("two hundred cycles do not fit a scanline");
+
+    assert!(
+        matches!(
+            error,
+            CodegenError::Timing {
+                error: raster_timing::TimingError::OverBudget { budget: 114, .. },
+                ..
+            }
+        ),
+        "expected an over-budget scanline body, found {error:?}"
+    );
+}

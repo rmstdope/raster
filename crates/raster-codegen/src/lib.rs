@@ -5,12 +5,12 @@ use raster_6502::{
     Instruction,
 };
 use raster_ir::{
-    BinaryOperator, Comparison, Condition, CycleConstraint, Destination, Label as IrLabel, Main,
-    Place, Program, Statement, UnaryOperator, Value,
+    BinaryOperator, Comparison, Condition, CycleConstraint, Destination, Frame, Label as IrLabel,
+    Main, Place, Program, Statement, UnaryOperator, Value,
 };
 use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind};
 use raster_syntax::Span;
-use raster_timing::{analyze, plan_delay, DelayStep, TimedRegion, TimingError};
+use raster_timing::{analyze, plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError};
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
 
@@ -113,7 +113,7 @@ pub fn generate_with_isa(
         generator.emit(0x60, Implied, None);
     }
 
-    generator.main(main, &program.global_initializers)?;
+    generator.main(main, &program.global_initializers, program.frame.as_ref())?;
     let reports = std::mem::take(&mut generator.reports);
     Ok(CodegenOutput {
         program: generator.output,
@@ -151,12 +151,63 @@ struct Generator<'a> {
 }
 
 impl Generator<'_> {
-    fn main(&mut self, main: &Main, initializers: &[Statement]) -> Result<(), CodegenError> {
+    /// Emit `main`, and whatever the program does once `main` has run.
+    ///
+    /// A program with no frame ends in the tight loop it always did. A program with one ends in its
+    /// frame instead, repeated for as long as the console is on: the halt label doubles as the top
+    /// of the frame loop, so a `return` out of `main` reaches the frame exactly as falling off the
+    /// end of `main` does.
+    fn main(
+        &mut self,
+        main: &Main,
+        initializers: &[Statement],
+        frame: Option<&Frame>,
+    ) -> Result<(), CodegenError> {
         self.emit_label(main.label);
         self.statements(initializers, Some(main.halt_label))?;
         self.statements(&main.statements, Some(main.halt_label))?;
         self.emit_label(main.halt_label);
+        if let Some(frame) = frame {
+            self.timed_frame(frame, main.halt_label)?;
+        }
         self.jump(main.halt_label);
+        Ok(())
+    }
+
+    /// Emit one pass of a `frame ... using timed`: synchronize, then run each handler where its
+    /// scanline is.
+    ///
+    /// The pass opens with the read-$2002-and-branch sequence of spec section 6.6, which both waits
+    /// for vblank and lands every pass on the same alignment — the poll is the frame's origin, and
+    /// every handler's position is counted in cycles from it. It is emitted once rather than as a
+    /// wait followed by a second de-jitter poll, because reading `$2002` clears the vblank flag: a
+    /// second identical poll would wait out a whole further frame.
+    ///
+    /// Between handlers the schedule is spent in synthesized delays, and each handler is padded to
+    /// the budget [`plan_timed_frame`] gives it, so the position of a handler is the sum of proven
+    /// costs rather than an accumulation of roundings.
+    fn timed_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
+        self.statement(&Statement::SyncExact, Some(halt_label))?;
+        let scanlines: Vec<_> = frame.events.iter().map(|event| event.scanline).collect();
+        for (handler, event) in plan_timed_frame(&scanlines).iter().zip(&frame.events) {
+            if handler.delay_cycles > 0 {
+                self.statement(
+                    &Statement::Delay {
+                        cycles: handler.delay_cycles,
+                        span: event.span,
+                    },
+                    Some(halt_label),
+                )?;
+            }
+            self.timed_region(
+                &CycleConstraint::Exact(handler.budget_cycles),
+                true,
+                false,
+                &event.body,
+                event.span,
+                Some(halt_label),
+            )?;
+        }
         Ok(())
     }
 
@@ -647,6 +698,12 @@ fn next_internal_label(program: &Program) -> u32 {
                 .flat_map(|function| function.statements.iter()),
         )
         .chain(program.main.iter().flat_map(|main| main.statements.iter()))
+        .chain(
+            program
+                .frame
+                .iter()
+                .flat_map(|frame| frame.events.iter().flat_map(|event| event.body.iter())),
+        )
     {
         maximum = maximum.max(highest_label(statement));
     }

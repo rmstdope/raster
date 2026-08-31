@@ -28,7 +28,7 @@ fn reports_every_error_from_the_failing_stage() {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>(),
         [
-            "`frame` blocks are not supported yet",
+            "`at vblank` is not supported yet",
             "`loop` is not supported yet",
             "only `wait cycles` is supported yet; frame waits arrive with frame scheduling",
         ]

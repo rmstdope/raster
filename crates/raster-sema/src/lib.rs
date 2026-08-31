@@ -51,6 +51,9 @@ struct Analyzer {
     return_type: ValueType,
     /// Whether each enclosing timed region carries `pad`, innermost last.
     timed_regions: Vec<bool>,
+    /// Whether the statements being checked run from a position the compiler has synchronized —
+    /// which is what a `frame` handler does, and nothing else yet.
+    synchronized: bool,
 }
 
 pub fn analyze(program: &Program) -> Result<TypedProgram, Vec<SemanticError>> {
@@ -89,6 +92,7 @@ impl Analyzer {
             constants: BTreeMap::new(),
             return_type: ValueType::Void,
             timed_regions: Vec::new(),
+            synchronized: false,
         }
     }
 
@@ -249,7 +253,19 @@ impl Analyzer {
             .unwrap_or(ValueType::Void)
     }
 
+    /// Check one scheduled handler.
+    ///
+    /// A `frame` says where its handlers run, and lowering it emits the synchronization that makes
+    /// that true, so the jitter rule of spec section 6.6 is already satisfied inside one: demanding
+    /// a `sync exact` the author would have to write into every handler would be asking them to do
+    /// by hand the one thing the construct exists to do for them.
     fn check_frame_event(&mut self, event: &FrameEvent) {
+        let outer = std::mem::replace(&mut self.synchronized, true);
+        self.check_frame_event_body(event);
+        self.synchronized = outer;
+    }
+
+    fn check_frame_event_body(&mut self, event: &FrameEvent) {
         match event {
             FrameEvent::At { position, body } => {
                 if let FramePosition::Scanline(value) = position {
@@ -286,6 +302,7 @@ impl Analyzer {
     fn check_block_statements(&mut self, block: &Block) {
         for (index, statement) in block.statements.iter().enumerate() {
             if let Statement::Cycles { spec, body, .. } = &statement.value
+                && !self.synchronized
                 && writes_ppu_register(body)
                 && !block.statements[..index].iter().any(is_sync_exact)
             {
