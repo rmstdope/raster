@@ -8,11 +8,13 @@ pub const MMC3_FIXED_BANK_SIZE: usize = 8 * 1024;
 pub const MMC3_FIXED_BANK_START: u16 = 0xe000;
 
 const INES_PRG_ROM_BANK_SIZE: usize = 16 * 1024;
-const MMC3_FIXED_BANK_CODE_SIZE: usize = MMC3_FIXED_BANK_SIZE - 6;
+pub const MMC3_FIXED_BANK_CODE_SIZE: usize = MMC3_FIXED_BANK_SIZE - 6;
 
 mod m1;
+mod runtime;
 
 pub use m1::m1_solid_backdrop_rom;
+pub use runtime::{link_mmc3_program, LinkedRom, INTERRUPT_LABEL, RESET_LABEL};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Label(pub u32);
@@ -36,6 +38,37 @@ pub enum FixedBankItem {
         instruction: Instruction,
         relocation: Option<Relocation>,
     },
+}
+
+impl FixedBankItem {
+    /// One instruction, resolved at assembly time.
+    pub(crate) fn instruction(opcode: u8, mode: AddressingMode, operand: Option<u16>) -> Self {
+        Self::Instruction {
+            instruction: Instruction {
+                opcode,
+                mode,
+                operand,
+            },
+            relocation: None,
+        }
+    }
+
+    /// One instruction whose operand the linker fills in from `target`.
+    pub(crate) fn relocated(
+        opcode: u8,
+        mode: AddressingMode,
+        kind: RelocationKind,
+        target: Label,
+    ) -> Self {
+        Self::Instruction {
+            instruction: Instruction {
+                opcode,
+                mode,
+                operand: None,
+            },
+            relocation: Some(Relocation { kind, target }),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
