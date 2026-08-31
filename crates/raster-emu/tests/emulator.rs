@@ -109,8 +109,7 @@ fn reports_a_palette_entry_for_every_pixel() {
     // range also pins that no colour-emphasis bit (`0x1C0`) reaches an entry.
     for (index, &entry) in frame.as_indices().iter().enumerate() {
         assert_eq!(
-            entry,
-            0x00,
+            entry, 0x00,
             "pixel {index} of {FRAME_PIXELS} is not the cold backdrop entry"
         );
     }
@@ -137,8 +136,7 @@ fn renders_one_flat_colour_per_palette_entry() {
             .expect("four channels");
         let known = seen[usize::from(entry)].get_or_insert(colour);
         assert_eq!(
-            *known,
-            colour,
+            *known, colour,
             "pixel {index} shows a second colour for palette entry {entry:#05x}"
         );
     }
