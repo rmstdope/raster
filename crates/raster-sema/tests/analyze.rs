@@ -223,7 +223,7 @@ fn rejects_unprovable_timed_region() {
         "unbounded loop",
         "`while` loop",
         "branch arms",
-        "`helper` cannot be called inside a timed region yet",
+        "`helper` cannot be called inside a timed block yet",
         "multiplication, division and remainder",
         "`wait vblank`",
     ] {
@@ -313,7 +313,7 @@ fn rejects_every_construct_a_straight_line_region_cannot_charge() {
     let cases = [
         (
             "for i in 0..10 { total = total + 1 }",
-            "`for` loop inside a timed region",
+            "`for` loop inside a timed block",
         ),
         (
             "total = total * 3",
@@ -327,11 +327,11 @@ fn rejects_every_construct_a_straight_line_region_cannot_charge() {
             "total = total % 3",
             "multiplication, division and remainder",
         ),
-        ("total = total << 3", "shift inside a timed region"),
-        ("total = total >> 3", "shift inside a timed region"),
-        ("sync exact", "belongs before a timed region"),
+        ("total = total << 3", "shift inside a timed block"),
+        ("total = total >> 3", "shift inside a timed block"),
+        ("sync exact", "belongs before a timed block"),
         ("wait cycles(20)", "spends its cycles in a loop"),
-        ("helper()", "cannot be called inside a timed region yet"),
+        ("helper()", "cannot be called inside a timed block yet"),
     ];
 
     for (statement, expected) in cases {
@@ -489,9 +489,9 @@ fn a_frame_handler_is_a_timed_region_and_obeys_section_6_3() {
         "#,
     );
     for expected in [
-        "`wait cycles` inside a timed region",
-        "branch arms inside a timed region",
-        "a `while` loop's trip count cannot be proven inside a timed region",
+        "`wait cycles` inside a timed block",
+        "branch arms inside a timed block",
+        "a `while` loop's trip count cannot be proven inside a timed block",
     ] {
         assert!(
             diagnostics.iter().any(|message| message.contains(expected)),
@@ -532,52 +532,52 @@ fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
     let cases: &[(Refusal, &str, &str)] = &[
         (
             TimedRegionCost,
-            "an unbounded loop has no provable cycle cost inside a timed region",
+            "an unbounded loop has no provable cycle cost inside a timed block",
             "main {\n    cycles(20) pad {\n        loop {}\n    }\n}\n",
         ),
         (
             TimedRegionCost,
-            "branch arms inside a timed region cannot yet be balanced",
+            "branch arms inside a timed block cannot yet be balanced",
             "var level: u8\nmain {\n    cycles(20) pad {\n        if level == 1 { level = 2 }\n    }\n}\n",
         ),
         (
             TimedRegionCost,
-            "a `while` loop's trip count cannot be proven inside a timed region",
+            "a `while` loop's trip count cannot be proven inside a timed block",
             "var level: u8\nmain {\n    cycles(20) pad {\n        while level != 0 { level = level - 1 }\n    }\n}\n",
         ),
         (
             TimedRegionCost,
-            "a `for` loop inside a timed region compiles to a loop whose cost is not yet proven",
+            "a `for` loop inside a timed block compiles to a loop whose cost is not yet proven",
             "var level: u8\nmain {\n    cycles(20) pad {\n        for index in 0..3 { level = level + 1 }\n    }\n}\n",
         ),
         (
             TimedRegionCost,
-            "`wait cycles` inside a timed region spends its cycles in a loop",
+            "`wait cycles` inside a timed block spends its cycles in a loop",
             "main {\n    cycles(20) pad {\n        wait cycles(4)\n    }\n}\n",
         ),
         (
             TimedRegionCost,
-            "multiplication, division and remainder inside a timed region compile to loops",
+            "multiplication, division and remainder inside a timed block compile to loops",
             "var level: u8\nmain {\n    cycles(20) pad {\n        level = level * 2\n    }\n}\n",
         ),
         (
             TimedRegionCost,
-            "a shift inside a timed region compiles to a loop whose cost is not yet proven",
+            "a shift inside a timed block compiles to a loop whose cost is not yet proven",
             "var level: u8\nmain {\n    cycles(20) pad {\n        level = level >> 1\n    }\n}\n",
         ),
         (
             TimedRegionCost,
-            "cannot be called inside a timed region yet",
+            "cannot be called inside a timed block yet",
             "fn helper() {}\nmain {\n    cycles(20) pad {\n        helper()\n    }\n}\n",
         ),
         (
             Rejected,
-            "`wait scanline` has no provable cost inside a timed region",
+            "`wait scanline` has no provable cost inside a timed block",
             "main {\n    cycles(20) pad {\n        wait scanline 10\n    }\n}\n",
         ),
         (
             Rejected,
-            "`wait vblank` has no provable cost inside a timed region",
+            "`wait vblank` has no provable cost inside a timed block",
             "main {\n    cycles(20) pad {\n        wait vblank\n    }\n}\n",
         ),
         (
@@ -598,4 +598,63 @@ fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
             "`{expected}` decides its note by this kind"
         );
     }
+}
+
+/// One of every construct a straight-line block cannot charge, in a single `cycles` block, so
+/// that eleven of the twelve refusals fire from one program. The twelfth — `sync exact` is
+/// required before a PPU-writing block — cannot join them: it fires only when no `sync exact`
+/// precedes the block, and this fixture contains one inside it.
+const REFUSALS_INSIDE_A_BLOCK: &str = r#"
+    fn helper() { }
+    var count: u8
+    main {
+        cycles(100) {
+            loop { count = 1 }
+            while count < 3 { count = count + 1 }
+            if count == 1 { count = 2 }
+            for i in 0..10 { count = count + 1 }
+            helper()
+            count = count * count
+            count = count << 3
+            wait vblank
+            wait scanline 96
+            wait cycles(20)
+            sync exact
+        }
+    }
+"#;
+
+/// A PPU-writing block with no `sync exact` before it: the one message that a program carrying
+/// `sync exact` can never produce.
+const PPU_WRITE_WITHOUT_SYNC: &str = r#"
+    var count: u8
+    main {
+        cycles(100) pad {
+            ppu.mask = count
+        }
+    }
+"#;
+
+#[test]
+fn no_refusal_calls_a_timed_block_a_timed_region() {
+    let mut diagnostics = errors(REFUSALS_INSIDE_A_BLOCK);
+    diagnostics.extend(errors(PPU_WRITE_WITHOUT_SYNC));
+
+    let region: Vec<&String> = diagnostics
+        .iter()
+        .filter(|message| message.contains("timed region"))
+        .collect();
+    assert!(
+        region.is_empty(),
+        "`timed block` is the word that ships; these still say `timed region`: {region:?}"
+    );
+
+    let bare: Vec<&String> = diagnostics
+        .iter()
+        .filter(|message| message.contains("the region"))
+        .collect();
+    assert!(
+        bare.is_empty(),
+        "a message that opens with `timed block` must not call it `the region` later: {bare:?}"
+    );
 }
