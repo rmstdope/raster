@@ -271,7 +271,9 @@ fn refuses_a_background_whose_data_would_reach_the_vector_table() {
     ));
 
     // The figure `m5_background_rom`'s doc comment quotes. It is the whole
-    // program, not the walk to the first label past the limit.
+    // program, not the walk to the first label past the limit. If this number
+    // ever moves, move the one in that comment (`m5.rs`, `m5_background_rom`)
+    // with it - this assertion is the only thing holding the two together.
     assert_eq!(
         background(&vec![0u8; 8192]),
         Err(LinkError::FixedBankTooLarge {

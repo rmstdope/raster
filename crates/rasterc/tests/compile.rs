@@ -336,7 +336,10 @@ fn the_refusal_figure_grows_with_the_program_after_the_overflow_point() {
         "    if 1 == 1 { ppu.mask = 1 }\n".repeat(60)
     );
 
-    let grew = reported_size(&branchy) - reported_size(&plain);
+    // `saturating_sub`, so a regression that made the branchy program report
+    // *fewer* bytes still fails with the message below rather than with
+    // `attempt to subtract with overflow`.
+    let grew = reported_size(&branchy).saturating_sub(reported_size(&plain));
     assert!(
         grew >= 600,
         "sixty `if` blocks after the overflow point moved the reported size by {grew} bytes"
