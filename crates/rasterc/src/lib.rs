@@ -130,6 +130,16 @@ fn compile(
         }
     };
 
+    // Warnings go to stderr, as errors do, and the summary to stdout — so
+    // `rasterc demo.raster > /dev/null` still shows the warnings and
+    // `2>/dev/null` still shows the summary. A warning does not fail the build.
+    if !rom.warnings.is_empty() {
+        write(
+            stderr,
+            &report::diagnostics_only(input, &source, &rom.warnings),
+        )?;
+    }
+
     // The ROM is complete in memory before the write begins, so a diagnostic is
     // never half a ROM. A write that fails part-way still leaves a partial file,
     // which is the filesystem's to report and the author's to overwrite.

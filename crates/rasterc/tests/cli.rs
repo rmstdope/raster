@@ -21,12 +21,26 @@ fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
     )
 }
 
-fn summary(input: &Path, output: &Path) -> String {
+/// The six rows every successful build prints, then whatever this build adds
+/// after them. `reset` is always `$E000`, and `nmi` and `irq` share an address
+/// for a program with no `frame`.
+fn summary_of(
+    input: &Path,
+    output: &Path,
+    code_len: usize,
+    handler: u16,
+    trailing: &str,
+) -> String {
     format!(
-        " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, 160 of 8186 bytes used\n    entry  reset $E000, nmi $E09F, irq $E09F\n",
+        " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, {code_len} of 8186 bytes used\n    entry  reset $E000, nmi ${handler:04X}, irq ${handler:04X}\n{trailing}",
         input.display(),
         output.display()
     )
+}
+
+/// The demo's summary, which three tests assert byte for byte.
+fn summary(input: &Path, output: &Path) -> String {
+    summary_of(input, output, 160, 0xE09F, "")
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -462,5 +476,95 @@ fn a_block_short_of_an_exact_budget_is_told_about_pad() {
     assert!(
         stderr.contains("`pad` would fill the remaining 10 cycles"),
         "got:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_bank_select_warning_prints_to_stderr_and_still_writes_a_rom() {
+    let directory = Scratch::new("bankwarning");
+    let input = directory.path().join("invert.raster");
+    let output = directory.path().join("invert.nes");
+    fs::write(
+        &input,
+        "main {\n    ppu.mask = 0\n    mmc3.bank_select = $80\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert!(output.exists());
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: this bank select changes the MMC3 mapping mode\n",
+                " --> {path}:3:5\n",
+                "  |\n",
+                "3 |     mmc3.bank_select = $80\n",
+                "  |     ^^^^^^^^^^^^^^^^^^^^^^ bit 7 swaps the two pattern tables from here on\n",
+                "  = note: reset chose CHR A12 inversion off, so pattern table 0 is at\n",
+                "          PPU $0000; clearing bit 7 keeps that map\n",
+                "  = note: bits 6 and 7 take effect from whichever bank select was\n",
+                "          written last, not from the bank data that follows\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+    assert_eq!(
+        stdout,
+        summary_of(&input, &output, 145, 0xE090, " warnings  1\n")
+    );
+}
+
+#[test]
+fn a_build_that_fails_counts_its_errors_and_its_warnings() {
+    let directory = Scratch::new("warnandfail");
+    let input = directory.path().join("both.raster");
+    let output = directory.path().join("both.nes");
+    fs::write(
+        &input,
+        "main {\n    mmc3.bank_select = $80\n    loop {}\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(!output.exists());
+    assert!(
+        stderr.starts_with("warning: this bank select changes the MMC3 mapping mode\n"),
+        "the warning comes first, got:\n{stderr}"
+    );
+    assert!(
+        stderr.ends_with(&format!(
+            "error: could not compile {path} (1 error, 1 warning)\n",
+            path = input.display()
+        )),
+        "both severities are counted, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn two_warnings_and_an_error_are_counted_in_the_plural() {
+    let directory = Scratch::new("plural");
+    let input = directory.path().join("plural.raster");
+    fs::write(
+        &input,
+        "main {\n    mmc3.bank_select = $80\n    mmc3.bank_select = $40\n    loop {}\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert!(
+        stderr.ends_with(&format!(
+            "error: could not compile {path} (1 error, 2 warnings)\n",
+            path = input.display()
+        )),
+        "each severity is pluralised on its own count, got:\n{stderr}"
     );
 }

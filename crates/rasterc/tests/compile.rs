@@ -216,3 +216,88 @@ fn a_hardware_wait_inside_a_timed_region_carries_no_note() {
         waited.notes
     );
 }
+
+#[test]
+fn a_bank_select_warning_does_not_fail_the_build() {
+    let rom = compile_source("main { mmc3.bank_select = $80 }")
+        .expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1);
+    let warning = &rom.warnings[0];
+    assert_eq!(warning.severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        warning.message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert!(warning.span.is_some());
+}
+
+#[test]
+fn a_failed_build_reports_its_warnings_beside_its_errors() {
+    let diagnostics = compile_source("main {\n    mmc3.bank_select = $80\n    loop {}\n}\n")
+        .expect_err("`loop` is not supported yet");
+
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        diagnostics[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        diagnostics[0].notes,
+        [
+            "reset chose CHR A12 inversion off, so pattern table 0 is at\nPPU $0000; clearing bit 7 keeps that map",
+            "bits 6 and 7 take effect from whichever bank select was\nwritten last, not from the bank data that follows",
+        ]
+    );
+    assert_eq!(diagnostics[1].severity, raster_diag::Severity::Error);
+    assert_eq!(diagnostics[1].message, "`loop` is not supported yet");
+    assert_eq!(diagnostics[1].notes, [SUPPORTED_SUBSET]);
+}
+
+#[test]
+fn a_build_that_fails_after_lowering_still_reports_its_warnings() {
+    // Lowers cleanly and fails in codegen, so the warning has to survive a
+    // stage that is not `lower`. The author who fixes the zero page is the one
+    // who needed the mapping-mode warning.
+    let mut source = String::from("main {\n    mmc3.bank_select = $80\n");
+    for index in 0..300 {
+        source.push_str(&format!("    var v{index}: u8 = 1\n"));
+    }
+    source.push_str("}\n");
+
+    let diagnostics = compile_source(&source).expect_err("the zero page is exhausted");
+
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        diagnostics[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(diagnostics[1].severity, raster_diag::Severity::Error);
+    assert_eq!(
+        diagnostics[1].message,
+        "too many variables for the zero page"
+    );
+}
+
+#[test]
+fn a_link_failure_still_reports_its_warnings() {
+    // Lowers and generates, and overflows the fixed bank at link time — the
+    // other post-lowering arm.
+    let mut source = String::from("main {\n    mmc3.bank_select = $80\n");
+    for _ in 0..3000 {
+        source.push_str("    ppu.mask = 1\n");
+    }
+    source.push_str("}\n");
+
+    let diagnostics = compile_source(&source).expect_err("the fixed bank overflows");
+
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].severity, raster_diag::Severity::Warning);
+    assert_eq!(diagnostics[1].severity, raster_diag::Severity::Error);
+    assert_eq!(
+        diagnostics[1].message,
+        "the program does not fit the MMC3 fixed bank"
+    );
+}
