@@ -3,14 +3,14 @@ use std::{io::Cursor, num::NonZeroU32};
 use raster_assets::{
     decode_background, encode_background, IndexedBackground, NesBackground, TRANSPARENT_COLOUR,
 };
+use raster_emu::{render_after_frames, FRAME_PIXELS, FRAME_WIDTH};
 use raster_link::{
-    m5_background_rom, BackgroundData, LinkedRom, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
-    MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
+    m5_background_rom, BackgroundData, LinkedRom, INES_HEADER_SIZE, MMC3_FIXED_BANK_CODE_SIZE,
+    MMC3_FIXED_BANK_SIZE, MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
 };
 
-use raster_emu::{render_after_frames, FRAME_PIXELS, FRAME_WIDTH};
-
 const JMP_ABSOLUTE: u8 = 0x4c;
+const RTI: u8 = 0x40;
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 240;
@@ -116,7 +116,10 @@ fn the_fixture_encodes_to_four_subpalettes_and_seventeen_chr_tiles() {
         [0x94, 0x3e, 0x94, 0x3e, 0x94, 0x3e, 0x94, 0x3e]
     );
     // tile 0 is reserved blank and the fixture never uses it
-    assert!(encoded.nametable().iter().all(|tile| (1..=16).contains(tile)));
+    assert!(encoded
+        .nametable()
+        .iter()
+        .all(|tile| (1..=16).contains(tile)));
 }
 
 fn fixed_bank(rom: &[u8]) -> &[u8] {
@@ -219,4 +222,26 @@ fn renders_the_source_png_entry_for_entry() {
             rendered[index],
         );
     }
+}
+
+#[test]
+fn keeps_the_program_and_its_data_clear_of_the_vector_table() {
+    let (_, _, rom) = linked_fixture();
+
+    assert!(
+        rom.code_len <= MMC3_FIXED_BANK_CODE_SIZE,
+        "the program and its data fit the fixed bank: {} of {MMC3_FIXED_BANK_CODE_SIZE} bytes",
+        rom.code_len,
+    );
+    // The runtime's prologue is first in the bank.
+    assert_eq!(rom.vectors.reset, MMC3_FIXED_BANK_START);
+    // NMI and IRQ share the runtime's RTI, which sits after the data blocks.
+    assert_eq!(rom.vectors.nmi, rom.vectors.irq);
+    let bank = fixed_bank(&rom.image);
+    let interrupt = usize::from(rom.vectors.irq - MMC3_FIXED_BANK_START);
+    assert_eq!(bank[interrupt], RTI);
+    assert!(
+        interrupt < MMC3_FIXED_BANK_CODE_SIZE,
+        "the interrupt handler is clear of the vector table: offset {interrupt}",
+    );
 }
