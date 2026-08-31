@@ -8,3 +8,8 @@ workspace = true
 
 [dependencies]
 raster-6502 = { path = "../raster-6502" }
+
+[dev-dependencies]
+raster-assets = { path = "../raster-assets" }
+raster-emu = { path = "../raster-emu" }
+png = "0.17"
