@@ -377,3 +377,113 @@ fn a_bank_select_that_inverts_the_chr_map_is_a_warning() {
         ]
     );
 }
+
+#[test]
+fn a_bank_select_that_changes_prg_mode_is_a_warning() {
+    let program = lower_source("main { mmc3.bank_select = $46 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 6 moves the fixed PRG bank from $C000 to $8000"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose PRG mode 0, a linear 32 KiB map with this code\nin the fixed bank at $E000; clearing bit 6 keeps that map",
+            "bits 6 and 7 take effect from whichever bank select was\nwritten last, not from the bank data that follows",
+        ]
+    );
+}
+
+#[test]
+fn a_bank_select_that_sets_both_mode_bits_is_one_warning() {
+    let program = lower_source("main { mmc3.bank_select = $C0 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 6 moves the fixed PRG bank and bit 7 swaps the pattern tables"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose PRG mode 0 and CHR A12 inversion off: a linear\n32 KiB map, and pattern table 0 at PPU $0000",
+            "bits 6 and 7 take effect from whichever bank select was\nwritten last, not from the bank data that follows",
+        ]
+    );
+}
+
+#[test]
+fn a_bank_select_rasterc_cannot_fold_is_a_warning() {
+    for source in [
+        "main { var which: u8 = 3\n mmc3.bank_select = which }",
+        "main { mmc3.bank_select = $40 | $06 }",
+        "fn pick() -> u8 { return 3 }\nmain { mmc3.bank_select = pick() }",
+    ] {
+        let program = lower_source(source);
+
+        assert_eq!(program.warnings.len(), 1, "for {source:?}");
+        let warning = &program.warnings[0];
+        assert_eq!(
+            warning.message,
+            "rasterc cannot tell whether this bank select changes the mapping mode",
+            "for {source:?}"
+        );
+        assert_eq!(
+            warning.label,
+            "rasterc cannot see this value here, so bits 6 and 7 are unknown",
+            "for {source:?}"
+        );
+        assert_eq!(
+            warning.notes,
+            ["bit 6 is PRG mode and bit 7 is CHR A12 inversion; keeping\nboth clear keeps the map reset chose"],
+            "for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn repointing_a_bank_window_is_silent() {
+    let program = lower_source("main { mmc3.bank_select = 0\n mmc3.bank_data = 3 }");
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_const_bank_select_is_folded_like_a_literal() {
+    let program = lower_source("const INVERT: u8 = $80\nmain { mmc3.bank_select = INVERT }");
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "bit 7 swaps the two pattern tables from here on"
+    );
+}
+
+#[test]
+fn warnings_survive_a_failed_lowering() {
+    let source = "main { mmc3.bank_select = $80\n loop {} }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("`loop` is not supported yet");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(failure.errors[0].message, "`loop` is not supported yet");
+    assert_eq!(failure.warnings.len(), 1);
+    assert_eq!(
+        failure.warnings[0].label,
+        "bit 7 swaps the two pattern tables from here on"
+    );
+}
