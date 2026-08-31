@@ -327,3 +327,15 @@ fn a_frame_interval_wider_than_the_picture_is_one_occurrence_rather_than_a_wrap(
         vec![238],
     );
 }
+
+#[test]
+fn a_construct_this_release_does_not_have_is_refused_as_such() {
+    let errors = lower_errors("var table: [2]u8\nmain {}\n");
+
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.refusal == raster_diag::Refusal::NotInThisRelease),
+        "an array is a construct the release does not have: {errors:?}"
+    );
+}

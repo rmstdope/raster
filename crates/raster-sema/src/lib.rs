@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
+use raster_diag::Refusal;
 use raster_syntax::{
     Block, CycleBound, Declaration, Expression, FrameEvent, FramePosition, Function, Item, Keyword,
     Operator, Program, Span, Spanned, Statement, Type, Wait,
@@ -9,6 +10,7 @@ use raster_syntax::{
 pub struct SemanticError {
     pub message: String,
     pub span: Span,
+    pub refusal: Refusal,
 }
 
 #[derive(Clone, Debug)]
@@ -108,10 +110,26 @@ impl Analyzer {
         }
     }
 
+    /// Refuse the program. The default kind is `Rejected`: a mistake, or
+    /// something Raster does not intend to do.
     fn error(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::Rejected);
+    }
+
+    /// Refuse a construct a timed region cannot charge, because the region is
+    /// costed as straight-line code. Not every refusal that mentions a timed
+    /// region belongs here: a hardware wait has no cost to measure at all, and
+    /// where `sync exact` may stand is a placement rule. Both of those are
+    /// ordinary rejections.
+    fn cannot_be_costed(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::TimedRegionCost);
+    }
+
+    fn refuse(&mut self, span: Span, message: impl Into<String>, refusal: Refusal) {
         self.errors.push(SemanticError {
             message: message.into(),
             span,
+            refusal,
         });
     }
 
