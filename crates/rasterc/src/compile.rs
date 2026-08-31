@@ -20,8 +20,7 @@ const SUPPORTED_SUBSET: &str = "this release compiles `main`, `fn`, `if`, `while
 
 /// Why a timed region refuses a construct that is fine everywhere else, said
 /// once per run beside the first of them.
-const TIMED_REGION_COST: &str =
-    "a timed region is costed as straight-line code; loops, branches\n\
+const TIMED_REGION_COST: &str = "a timed region is costed as straight-line code; loops, branches\n\
      and calls will be admitted once their cost can be measured";
 
 /// Whether this release restricts itself to official opcodes.

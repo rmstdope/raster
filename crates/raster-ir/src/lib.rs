@@ -436,8 +436,12 @@ impl Lowerer {
                         self.lower_main(block);
                     }
                 }
-                Item::Target(_) => self.not_in_this_release(item.span, "`target` blocks are not supported yet"),
-                Item::Import(_) => self.not_in_this_release(item.span, "`import` is not supported yet"),
+                Item::Target(_) => {
+                    self.not_in_this_release(item.span, "`target` blocks are not supported yet")
+                }
+                Item::Import(_) => {
+                    self.not_in_this_release(item.span, "`import` is not supported yet")
+                }
                 Item::Frame(frame) => self.lower_frame(frame, item.span),
                 Item::Other(_) => self.error(item.span, "this top-level item is not supported"),
             }
@@ -1130,7 +1134,10 @@ impl Lowerer {
                 Value::Constant(0)
             }
             SyntaxExpression::Character(_) => {
-                self.not_in_this_release(expression.span, "character expressions are not supported");
+                self.not_in_this_release(
+                    expression.span,
+                    "character expressions are not supported",
+                );
                 Value::Constant(0)
             }
             SyntaxExpression::Boolean(_) => {
@@ -1279,7 +1286,10 @@ impl Lowerer {
                 false
             }
             Type::Name(name) if name.value == "bool" => {
-                self.not_in_this_release(name.span, "bool storage and expressions are not supported");
+                self.not_in_this_release(
+                    name.span,
+                    "bool storage and expressions are not supported",
+                );
                 false
             }
             Type::Name(name) if name.value == "void" => {

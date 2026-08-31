@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use raster_diag::Refusal;
 use raster_ir::{lower, PlaceKind, Statement};
 use raster_sema::analyze;
 use raster_syntax::parse;
@@ -56,10 +57,19 @@ fn lowers_scoped_control_flow_and_calls() {
         .any(|place| place.kind == PlaceKind::Counter));
 }
 
+/// The line each construct sits on, so an expectation names a place in the
+/// fixture rather than a word in a message. `LowerError.span` is a byte offset.
+fn line_of(source: &str, offset: u32) -> usize {
+    source[..offset as usize].matches('\n').count() + 1
+}
+
+/// Every construct here is one the specification defines and this release does
+/// not compile, so every one of them must be refused as `NotInThisRelease` —
+/// not because of how its message is worded, which is free to change, but
+/// because of what kind of refusal it is.
 #[test]
 fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
-    let syntax = parse(
-        r#"
+    let source = r#"
             group state { var line: u8 }
             var table: [2]u8
             var word: u16
@@ -73,32 +83,27 @@ fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
                 "text"
                 'x'
                 wait vblank
-                loop { break; continue }
+                loop {
+                    break
+                    continue
+                }
             }
-        "#,
-    )
-    .expect("fixture should parse");
+        "#;
+    let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
     let errors = lower(&typed).expect_err("unsupported forms must be diagnosed");
 
-    for expected in [
-        "group",
-        "array",
-        "u16",
-        "bool",
-        "`asm`",
-        "`at vblank`",
-        "arrays",
-        "string",
-        "character",
-        "wait",
-        "loop",
-        "break",
-        "continue",
-    ] {
+    // group, array, u16, bool, `asm`, `at vblank`, the array assignment, the
+    // string, the character, `wait vblank`, `loop`, `break` and `continue` —
+    // one construct per line of the fixture above, which is why `break` and
+    // `continue` sit on lines of their own.
+    for line in [2, 3, 4, 5, 6, 7, 9, 12, 13, 14, 15, 16, 17] {
         assert!(
-            errors.iter().any(|error| error.message.contains(expected)),
-            "expected `{expected}` in {errors:?}"
+            errors
+                .iter()
+                .any(|error| line_of(source, error.span.start) == line
+                    && error.refusal == Refusal::NotInThisRelease),
+            "line {line} holds a construct this release does not have: {errors:?}"
         );
     }
     assert!(errors
@@ -335,7 +340,7 @@ fn a_construct_this_release_does_not_have_is_refused_as_such() {
     assert!(
         errors
             .iter()
-            .all(|error| error.refusal == raster_diag::Refusal::NotInThisRelease),
+            .all(|error| error.refusal == Refusal::NotInThisRelease),
         "an array is a construct the release does not have: {errors:?}"
     );
 }

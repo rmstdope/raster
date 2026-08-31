@@ -172,9 +172,10 @@ fn a_string_expression_says_what_the_release_can_build() {
         .expect_err("string expressions are not in this release");
 
     assert!(
-        diagnostics.iter().any(|d| d.message
-            == "string expressions are not supported"
-            && d.notes == [SUPPORTED_SUBSET]),
+        diagnostics
+            .iter()
+            .any(|d| d.message == "string expressions are not supported"
+                && d.notes == [SUPPORTED_SUBSET]),
         "{diagnostics:?}"
     );
 }
