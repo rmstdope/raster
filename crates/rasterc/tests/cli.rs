@@ -546,3 +546,25 @@ fn a_build_that_fails_counts_its_errors_and_its_warnings() {
         "both severities are counted, got:\n{stderr}"
     );
 }
+
+#[test]
+fn two_warnings_and_an_error_are_counted_in_the_plural() {
+    let directory = Scratch::new("plural");
+    let input = directory.path().join("plural.raster");
+    fs::write(
+        &input,
+        "main {\n    mmc3.bank_select = $80\n    mmc3.bank_select = $40\n    loop {}\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert!(
+        stderr.ends_with(&format!(
+            "error: could not compile {path} (1 error, 2 warnings)\n",
+            path = input.display()
+        )),
+        "each severity is pluralised on its own count, got:\n{stderr}"
+    );
+}

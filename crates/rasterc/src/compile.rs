@@ -81,17 +81,21 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
         ));
         diagnostics
     })?;
+    // Every failing stage after lowering reports the warnings lowering found,
+    // for the reason the whole run does: the author who fixes the error is the
+    // author who needed the warning, and they only get one look at it.
+    let warnings = warned(std::mem::take(&mut ir.warnings), source);
     let output = generate_with_isa(&ir, LEGAL_ISA)
-        .map_err(|error| vec![codegen_diagnostic(error, source)])?;
+        .map_err(|error| beside(&warnings, codegen_diagnostic(error, source)))?;
     let rom = link_mmc3_program(&output.program, output.main, LEGAL_ISA)
-        .map_err(|error| vec![link_diagnostic(error, ir.frame.is_some())])?;
+        .map_err(|error| beside(&warnings, link_diagnostic(error, ir.frame.is_some())))?;
 
     Ok(Rom {
         image: rom.image,
         code_len: rom.code_len,
         vectors: rom.vectors,
         reports: output.reports,
-        warnings: warned(std::mem::take(&mut ir.warnings), source),
+        warnings,
     })
 }
 
@@ -111,6 +115,14 @@ fn spanned(
             })
             .collect(),
     )
+}
+
+/// One stage's error, behind the warnings found before it. Warnings first and
+/// errors after, the same order `compile_source` gives a failed lowering.
+fn beside(warnings: &[Diagnostic], error: Diagnostic) -> Vec<Diagnostic> {
+    let mut diagnostics = warnings.to_vec();
+    diagnostics.push(error);
+    diagnostics
 }
 
 /// Lowering's warnings, as diagnostics. `Span::clamped` for the same reason

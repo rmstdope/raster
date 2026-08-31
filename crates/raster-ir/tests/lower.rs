@@ -486,3 +486,16 @@ fn warnings_survive_a_failed_lowering() {
         "bit 7 swaps the two pattern tables from here on"
     );
 }
+
+#[test]
+fn a_compound_bank_select_cannot_be_folded_and_warns() {
+    // `binary` builds a `Value::Binary` unconditionally, so a compound
+    // assignment is never a constant to rasterc however plain it reads.
+    let program = lower_source("main { mmc3.bank_select += $80 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "rasterc cannot see this value here, so bits 6 and 7 are unknown"
+    );
+}
