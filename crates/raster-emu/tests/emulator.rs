@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use raster_emu::{render_after_frames, FRAME_BYTES};
+use raster_emu::{cycles_between, render_after_frames, Window, FRAME_BYTES};
 
 fn nrom() -> Vec<u8> {
     let mut rom = vec![b'N', b'E', b'S', 0x1A, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -46,4 +46,47 @@ fn renders_a_deterministic_rgba_frame_from_an_in_memory_ines_rom() {
 #[test]
 fn rejects_an_invalid_rom_instead_of_returning_a_frame() {
     assert!(render_after_frames("invalid.nes", b"not an iNES ROM", NonZeroU32::MIN).is_err());
+}
+
+/// `PHP` (3 cycles), `NOP` (2) and `PLP` (4) at `$8000`, then a `JMP` onto
+/// itself so the ROM never runs off the end of what it was given.
+fn bracketed_nine_cycles() -> Vec<u8> {
+    let mut rom = vec![b'N', b'E', b'S', 0x1A, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut prg = vec![0xEA; 16 * 1024];
+    prg[..6].copy_from_slice(&[0x08, 0xEA, 0x28, 0x4C, 0x03, 0x80]);
+
+    for offset in [0x3FFA, 0x3FFC, 0x3FFE] {
+        prg[offset] = 0x00;
+        prg[offset + 1] = 0x80;
+    }
+
+    rom.extend(prg);
+    rom
+}
+
+#[test]
+fn emulator_harness_runs_a_known_rom() {
+    let measured = cycles_between(
+        "bracketed.nes",
+        &bracketed_nine_cycles(),
+        Window::new(0x08, 0x28),
+    )
+    .expect("the ROM runs and both markers execute");
+
+    assert_eq!(measured, 9);
+}
+
+#[test]
+fn a_marker_that_never_executes_is_reported_rather_than_waited_for() {
+    let error = cycles_between(
+        "bracketed.nes",
+        &bracketed_nine_cycles(),
+        Window::new(0x08, 0x60),
+    )
+    .expect_err("the ROM contains no RTS");
+
+    assert!(
+        format!("{error}").contains("$60"),
+        "the error names the marker it never saw: {error}"
+    );
 }
