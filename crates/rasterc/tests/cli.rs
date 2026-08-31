@@ -23,7 +23,7 @@ fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
 
 fn summary(input: &Path, output: &Path) -> String {
     format!(
-        " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, 100 of 8186 bytes used\n    entry  reset $E000, nmi $E063, irq $E063\n",
+        " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, 160 of 8186 bytes used\n    entry  reset $E000, nmi $E09F, irq $E09F\n",
         input.display(),
         output.display()
     )

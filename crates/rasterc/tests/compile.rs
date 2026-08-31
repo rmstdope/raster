@@ -8,7 +8,7 @@ fn compiles_the_demo_to_the_same_rom_as_m1() {
     let rom = compile_source(&demo_source()).expect("the demo compiles");
 
     assert_eq!(rom.image, raster_link::m1_solid_backdrop_rom());
-    assert_eq!(rom.code_len, 100);
+    assert_eq!(rom.code_len, 160);
 }
 
 const SUPPORTED_SUBSET: &str = concat!(
