@@ -407,3 +407,31 @@ fn the_jitter_rule_still_applies_to_a_program_that_declares_a_frame() {
         "expected the jitter rule in {diagnostics:?}"
     );
 }
+
+#[test]
+fn a_frame_handler_is_a_timed_region_and_obeys_section_6_3() {
+    // A handler is padded to the scanline it is scheduled on, so its cost has to be provable for
+    // exactly the reason a `cycles` block's does — and by the same rules. A `wait` spends its
+    // cycles in a loop the region is not costed for, and a branch's arms are not balanced, so
+    // either would leave the whole schedule after it in the wrong place.
+    let diagnostics = errors(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 60 { wait cycles(200) }
+                at scanline 90 { if 1 == 1 { ppu.mask = 1 } }
+                at scanline 120 { var count: u8 = 2; while count != 0 { count = count - 1 } }
+            }
+        "#,
+    );
+    for expected in [
+        "`wait cycles` inside a timed region",
+        "branch arms inside a timed region",
+        "a `while` loop's trip count cannot be proven inside a timed region",
+    ] {
+        assert!(
+            diagnostics.iter().any(|message| message.contains(expected)),
+            "expected `{expected}` in {diagnostics:?}"
+        );
+    }
+}

@@ -255,13 +255,23 @@ impl Analyzer {
 
     /// Check one scheduled handler.
     ///
-    /// A `frame` says where its handlers run, and lowering it emits the synchronization that makes
-    /// that true, so the jitter rule of spec section 6.6 is already satisfied inside one: demanding
-    /// a `sync exact` the author would have to write into every handler would be asking them to do
-    /// by hand the one thing the construct exists to do for them.
+    /// A handler is a timed region, and is checked as one. Lowering pads it to the scanline it is
+    /// scheduled on, so its cost has to be provable for exactly the reason a `cycles` block's does
+    /// — a `wait` spending its cycles in a loop the region is not costed for, or a branch whose
+    /// arms are not balanced, would put every handler after it in the wrong place and the effect on
+    /// the screen somewhere the source never asked for. The restrictions of spec section 6.3 are
+    /// what make a handler's window in section 7.2 mean anything.
+    ///
+    /// It is a *synchronized* one, which is what section 6.6 asks for: a `frame` says where its
+    /// handlers run and lowering emits the synchronization that makes it true, so demanding a
+    /// `sync exact` inside every handler would be asking the author to do by hand the one thing
+    /// the construct exists to do for them.
     fn check_frame_event(&mut self, event: &FrameEvent) {
         let outer = std::mem::replace(&mut self.synchronized, true);
+        // `pad`, because lowering pads every handler to its scanline's budget.
+        self.timed_regions.push(true);
         self.check_frame_event_body(event);
+        self.timed_regions.pop();
         self.synchronized = outer;
     }
 

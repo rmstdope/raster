@@ -302,3 +302,28 @@ fn rejects_frame_forms_the_timed_lowering_does_not_cover() {
         );
     }
 }
+
+#[test]
+fn a_frame_interval_wider_than_the_picture_is_one_occurrence_rather_than_a_wrap() {
+    let program = lower_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 4294967295 scanlines from 238 to 239 { ppu.mask = 0 }
+            }
+        "#,
+    );
+    let frame = program.frame.as_ref().expect("the frame lowers");
+
+    // `to` is bounded by the visible picture and the interval by nothing, so walking the range
+    // with an unchecked add panics a debug build and, worse, wraps a release one into a schedule
+    // the author never wrote.
+    assert_eq!(
+        frame
+            .events
+            .iter()
+            .map(|event| event.scanline)
+            .collect::<Vec<_>>(),
+        vec![238],
+    );
+}
