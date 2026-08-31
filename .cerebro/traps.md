@@ -23,13 +23,18 @@ The two `ppu.addr = $00` writes belong to the author, not to the compiler —
 decided with the navigator, because a compiler that inserts PPU stores the source
 did not ask for is a compiler whose cycle counts you cannot trust.
 
-## tetanes renders column 0 black, always
+## The NTSC filter is a composite simulation, not the frame
 
-`raster_emu::render_after_frames` returns a 256x240 frame whose leftmost column
-is `rgb(0,0,0)` in every frame measured, whatever the backdrop. A test asserting
-whole-frame uniformity fails on a correct ROM; assert over columns `1..256`.
-Verified by locating every black pixel in a blue frame: exactly column 0, all 240
-rows.
+`tetanes_core`'s `Config::filter` defaults to `VideoFilter::Ntsc`, which simulates
+a CRT: it blends neighbouring pixels, its colours match no palette table, and it
+forces column 0 to `rgb(0,0,0)` in every frame. `raster-emu` therefore asks for
+`VideoFilter::Pixellate`, one RGBA pixel per PPU pixel straight from the palette,
+and also exposes the raw palette entries.
+
+Measured on the demo ROM's `$12` backdrop: filtered `rgb(53,51,228)` with a black
+column 0; unfiltered `rgb(58,56,255)` in all 256 columns. Neither is the FCEUX
+`rgb(0,0,188)` that `raster-assets` quantises source PNGs to, so a test must
+compare palette entries and never an RGB constant.
 
 ## Hexadecimal is `$3f`, never `0x3f`
 

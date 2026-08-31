@@ -4,11 +4,14 @@ use tetanes_core::{
     common::NesRegion,
     control_deck::{Config, ControlDeck, Error, HeadlessMode, Result as EmuResult},
     memory::RamState,
+    video::VideoFilter,
 };
 
 pub const FRAME_WIDTH: usize = 256;
 pub const FRAME_HEIGHT: usize = 240;
 pub const FRAME_BYTES: usize = FRAME_WIDTH * FRAME_HEIGHT * 4;
+/// Pixels in a frame: one palette entry each.
+pub const FRAME_PIXELS: usize = FRAME_WIDTH * FRAME_HEIGHT;
 
 /// How many instructions a measurement will execute before it gives up looking for a marker.
 ///
@@ -20,11 +23,23 @@ pub const MEASUREMENT_INSTRUCTION_LIMIT: u32 = 2_000_000;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     pixels: Box<[u8; FRAME_BYTES]>,
+    entries: Box<[u16; FRAME_PIXELS]>,
 }
 
 impl Frame {
     pub fn as_rgba(&self) -> &[u8; FRAME_BYTES] {
         &self.pixels
+    }
+
+    /// The palette entry the PPU emitted for each pixel, row-major.
+    ///
+    /// The low six bits are the NES colour, in the same `0x00..=0x3F` space
+    /// `raster-assets` indexes; bits 6, 7 and 8 carry the colour-emphasis flags
+    /// PPUMASK asked for. A frame that never sets emphasis is entirely
+    /// `0x00..=0x3F`, so a caller comparing against source colours can compare
+    /// the whole value and will notice if emphasis appears.
+    pub fn as_indices(&self) -> &[u16; FRAME_PIXELS] {
+        &self.entries
     }
 }
 
@@ -36,6 +51,9 @@ fn load(rom_name: &str, rom: &[u8]) -> EmuResult<ControlDeck> {
         ram_state: RamState::AllZeros,
         headless_mode: HeadlessMode::NO_AUDIO,
         sram_dir: None,
+        // Named explicitly: `VideoFilter::Ntsc` is the `#[default]`, and it is a
+        // composite simulation whose colours match no palette table.
+        filter: VideoFilter::Pixellate,
         ..Default::default()
     });
     let mut reader = rom;
@@ -50,9 +68,12 @@ pub fn render_after_frames(rom_name: &str, rom: &[u8], frames: NonZeroU32) -> Em
         let _ = deck.clock_frame()?;
     }
 
-    Ok(Frame {
-        pixels: Box::new(*deck.frame_buffer()),
-    })
+    // `frame_buffer_raw` is `&self` and `frame_buffer` is `&mut self`, so the
+    // two borrows cannot be live at once: read the entries first.
+    let entries = Box::new(*deck.frame_buffer_raw());
+    let pixels = Box::new(*deck.frame_buffer());
+
+    Ok(Frame { pixels, entries })
 }
 
 /// The pair of opcodes bracketing the region a measurement is about.
