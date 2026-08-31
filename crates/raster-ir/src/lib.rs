@@ -490,14 +490,18 @@ impl Lowerer {
                     // each would allocate a fresh temporary every time, and `every 1 scanlines
                     // from 0 to 239` would exhaust the zero page on a handler that needs one slot.
                     let body = self.lower_frame_body(body);
-                    let mut scanline = from;
-                    while scanline <= to {
+                    let mut scanline = Some(from);
+                    while let Some(current) = scanline.filter(|&current| current <= to) {
                         events.push(FrameEvent {
-                            scanline,
+                            scanline: current,
                             body: body.clone(),
                             span: event.span,
                         });
-                        scanline += interval_value;
+                        // An interval wider than the picture is one occurrence, not a wrap: `to` is
+                        // bounded by the visible range but the interval is bounded by nothing, and
+                        // adding it blind panics in a debug build and walks backwards in a release
+                        // one, silently compiling a schedule the author never wrote.
+                        scanline = current.checked_add(interval_value);
                     }
                 }
             }

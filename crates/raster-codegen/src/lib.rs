@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use raster_6502::{
     AddressingMode::{Absolute, Immediate, Implied, Relative, ZeroPage},
@@ -194,6 +194,12 @@ impl Generator<'_> {
     /// Between handlers the schedule is spent in synthesized delays, and each handler is padded to
     /// the budget [`plan_timed_frame`] gives it, so a handler's position is a sum of proven costs
     /// rather than an accumulation of roundings.
+    ///
+    /// **Nothing may steal a cycle from the loop.** It synchronizes once and never again, so a
+    /// cycle taken from it is taken from every frame after it as well. An NMI enabled through
+    /// `ppu.ctrl` bit 7, an OAM DMA through `$4014`, and a DMC DMA all do exactly that, and the
+    /// `SEI` around a handler cannot mask an NMI. This release neither refuses nor detects them:
+    /// a program that declares a timed frame must leave NMI off and start no DMA.
     fn timed_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
         self.statement(&Statement::SyncExact, Some(halt_label))?;
         let pass_top = self.internal_label();
@@ -204,11 +210,12 @@ impl Generator<'_> {
         let events = (0..FRAMES_PER_PASS).flat_map(|_| frame.events.iter());
         for (handler, event) in pass.handlers.iter().zip(events) {
             self.delay(handler.delay_cycles, event.span)?;
+            let body = self.renumbered(&event.body);
             self.timed_region(
                 &CycleConstraint::Exact(handler.budget_cycles),
                 true,
                 false,
-                &event.body,
+                &body,
                 event.span,
                 Some(halt_label),
             )?;
@@ -216,6 +223,30 @@ impl Generator<'_> {
         self.delay(pass.trailing_delay_cycles, frame.span)?;
         self.jump(pass_top);
         Ok(())
+    }
+
+    /// A copy of `body` with every label it defines replaced by a fresh one.
+    ///
+    /// A handler is emitted once per frame of the pass, and an `every` handler once per occupied
+    /// scanline on top of that. A label is the linker's, and it refuses one defined twice — so a
+    /// copy that kept its labels would turn a handler with an `if` or a `while` in it into an
+    /// internal compiler error for a program that is perfectly correct.
+    ///
+    /// Only the labels the body defines are renamed. A call's target is a function's label, defined
+    /// elsewhere, and renaming it would send the call nowhere.
+    fn renumbered(&mut self, body: &[Statement]) -> Vec<Statement> {
+        let mut defined = BTreeSet::new();
+        collect_defined_labels(body, &mut defined);
+        if defined.is_empty() {
+            return body.to_vec();
+        }
+        let mapping: BTreeMap<_, _> = defined
+            .into_iter()
+            .map(|label| (label, self.internal_label()))
+            .collect();
+        body.iter()
+            .map(|statement| renumber_statement(statement, &mapping))
+            .collect()
     }
 
     /// Spend exactly `cycles` doing nothing. Nothing is emitted for a gap of none.
@@ -723,6 +754,54 @@ fn next_internal_label(program: &Program) -> u32 {
         maximum = maximum.max(highest_label(statement));
     }
     maximum + 1
+}
+
+/// Every label a body defines, looking inside timed regions as well.
+fn collect_defined_labels(body: &[Statement], into: &mut BTreeSet<IrLabel>) {
+    for statement in body {
+        match statement {
+            Statement::Label(label) => {
+                into.insert(*label);
+            }
+            Statement::Timed { body, .. } => collect_defined_labels(body, into),
+            _ => {}
+        }
+    }
+}
+
+/// One statement with the labels in `mapping` replaced, and every other label left as it is.
+fn renumber_statement(statement: &Statement, mapping: &BTreeMap<IrLabel, IrLabel>) -> Statement {
+    let renumber = |label: &IrLabel| *mapping.get(label).unwrap_or(label);
+    match statement {
+        Statement::Label(label) => Statement::Label(renumber(label)),
+        Statement::Branch {
+            condition,
+            if_false,
+        } => Statement::Branch {
+            condition: condition.clone(),
+            if_false: renumber(if_false),
+        },
+        Statement::Jump { target } => Statement::Jump {
+            target: renumber(target),
+        },
+        Statement::Timed {
+            constraint,
+            pad,
+            interruptible,
+            body,
+            span,
+        } => Statement::Timed {
+            constraint: constraint.clone(),
+            pad: *pad,
+            interruptible: *interruptible,
+            body: body
+                .iter()
+                .map(|statement| renumber_statement(statement, mapping))
+                .collect(),
+            span: *span,
+        },
+        other => other.clone(),
+    }
 }
 
 /// The highest label a statement carries, looking inside timed regions as well.

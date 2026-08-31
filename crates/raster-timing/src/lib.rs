@@ -196,6 +196,13 @@ pub const SCANLINES_PER_FRAME: u32 = 262;
 /// until the bars have crossed a whole scanline. Three frames are 268026 dots, which is 89342 CPU
 /// cycles exactly, so a pass of three is the shortest one a cycle-counted loop can repeat forever
 /// without drifting.
+///
+/// **With rendering disabled**, which is every ROM this release emits. With background rendering
+/// on, NTSC skips dot (339, 261) on odd frames, so frames alternate 89342 and 89341 dots and a pass
+/// of three is a dot short every other time round. Spec Appendix A's 29,780.5 cycles a frame is
+/// that alternation averaged; the numbers here are the rendering-off frame, which is the one the
+/// compiler can currently produce. A timed frame over a rendered picture needs its own pass length
+/// and its own evidence.
 pub const FRAMES_PER_PASS: u32 = 3;
 /// The cycles one pass of a timed frame loop spends, from its origin back to its origin.
 pub const PASS_CYCLES: u32 = scanline_cycles(SCANLINES_PER_FRAME * FRAMES_PER_PASS);
@@ -281,9 +288,11 @@ pub fn plan_timed_frame(scanlines: &[u32], closing_cycles: u32) -> TimedFramePas
                         .map(|&first| scanline_origin_cycles(frame + 1, first))
                 });
             let distance_to_next = next.map_or(SCANLINE_BODY_CYCLES, |next| next - start);
-            // A gap of one cycle has no instruction short enough to spend it, so a handler one
-            // cycle short of the next is widened to reach it rather than left with an unspendable
-            // remainder.
+            // Widened to reach the next handler rather than left a cycle short of it: a gap of
+            // one cycle has no instruction short enough to spend it. Consecutive scanlines are 113
+            // or 114 apart and the next frame's first handler is at least 23 scanlines away, so
+            // the arithmetic never produces a gap of exactly one — the bound is what keeps that
+            // true of the rule rather than of the numbers that happen to reach it.
             let budget_cycles = if distance_to_next <= SCANLINE_BODY_CYCLES + 1 {
                 distance_to_next
             } else {

@@ -386,3 +386,24 @@ fn a_frame_handler_is_entered_synchronized_and_needs_no_sync_of_its_own() {
     .expect("valid fixture should parse");
     analyze(&program).expect("a frame handler carries its own synchronization");
 }
+
+#[test]
+fn the_jitter_rule_still_applies_to_a_program_that_declares_a_frame() {
+    // A frame handler is entered synchronized; nothing after the frame is. If the flag the frame
+    // sets were left set, section 6.6 would quietly stop applying to every program declaring one,
+    // and the suite would stay green — so the frame is written ahead of `main` on purpose.
+    let diagnostics = errors(
+        r#"
+            frame bars using timed {
+                at scanline 60 { cycles(114) pad { ppu.mask = $1e } }
+            }
+            main { cycles(114) pad { ppu.mask = $1e } }
+        "#,
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("`sync exact` is required")),
+        "expected the jitter rule in {diagnostics:?}"
+    );
+}
