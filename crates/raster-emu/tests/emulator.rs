@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use raster_emu::{cycles_between, render_after_frames, Window, FRAME_BYTES};
+use raster_emu::{cycles_between, render_after_frames, Window, FRAME_BYTES, FRAME_PIXELS};
 
 fn nrom() -> Vec<u8> {
     let mut rom = vec![b'N', b'E', b'S', 0x1A, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -89,4 +89,30 @@ fn a_marker_that_never_executes_is_reported_rather_than_waited_for() {
         format!("{error}").contains("$60"),
         "the error names the marker it never saw: {error}"
     );
+#[test]
+fn reports_a_palette_entry_for_every_pixel() {
+    let frame = render_after_frames(
+        "loop.nes",
+        &nrom(),
+        NonZeroU32::new(2).expect("two is non-zero"),
+    )
+    .expect("the NROM should load and render");
+    let repeated_frame = render_after_frames(
+        "loop.nes",
+        &nrom(),
+        NonZeroU32::new(2).expect("two is non-zero"),
+    )
+    .expect("the NROM should render repeatedly");
+
+    // The ROM loops on NOPs and never writes the PPU, so every pixel is the
+    // cold universal backdrop, entry `0x00`. Asserting the value rather than a
+    // range also pins that no colour-emphasis bit (`0x1C0`) reaches an entry.
+    for (index, &entry) in frame.as_indices().iter().enumerate() {
+        assert_eq!(
+            entry,
+            0x00,
+            "pixel {index} of {FRAME_PIXELS} is not the cold backdrop entry"
+        );
+    }
+    assert_eq!(frame.as_indices(), repeated_frame.as_indices());
 }
