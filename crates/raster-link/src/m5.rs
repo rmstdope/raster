@@ -49,8 +49,15 @@ const NAMETABLE: u16 = 0x2000;
 const ATTRIBUTE_TABLE: u16 = 0x23c0;
 const PALETTE: u16 = 0x3f00;
 
-/// Nametable 0, background patterns at `$0000`, NMI off, `$2007` stepping by one.
-const CONTROL_UPLOAD_SAFE: u16 = 0x00;
+/// Nametable 0, background patterns at `$0000`, NMI off. Written once, after
+/// the upload, so it decides nothing about the copy loops above it.
+///
+/// Every copy loop assumes `$2007` steps by one, which is PPUCTRL bit 2 clear.
+/// That guarantee is the reset runtime's, not this constant's: the prologue's
+/// `STX $2000` with X = 0 (`crate::runtime`, the "NMI off" store) is what makes
+/// it hold, and this module must not write PPUCTRL before the last block is
+/// uploaded. Delete that store and every loop here silently strides 32.
+const CONTROL_AFTER_UPLOAD: u16 = 0x00;
 /// Show the background, including in the leftmost eight pixels.
 const MASK_BACKGROUND_VISIBLE: u16 = 0x0a;
 
@@ -179,7 +186,7 @@ fn body(background: BackgroundData<'_>) -> RelocatableProgram {
         ));
     }
 
-    store_immediate(&mut items, CONTROL_UPLOAD_SAFE, PPU_CONTROL);
+    store_immediate(&mut items, CONTROL_AFTER_UPLOAD, PPU_CONTROL);
     store_immediate(&mut items, MASK_BACKGROUND_VISIBLE, PPU_MASK);
 
     items.push(FixedBankItem::Label(HALT));
@@ -207,7 +214,11 @@ fn body(background: BackgroundData<'_>) -> RelocatableProgram {
 /// the leftmost eight pixels, and halts.
 ///
 /// The error is [`LinkError::FixedBankTooLarge`], for a `chr` slice longer than
-/// a real background can hold; every 8 KiB CHR page fits with room to spare.
+/// the fixed bank has room for. Measured on this layout: the largest `chr` that
+/// links is 6516 bytes, and a full 8 KiB CHR page does **not** fit — it reports
+/// `FixedBankTooLarge { actual: 8386, maximum: 8186 }`. No background reaches
+/// that: `raster_assets::encode_background` caps at 256 distinct tiles, so
+/// `chr` is at most 4096 bytes, which links with about 2.4 KiB to spare.
 pub fn m5_background_rom(background: BackgroundData<'_>) -> Result<LinkedRom, LinkError> {
     link_mmc3_program(&body(background), ENTRY, true)
 }

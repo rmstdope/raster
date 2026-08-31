@@ -5,8 +5,8 @@ use raster_assets::{
 };
 use raster_emu::{render_after_frames, FRAME_PIXELS, FRAME_WIDTH};
 use raster_link::{
-    m5_background_rom, BackgroundData, LinkedRom, INES_HEADER_SIZE, MMC3_FIXED_BANK_CODE_SIZE,
-    MMC3_FIXED_BANK_SIZE, MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
+    m5_background_rom, BackgroundData, LinkError, LinkedRom, INES_HEADER_SIZE,
+    MMC3_FIXED_BANK_CODE_SIZE, MMC3_FIXED_BANK_SIZE, MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
 };
 
 const JMP_ABSOLUTE: u8 = 0x4c;
@@ -244,4 +244,29 @@ fn keeps_the_program_and_its_data_clear_of_the_vector_table() {
         interrupt < MMC3_FIXED_BANK_CODE_SIZE,
         "the interrupt handler is clear of the vector table: offset {interrupt}",
     );
+}
+
+#[test]
+fn refuses_a_background_whose_data_would_reach_the_vector_table() {
+    // The only input that can exhaust the bank, and the only path to the
+    // function's error. 6516 CHR bytes is the largest that links on this
+    // layout; a real background never exceeds 4096, because encode_background
+    // caps at 256 distinct tiles.
+    let palettes = [0u8; 16];
+    let nametable = [0u8; 960];
+    let attributes = [0u8; 64];
+    let background = |chr: &[u8]| {
+        m5_background_rom(BackgroundData {
+            palettes: &palettes,
+            chr,
+            nametable: &nametable,
+            attributes: &attributes,
+        })
+    };
+
+    assert!(background(&vec![0u8; 6516]).is_ok());
+    assert!(matches!(
+        background(&vec![0u8; 6517]),
+        Err(LinkError::FixedBankTooLarge { .. })
+    ));
 }
