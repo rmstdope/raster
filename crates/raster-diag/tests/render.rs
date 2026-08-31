@@ -146,3 +146,27 @@ fn renders_a_diagnostic_without_a_span() {
         )
     );
 }
+
+#[test]
+fn renders_a_warning_with_the_same_gutter_as_an_error() {
+    let source = SourceFile::new(
+        "fixture.raster",
+        "main {\n    ppu.mask = 0\n    mmc3.bank_select = $80\n}\n",
+    );
+    let diagnostic = Diagnostic::warning(
+        "this bank select changes the MMC3 mapping mode",
+        Span::new(28, 50),
+        "bit 7 swaps the two pattern tables from here on",
+    );
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "warning: this bank select changes the MMC3 mapping mode\n",
+            " --> fixture.raster:3:5\n",
+            "  |\n",
+            "3 |     mmc3.bank_select = $80\n",
+            "  |     ^^^^^^^^^^^^^^^^^^^^^^ bit 7 swaps the two pattern tables from here on\n"
+        )
+    );
+}
