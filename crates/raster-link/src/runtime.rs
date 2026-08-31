@@ -145,9 +145,17 @@ fn prologue(entry: Label) -> Vec<FixedBankItem> {
     // The MMC3 into a known state. The console powers up with all eight bank
     // registers undefined, which an emulator forgives and hardware does not.
     // PRG mode 0 with R6 = 0 and R7 = 1 gives a linear 32 KiB map, all this
-    // code living in the fixed last bank at $E000; CHR mode 0 with R0-R5
-    // counting up gives a flat 8 KiB CHR map, pattern table 0 at PPU $0000
-    // and pattern table 1 at $1000.
+    // code living in the fixed last bank at $E000; CHR mode 0 with R0-R5 as
+    // 0, 2, 4, 5, 6, 7 gives a flat 8 KiB CHR map, pattern table 0 at PPU
+    // $0000 and pattern table 1 at $1000.
+    //
+    // Two things here are load-bearing and neither is visible in the values.
+    // In CHR mode 0 the MMC3 ignores bit 0 of R0 and R1, which address 2 KiB
+    // windows in 1 KiB units: R1 = $02 is the second window, and R1 = $01
+    // would silently alias onto R0's bank. And bits 6 and 7 of every bank
+    // select are PRG mode and CHR A12 inversion, taking effect from whichever
+    // select was written last - so every select value below must keep both
+    // clear, or the map programmed is not the map the console uses.
     for (value, register) in [
         (0x00, MMC3_IRQ_DISABLE),     // disable and acknowledge the MMC3 IRQ
         (0x00, MMC3_MIRRORING),       // vertical mirroring: chosen, not inherited
