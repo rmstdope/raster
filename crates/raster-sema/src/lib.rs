@@ -53,12 +53,15 @@ struct Analyzer {
     timed_regions: Vec<TimedBlock>,
 }
 
-/// One enclosing `cycles(...)` block.
+/// One enclosing timed region.
 struct TimedBlock {
-    /// Whether the block carries `pad`. Unused today; kept because the stack describes the block.
-    #[allow(dead_code)]
-    pad: bool,
-    /// Whether the block carries `interruptible`, and so emits no `PHP`/`SEI`/`PLP`.
+    /// Whether this is a `cycles(...) { }` block statement rather than a function's own annotation.
+    ///
+    /// Both put their body under the same restrictions, but only one of them is a block. `lower`
+    /// refuses a function carrying a cycle annotation outright, and a refusal whose advice is
+    /// "put it after the block" has nothing to name there.
+    block: bool,
+    /// Whether the region carries `interruptible`, and so emits no `PHP`/`SEI`/`PLP`.
     interruptible: bool,
 }
 
@@ -241,7 +244,7 @@ impl Analyzer {
         let previous_return_type = std::mem::replace(&mut self.return_type, function_return_type);
         if let Some(spec) = &function.cycle_spec {
             self.timed_regions.push(TimedBlock {
-                pad: spec.pad,
+                block: false,
                 interruptible: spec.interruptible,
             });
         }
@@ -315,9 +318,12 @@ impl Analyzer {
         !self.timed_regions.is_empty()
     }
 
-    /// The innermost enclosing `cycles(...)` block, if any.
-    fn innermost_timed_block(&self) -> Option<&TimedBlock> {
-        self.timed_regions.last()
+    /// The innermost enclosing `cycles(...) { }` block statement, if any.
+    ///
+    /// A function's own cycle annotation is not one, and is always outermost — so where the
+    /// innermost region is that annotation, there is no block between it and the statement.
+    fn innermost_cycles_block(&self) -> Option<&TimedBlock> {
+        self.timed_regions.last().filter(|region| region.block)
     }
 
     /// Refuse something whose cost a straight-line region cannot charge.
@@ -411,7 +417,7 @@ impl Analyzer {
                 }
                 self.check_cycle_bound(&spec.bound);
                 self.timed_regions.push(TimedBlock {
-                    pad: spec.pad,
+                    block: true,
                     interruptible: spec.interruptible,
                 });
                 self.check_block(body);
@@ -441,7 +447,7 @@ impl Analyzer {
                 // The two sentences differ by one clause because an `interruptible` block emits no
                 // `PHP`/`SEI`/`PLP`, so there is no interrupt flag left masked when the `return`
                 // jumps out. `reject_in_timed_region` takes one fixed message and cannot say both.
-                if let Some(block) = self.innermost_timed_block() {
+                if let Some(block) = self.innermost_cycles_block() {
                     let message = if block.interruptible {
                         "`return` inside a timed block jumps out before the block has spent its \
                          budget, so it belongs after the block rather than inside one"

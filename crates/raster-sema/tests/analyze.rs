@@ -2,12 +2,16 @@ use raster_sema::analyze;
 use raster_syntax::parse;
 
 fn errors(source: &str) -> Vec<String> {
-    let program = parse(source).expect("fixture should parse");
-    analyze(&program)
-        .expect_err("fixture should be semantically invalid")
+    errors_with_spans(source)
         .into_iter()
         .map(|error| error.message)
         .collect()
+}
+
+/// Some refusals are asserted on their span as well as their message, and need the errors whole.
+fn errors_with_spans(source: &str) -> Vec<raster_sema::SemanticError> {
+    let program = parse(source).expect("fixture should parse");
+    analyze(&program).expect_err("fixture should be semantically invalid")
 }
 
 #[test]
@@ -358,12 +362,6 @@ fn sync_exact_need_not_sit_immediately_before_the_region_it_guards() {
     analyze(&program).expect("a `sync exact` earlier in the block still guards the region");
 }
 
-/// The refusals below assert on the span as well as the message, so they need the errors whole.
-fn errors_with_spans(source: &str) -> Vec<raster_sema::SemanticError> {
-    let program = parse(source).expect("fixture should parse");
-    analyze(&program).expect_err("fixture should be semantically invalid")
-}
-
 const RETURN_IN_A_TIMED_BLOCK: &str = "`return` inside a timed block jumps out before the block has spent its budget and before the interrupt flag is restored, so it belongs after the block rather than inside one";
 
 const RETURN_IN_AN_INTERRUPTIBLE_TIMED_BLOCK: &str = "`return` inside a timed block jumps out before the block has spent its budget, so it belongs after the block rather than inside one";
@@ -409,4 +407,16 @@ fn return_inside_a_report_block_is_refused() {
 fn return_outside_a_timed_block_is_accepted() {
     let program = parse("fn f() -> u8 { return 1 }\nmain { }").expect("fixture should parse");
     analyze(&program).expect("a `return` outside a timed block is ordinary");
+}
+
+#[test]
+fn return_inside_a_cycle_annotated_function_is_left_to_the_lowering_refusal() {
+    // A function's own `cycles(...)` annotation is not a block: `lower` refuses such a function
+    // outright, and there is no block for the `return` to go after, so the refusal's advice would
+    // be unfollowable. It would also be the only error reported, hiding the accurate one — sema
+    // never reaches `lower`.
+    let program = parse("fn f() -> u8 cycles(20) {\n    return 1\n}\nmain { }\n")
+        .expect("fixture should parse");
+
+    analyze(&program).expect("a cycle-annotated function is `lower`'s to refuse, not sema's");
 }

@@ -114,3 +114,15 @@ fn a_program_too_large_names_the_bank_it_does_not_fit() {
         "PRG bank switching is not supported yet, so all code lives\nin the fixed bank"
     );
 }
+
+#[test]
+fn a_cycle_annotated_function_that_returns_still_names_the_real_refusal() {
+    let diagnostics = compile_source("fn f() -> u8 cycles(20) {\n    return 1\n}\nmain { }\n")
+        .expect_err("function timing specifications are not supported yet");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "function timing specifications are not supported"
+    );
+}

@@ -475,6 +475,11 @@ enum InsideATimedBlock {
 /// function, and whoever adds it must say whether a timed block can cost it. That is the check
 /// nothing performed when `return` was added, and `main { cycles(20) pad { return } }` compiled to
 /// a block charged 20 cycles that spends 8.
+///
+/// It guards the `Statement` axis and only that one. Codegen emits loops from `Value::Binary` too,
+/// for `Multiply`, `Divide`, `Remainder`, `ShiftLeft` and `ShiftRight`, and a new `BinaryOperator`
+/// that lowered to a loop would not break this test. `analyze`'s refusal is what catches that, and
+/// is the durable half of the guarantee; this is the part that makes an author stop and answer.
 fn expectation(statement: &Statement) -> InsideATimedBlock {
     match statement {
         Statement::Declare { .. } => InsideATimedBlock::Straight,

@@ -115,7 +115,7 @@ fn report_constraint_returns_the_measured_total_under_its_label() {
 }
 
 #[test]
-fn indexed_reads_and_branches_are_charged_their_worst_case() {
+fn indexed_reads_and_branches_are_charged_their_worst_case_by_the_cost_model() {
     // `LDA $1234,X` costs four cycles, or five when the index crosses a page.
     let indexed = Instruction {
         opcode: 0xbd,
