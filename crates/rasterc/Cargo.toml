@@ -7,4 +7,12 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+raster-codegen = { path = "../raster-codegen" }
 raster-diag = { path = "../raster-diag" }
+raster-ir = { path = "../raster-ir" }
+raster-link = { path = "../raster-link" }
+raster-sema = { path = "../raster-sema" }
+raster-syntax = { path = "../raster-syntax" }
+
+[dev-dependencies]
+raster-emu = { path = "../raster-emu" }

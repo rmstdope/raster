@@ -370,7 +370,13 @@ dependencies = [
 name = "rasterc"
 version = "0.1.0"
 dependencies = [
+ "raster-codegen",
  "raster-diag",
+ "raster-emu",
+ "raster-ir",
+ "raster-link",
+ "raster-sema",
+ "raster-syntax",
 ]
 
 [[package]]

@@ -8,11 +8,13 @@ pub const MMC3_FIXED_BANK_SIZE: usize = 8 * 1024;
 pub const MMC3_FIXED_BANK_START: u16 = 0xe000;
 
 const INES_PRG_ROM_BANK_SIZE: usize = 16 * 1024;
-const MMC3_FIXED_BANK_CODE_SIZE: usize = MMC3_FIXED_BANK_SIZE - 6;
+pub const MMC3_FIXED_BANK_CODE_SIZE: usize = MMC3_FIXED_BANK_SIZE - 6;
 
 mod m1;
+mod runtime;
 
 pub use m1::m1_solid_backdrop_rom;
+pub use runtime::{link_mmc3_program, LinkedRom, INTERRUPT_LABEL, RESET_LABEL};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Label(pub u32);
@@ -36,6 +38,37 @@ pub enum FixedBankItem {
         instruction: Instruction,
         relocation: Option<Relocation>,
     },
+}
+
+impl FixedBankItem {
+    /// One instruction, resolved at assembly time.
+    pub(crate) fn instruction(opcode: u8, mode: AddressingMode, operand: Option<u16>) -> Self {
+        Self::Instruction {
+            instruction: Instruction {
+                opcode,
+                mode,
+                operand,
+            },
+            relocation: None,
+        }
+    }
+
+    /// One instruction whose operand the linker fills in from `target`.
+    pub(crate) fn relocated(
+        opcode: u8,
+        mode: AddressingMode,
+        kind: RelocationKind,
+        target: Label,
+    ) -> Self {
+        Self::Instruction {
+            instruction: Instruction {
+                opcode,
+                mode,
+                operand: None,
+            },
+            relocation: Some(Relocation { kind, target }),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -70,6 +103,12 @@ pub fn link_fixed_bank(
     Ok((bytes, labels))
 }
 
+/// Link a program that already contains its own reset sequence.
+///
+/// **Prefer [`link_mmc3_program`]**, which supplies the shared reset runtime and
+/// the MMC3 bank layout. A ROM linked here enters `entry_points.reset` with
+/// interrupts enabled, no stack pointer, a cold PPU and undefined mapper
+/// registers — which an emulator forgives and hardware does not.
 pub fn link_mmc3_ines(
     program: &RelocatableProgram,
     entry_points: EntryPoints,
@@ -278,6 +317,9 @@ pub fn emit_mmc3_ines(
     }
 
     let mut image = vec![0xff; INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE];
+    // Byte 6 is `0x40`: mapper 4's low nibble, with the mirroring bit clear. The
+    // bit is not the authority — MMC3 controls mirroring through $A000, which the
+    // reset runtime programs — so do not read this as the ROM's mirroring.
     let prg_rom_banks = (MMC3_PRG_ROM_SIZE / INES_PRG_ROM_BANK_SIZE) as u8;
     image[..INES_HEADER_SIZE].copy_from_slice(&[
         b'N',

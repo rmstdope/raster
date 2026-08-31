@@ -3,6 +3,9 @@
 debug
 target
 
+# ROMs built from the examples; generated assets stay out of the source tree
+examples/mvp/*.nes
+
 # Cerebro runtime state
 .cerebro/worktrees
 .cerebro/state
