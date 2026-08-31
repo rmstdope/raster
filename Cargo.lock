@@ -345,7 +345,10 @@ dependencies = [
 name = "raster-link"
 version = "0.1.0"
 dependencies = [
+ "png",
  "raster-6502",
+ "raster-assets",
+ "raster-emu",
 ]
 
 [[package]]
