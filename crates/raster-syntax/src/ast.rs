@@ -127,6 +127,8 @@ pub struct CycleSpec {
     pub bound: CycleBound,
     pub pad: bool,
     pub interruptible: bool,
+    /// The header alone — `cycles(<= 28) pad` — which is what a budget diagnostic underlines.
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

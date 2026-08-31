@@ -74,7 +74,7 @@ fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
                 'x'
                 cycles(2) {}
                 wait vblank
-                sync schedule
+                sync exact
                 loop { break; continue }
             }
         "#,

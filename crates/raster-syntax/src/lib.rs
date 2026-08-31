@@ -10,6 +10,90 @@ pub use parser::{ParseError, parse};
 mod tests {
     use super::*;
 
+    fn slice(source: &str, span: Span) -> &str {
+        &source[span.start as usize..span.end as usize]
+    }
+
+    #[test]
+    fn parses_timing_forms_with_spans() {
+        let source = "fn shade() cycles(<= 12) pad {
+}
+main {
+    sync exact
+    cycles(114) pad {
+        ppu.mask = 1
+    }
+    cycles(?) hblank {
+        wait cycles(20)
+    }
+    cycles(28) interruptible {
+        wait vblank
+    }
+}
+";
+        let program = parse(source).expect("the timing forms parse");
+
+        let Item::Function(function) = &program.items[0].value else {
+            panic!("the first item is a function")
+        };
+        let spec = function
+            .cycle_spec
+            .as_ref()
+            .expect("an annotated function carries a cycle spec");
+        assert_eq!(slice(source, spec.span), "cycles(<= 12) pad");
+        assert!(spec.pad && !spec.interruptible);
+        let CycleBound::AtMost(bound) = &spec.bound else {
+            panic!("`<=` parses as an upper bound")
+        };
+        assert_eq!(slice(source, bound.span), "12");
+
+        let Item::Main(block) = &program.items[1].value else {
+            panic!("the second item is main")
+        };
+        let statements = &block.statements;
+
+        let Statement::Sync(strategy) = &statements[0].value else {
+            panic!("`sync exact` parses as a sync statement")
+        };
+        assert_eq!(strategy.value, "exact");
+
+        let Statement::Cycles { spec, label, body } = &statements[1].value else {
+            panic!("an exact budget parses as a timed region")
+        };
+        assert_eq!(slice(source, spec.span), "cycles(114) pad");
+        assert!(spec.pad && !spec.interruptible);
+        assert!(label.is_none());
+        assert!(matches!(spec.bound, CycleBound::Exact(_)));
+        assert_eq!(body.statements.len(), 1);
+
+        let Statement::Cycles { spec, label, body } = &statements[2].value else {
+            panic!("`cycles(?)` parses as a timed region")
+        };
+        assert_eq!(slice(source, spec.span), "cycles(?)");
+        let CycleBound::Inferred(question) = spec.bound else {
+            panic!("`?` parses as an inferred bound")
+        };
+        assert_eq!(slice(source, question), "?");
+        assert_eq!(
+            label.as_ref().map(|label| label.value.as_str()),
+            Some("hblank")
+        );
+        assert!(matches!(
+            body.statements[0].value,
+            Statement::Wait(Wait::Cycles(_))
+        ));
+
+        let Statement::Cycles { spec, body, .. } = &statements[3].value else {
+            panic!("`interruptible` parses as a timed region")
+        };
+        assert_eq!(slice(source, spec.span), "cycles(28) interruptible");
+        assert!(!spec.pad && spec.interruptible);
+        assert!(matches!(
+            body.statements[0].value,
+            Statement::Wait(Wait::Vblank(_))
+        ));
+    }
+
     #[test]
     fn lexer_recognizes_mvp_tokens_and_spans() {
         let source = "// setup\ncycles(<= 28) pad { ppu.mask = $1E | bars[line] << 1 >> 2 }";

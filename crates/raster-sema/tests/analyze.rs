@@ -194,3 +194,98 @@ fn validates_function_bounds_employs_and_integer_contexts() {
     .expect("group fixture should parse");
     assert!(analyze(&program).is_ok());
 }
+
+#[test]
+fn rejects_unprovable_timed_region() {
+    let diagnostics = errors(
+        r#"
+            fn helper() { }
+            var count: u8
+            main {
+                cycles(100) {
+                    loop { count = 1 }
+                    while count < 3 { count = count + 1 }
+                    if count == 1 { count = 2 }
+                    helper()
+                    count = count * count
+                    wait vblank
+                }
+            }
+        "#,
+    );
+
+    for expected in [
+        "unbounded loop",
+        "`while` loop",
+        "branch arms",
+        "`helper` must carry a cycle annotation",
+        "multiplication",
+        "`wait vblank`",
+    ] {
+        assert!(
+            diagnostics.iter().any(|message| message.contains(expected)),
+            "expected a diagnostic mentioning {expected}, got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn accepts_a_provable_timed_region() {
+    let program = parse(
+        r#"
+            const LIMIT: u8 = 4
+            fn shade() cycles(6) { }
+            var count: u8
+            main {
+                sync exact
+                cycles(100) pad {
+                    if count == 1 { count = 2 } else { count = 3 }
+                    shade()
+                    count = count * 2
+                    for i in 0..LIMIT { count = count + 1 }
+                    wait cycles(20)
+                    ppu.mask = count
+                }
+            }
+        "#,
+    )
+    .expect("fixture should parse");
+    analyze(&program).expect("a provable timed region is accepted");
+}
+
+#[test]
+fn requires_sync_exact_before_a_timed_region_that_writes_the_ppu() {
+    let diagnostics = errors(
+        r#"
+            var count: u8
+            main {
+                cycles(100) pad {
+                    ppu.mask = count
+                }
+            }
+        "#,
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("`sync exact` is required")),
+        "got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_an_unknown_sync_strategy() {
+    let diagnostics = errors(
+        r#"
+            main {
+                sync approximately
+            }
+        "#,
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("unknown sync strategy `approximately`")),
+        "got {diagnostics:?}"
+    );
+}
