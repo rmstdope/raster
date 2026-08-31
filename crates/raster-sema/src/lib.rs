@@ -51,6 +51,9 @@ struct Analyzer {
     return_type: ValueType,
     /// Each enclosing timed region, innermost last.
     timed_regions: Vec<TimedBlock>,
+    /// Whether the statements being checked run from a position the compiler has synchronized —
+    /// which is what a `frame` handler does, and nothing else yet.
+    synchronized: bool,
 }
 
 /// One enclosing timed region.
@@ -101,6 +104,7 @@ impl Analyzer {
             constants: BTreeMap::new(),
             return_type: ValueType::Void,
             timed_regions: Vec::new(),
+            synchronized: false,
         }
     }
 
@@ -264,7 +268,34 @@ impl Analyzer {
             .unwrap_or(ValueType::Void)
     }
 
+    /// Check one scheduled handler.
+    ///
+    /// A handler is a timed region, and is checked as one. Lowering pads it to the scanline it is
+    /// scheduled on, so its cost has to be provable for exactly the reason a `cycles` block's does
+    /// — a `wait` spending its cycles in a loop the region is not costed for, or a branch whose
+    /// arms are not balanced, would put every handler after it in the wrong place and the effect on
+    /// the screen somewhere the source never asked for. The restrictions of spec section 6.3 are
+    /// what make a handler's window in section 7.2 mean anything.
+    ///
+    /// It is a *synchronized* one, which is what section 6.6 asks for: a `frame` says where its
+    /// handlers run and lowering emits the synchronization that makes it true, so demanding a
+    /// `sync exact` inside every handler would be asking the author to do by hand the one thing
+    /// the construct exists to do for them.
     fn check_frame_event(&mut self, event: &FrameEvent) {
+        let outer = std::mem::replace(&mut self.synchronized, true);
+        // A handler is emitted through the same `timed_region` a `cycles(...) { }` block is, with
+        // `pad` set and `interruptible` clear, so it carries the same restrictions and the same
+        // `PHP`/`SEI`/`PLP` — see `Generator::frame`.
+        self.timed_regions.push(TimedBlock {
+            block: true,
+            interruptible: false,
+        });
+        self.check_frame_event_body(event);
+        self.timed_regions.pop();
+        self.synchronized = outer;
+    }
+
+    fn check_frame_event_body(&mut self, event: &FrameEvent) {
         match event {
             FrameEvent::At { position, body } => {
                 if let FramePosition::Scanline(value) = position {
@@ -301,6 +332,7 @@ impl Analyzer {
     fn check_block_statements(&mut self, block: &Block) {
         for (index, statement) in block.statements.iter().enumerate() {
             if let Statement::Cycles { spec, body, .. } = &statement.value
+                && !self.synchronized
                 && writes_ppu_register(body)
                 && !block.statements[..index].iter().any(is_sync_exact)
             {

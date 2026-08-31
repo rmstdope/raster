@@ -1,0 +1,8 @@
+// A timed region that writes a PPU register with nothing to align it. NMI entry is not cycle-exact
+// and neither is anything downstream of it, so spec section 6.6 makes this an error rather than a
+// region whose position nobody can predict.
+main {
+    cycles(114) pad {
+        ppu.mask = 1
+    }
+}

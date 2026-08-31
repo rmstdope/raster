@@ -87,7 +87,7 @@ fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
         "u16",
         "bool",
         "`asm`",
-        "frame",
+        "`at vblank`",
         "arrays",
         "string",
         "character",
@@ -203,5 +203,127 @@ fn rejects_u8_functions_that_can_fall_through() {
             }
             main {}
         "#,
+    );
+}
+
+#[test]
+fn lowers_a_timed_frame_into_sorted_visible_scanline_events() {
+    let program = lower_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 120 { ppu.addr = $02 }
+                at scanline 60 { ppu.addr = $01 }
+                every 8 scanlines from 96 to 112 { ppu.addr = $03 }
+            }
+        "#,
+    );
+
+    let frame = program.frame.as_ref().expect("the frame lowers");
+    assert_eq!(frame.name, "bars");
+    assert_eq!(
+        frame
+            .events
+            .iter()
+            .map(|event| event.scanline)
+            .collect::<Vec<_>>(),
+        vec![60, 96, 104, 112, 120],
+    );
+    assert!(frame
+        .events
+        .iter()
+        .all(|event| event.body.iter().any(|statement| matches!(
+            statement,
+            Statement::Assign {
+                destination: raster_ir::Destination::Register(raster_ir::Register::PpuAddr),
+                ..
+            }
+        ))));
+}
+
+#[test]
+fn rejects_frame_events_outside_the_visible_scanline_range() {
+    let errors = lower_errors(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 240 { ppu.addr = $01 }
+                every 8 scanlines from 232 to 248 { ppu.addr = $02 }
+            }
+        "#,
+    );
+
+    assert_eq!(errors.len(), 2);
+    assert!(errors
+        .iter()
+        .all(|error| error.message.contains("visible scanline")));
+}
+
+#[test]
+fn rejects_frame_forms_the_timed_lowering_does_not_cover() {
+    for (source, expected) in [
+        (
+            r#"
+                main { ppu.mask = 0 }
+                frame bars using irq { at scanline 60 { ppu.addr = $01 } }
+            "#,
+            "`using irq` is not supported yet",
+        ),
+        (
+            r#"
+                main { ppu.mask = 0 }
+                frame bars using timed { at vblank { ppu.addr = $01 } }
+            "#,
+            "`at vblank` is not supported yet",
+        ),
+        (
+            r#"
+                main { ppu.mask = 0 }
+                frame bars using timed { at scanline 60 { ppu.addr = $01 } }
+                frame more using timed { at scanline 90 { ppu.addr = $02 } }
+            "#,
+            "only one `frame` is supported yet",
+        ),
+        (
+            r#"
+                main { ppu.mask = 0 }
+                frame bars using timed {
+                    at scanline 60 { ppu.addr = $01 }
+                    at scanline 60 { ppu.addr = $02 }
+                }
+            "#,
+            "two frame events share scanline 60",
+        ),
+    ] {
+        let errors = lower_errors(source);
+        assert!(
+            errors.iter().any(|error| error.message == expected),
+            "expected `{expected}`, found {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn a_frame_interval_wider_than_the_picture_is_one_occurrence_rather_than_a_wrap() {
+    let program = lower_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 4294967295 scanlines from 238 to 239 { ppu.mask = 0 }
+            }
+        "#,
+    );
+    let frame = program.frame.as_ref().expect("the frame lowers");
+
+    // `to` is bounded by the visible picture and the interval by nothing, so walking the range
+    // with an unchecked add panics a debug build and, worse, wraps a release one into a schedule
+    // the author never wrote.
+    assert_eq!(
+        frame
+            .events
+            .iter()
+            .map(|event| event.scanline)
+            .collect::<Vec<_>>(),
+        vec![238],
     );
 }

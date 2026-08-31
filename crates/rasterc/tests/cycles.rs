@@ -50,6 +50,7 @@ fn emitted(source: &str) -> Vec<Instruction> {
         .filter_map(|item| match item {
             FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
             FixedBankItem::Label(_) => None,
+            FixedBankItem::Data(_) => unreachable!("raster-codegen emits no data blocks"),
         })
         .collect()
 }
@@ -84,6 +85,30 @@ fn timed_region(source: &str) -> Vec<Instruction> {
         .position(|instruction| instruction.opcode == PLP)
         .expect("a timed region restores it on the way out");
     instructions[start..=end].to_vec()
+}
+
+/// Every timed region in the emitted stream, in order.
+///
+/// A frame fixture has one per handler per frame of the pass, so it can never go through
+/// [`timed_region`] — and it has nothing to measure against either, because the measurement half
+/// of this file executes the ROM to its first `PHP`. What a frame's regions are compared with is
+/// the schedule `raster_timing::plan_timed_frame` places them on.
+fn timed_regions(source: &str) -> Vec<Vec<Instruction>> {
+    let instructions = emitted(source);
+    let mut regions = Vec::new();
+    let mut start = None;
+    for (index, instruction) in instructions.iter().enumerate() {
+        match instruction.opcode {
+            PHP => start = Some(index),
+            PLP => {
+                if let Some(start) = start.take() {
+                    regions.push(instructions[start..=index].to_vec());
+                }
+            }
+            _ => {}
+        }
+    }
+    regions
 }
 
 #[test]
@@ -259,6 +284,41 @@ fn a_delay_spends_its_planned_cycles_across_the_branch_its_loop_takes() {
 }
 
 #[test]
+fn a_frame_schedule_is_sorted_and_every_occurrence_gets_its_own_scanline_body() {
+    let source = fixture("frame-schedule.raster");
+    assert!(compile_source(&source).is_ok());
+
+    // Three `at` and `every` occurrences between them — 40, 96, 104, 112, 200 — each padded to a
+    // whole scanline, and the schedule run in each of the three frames one pass covers.
+    let bodies: Vec<_> = timed_regions(&source)
+        .iter()
+        .map(|region| cost(region))
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![114; 5 * raster_timing::FRAMES_PER_PASS as usize]
+    );
+}
+
+#[test]
+fn a_frame_handler_that_does_not_fit_its_scanline_names_its_cost_and_its_budget() {
+    let diagnostics = compile_source(&fixture("frame-over-budget.raster"))
+        .expect_err("two hundred cycles do not fit a scanline");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].message, "timed block exceeds its budget");
+    assert!(
+        diagnostics[0].label.ends_with("budget is 114"),
+        "the budget is the scanline's, found {:?}",
+        diagnostics[0].label
+    );
+    assert!(
+        diagnostics[0].span.is_some(),
+        "the diagnostic is source-spanned"
+    );
+}
+
+#[test]
 fn measurement_failure_identifies_fixture_and_delta() {
     let over = failure_of(|| compare("padded.raster", 114, 118));
     assert!(over.contains("padded.raster"), "{over}");
@@ -286,5 +346,20 @@ fn a_return_inside_a_timed_block_is_refused_rather_than_mistimed() {
     assert!(
         diagnostics[0].span.is_some(),
         "the diagnostic is source-spanned"
+    );
+}
+
+#[test]
+fn an_unsynchronized_ppu_write_is_refused_outside_a_frame() {
+    let diagnostics = compile_source(&fixture("unsynchronized.raster"))
+        .expect_err("a timed PPU write needs something to align it");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert!(
+        diagnostics[0]
+            .message
+            .starts_with("`sync exact` is required"),
+        "found {:?}",
+        diagnostics[0].message
     );
 }

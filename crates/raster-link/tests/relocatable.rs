@@ -1,11 +1,11 @@
 use raster_6502::{
-    AddressingMode::{Absolute, Implied, Relative},
+    AddressingMode::{Absolute, AbsoluteX, Implied, Relative},
     AssembleError, Instruction,
 };
 use raster_link::{
     link_fixed_bank, link_mmc3_ines, EntryPoints, FixedBankItem, Label, LinkError,
-    RelocatableProgram, Relocation, RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
-    MMC3_PRG_ROM_SIZE,
+    RelocatableProgram, Relocation, RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_CODE_SIZE,
+    MMC3_FIXED_BANK_SIZE, MMC3_PRG_ROM_SIZE,
 };
 
 fn instruction(opcode: u8, mode: raster_6502::AddressingMode) -> Instruction {
@@ -226,5 +226,104 @@ fn reports_relocation_and_assembly_errors() {
             expected: Relative,
             actual: Absolute,
         }))
+    );
+}
+
+#[test]
+fn embeds_a_data_block_and_addresses_it_by_label() {
+    let start = Label(1);
+    let table = Label(2);
+    let program = RelocatableProgram {
+        items: vec![
+            FixedBankItem::Label(start),
+            FixedBankItem::Instruction {
+                instruction: instruction(0xbd, AbsoluteX),
+                relocation: Some(Relocation {
+                    kind: RelocationKind::Absolute,
+                    target: table,
+                }),
+            },
+            FixedBankItem::Instruction {
+                instruction: instruction(0x60, Implied),
+                relocation: None,
+            },
+            FixedBankItem::Label(table),
+            FixedBankItem::Data(vec![0xde, 0xad, 0xbe, 0xef]),
+        ],
+    };
+
+    let (bytes, labels) = link_fixed_bank(&program, true).expect("the program links");
+
+    assert_eq!(bytes, [0xbd, 0x04, 0xe0, 0x60, 0xde, 0xad, 0xbe, 0xef]);
+    assert_eq!(labels[&start], 0xe000);
+    assert_eq!(labels[&table], 0xe004);
+}
+
+#[test]
+fn counts_data_bytes_when_resolving_relative_branches() {
+    let target = Label(1);
+    let backward = RelocatableProgram {
+        items: vec![
+            FixedBankItem::Label(target),
+            FixedBankItem::Data(vec![0x11, 0x22, 0x33]),
+            FixedBankItem::Instruction {
+                instruction: instruction(0xea, Implied),
+                relocation: None,
+            },
+            FixedBankItem::Instruction {
+                instruction: instruction(0xd0, Relative),
+                relocation: Some(Relocation {
+                    kind: RelocationKind::Relative,
+                    target,
+                }),
+            },
+        ],
+    };
+
+    let (bytes, _) = link_fixed_bank(&backward, true).expect("the backward branch links");
+    assert_eq!(bytes, [0x11, 0x22, 0x33, 0xea, 0xd0, 0xfa]);
+
+    let forward = RelocatableProgram {
+        items: vec![
+            FixedBankItem::Instruction {
+                instruction: instruction(0xd0, Relative),
+                relocation: Some(Relocation {
+                    kind: RelocationKind::Relative,
+                    target,
+                }),
+            },
+            FixedBankItem::Data(vec![0x11, 0x11, 0x11]),
+            FixedBankItem::Label(target),
+            FixedBankItem::Instruction {
+                instruction: instruction(0xea, Implied),
+                relocation: None,
+            },
+        ],
+    };
+
+    let (bytes, _) = link_fixed_bank(&forward, true).expect("the forward branch links");
+    assert_eq!(bytes, [0xd0, 0x03, 0x11, 0x11, 0x11, 0xea]);
+}
+
+#[test]
+fn counts_data_against_the_fixed_bank_budget() {
+    let full = RelocatableProgram {
+        items: vec![FixedBankItem::Data(vec![0x00; MMC3_FIXED_BANK_CODE_SIZE])],
+    };
+    let (bytes, _) = link_fixed_bank(&full, true).expect("a full bank of data links");
+    assert_eq!(bytes.len(), MMC3_FIXED_BANK_CODE_SIZE);
+
+    let overfull = RelocatableProgram {
+        items: vec![FixedBankItem::Data(vec![
+            0x00;
+            MMC3_FIXED_BANK_CODE_SIZE + 1
+        ])],
+    };
+    assert_eq!(
+        link_fixed_bank(&overfull, true),
+        Err(LinkError::FixedBankTooLarge {
+            actual: MMC3_FIXED_BANK_CODE_SIZE + 1,
+            maximum: MMC3_FIXED_BANK_CODE_SIZE,
+        })
     );
 }

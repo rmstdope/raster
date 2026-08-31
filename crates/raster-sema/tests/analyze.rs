@@ -380,6 +380,56 @@ fn return_inside_a_timed_block_is_refused() {
 }
 
 #[test]
+fn a_frame_handler_is_entered_synchronized_and_needs_no_sync_of_its_own() {
+    // Outside a frame the rule of spec section 6.6 still bites.
+    let diagnostics = errors(
+        r#"
+            main { cycles(114) pad { ppu.mask = $1e } }
+        "#,
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("`sync exact` is required")),
+        "expected the jitter rule in {diagnostics:?}"
+    );
+
+    // Inside one it does not: the frame synchronizes on vblank and counts every handler's position
+    // in cycles from there, which is the whole of what the construct is for.
+    let program = parse(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 60 { cycles(114) pad { ppu.mask = $1e } }
+            }
+        "#,
+    )
+    .expect("valid fixture should parse");
+    analyze(&program).expect("a frame handler carries its own synchronization");
+}
+
+#[test]
+fn the_jitter_rule_still_applies_to_a_program_that_declares_a_frame() {
+    // A frame handler is entered synchronized; nothing after the frame is. If the flag the frame
+    // sets were left set, section 6.6 would quietly stop applying to every program declaring one,
+    // and the suite would stay green — so the frame is written ahead of `main` on purpose.
+    let diagnostics = errors(
+        r#"
+            frame bars using timed {
+                at scanline 60 { cycles(114) pad { ppu.mask = $1e } }
+            }
+            main { cycles(114) pad { ppu.mask = $1e } }
+        "#,
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("`sync exact` is required")),
+        "expected the jitter rule in {diagnostics:?}"
+    );
+}
+
+#[test]
 fn return_inside_an_interruptible_timed_block_omits_the_interrupt_clause() {
     // An `interruptible` block emits no `PHP`/`SEI`/`PLP`, so there is no interrupt flag to
     // restore and the longer sentence would be false of it.
@@ -419,4 +469,46 @@ fn return_inside_a_cycle_annotated_function_is_left_to_the_lowering_refusal() {
         .expect("fixture should parse");
 
     analyze(&program).expect("a cycle-annotated function is `lower`'s to refuse, not sema's");
+}
+
+#[test]
+fn a_frame_handler_is_a_timed_region_and_obeys_section_6_3() {
+    // A handler is padded to the scanline it is scheduled on, so its cost has to be provable for
+    // exactly the reason a `cycles` block's does — and by the same rules. A `wait` spends its
+    // cycles in a loop the region is not costed for, and a branch's arms are not balanced, so
+    // either would leave the whole schedule after it in the wrong place.
+    let diagnostics = errors(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 60 { wait cycles(200) }
+                at scanline 90 { if 1 == 1 { ppu.mask = 1 } }
+                at scanline 120 { var count: u8 = 2; while count != 0 { count = count - 1 } }
+            }
+        "#,
+    );
+    for expected in [
+        "`wait cycles` inside a timed region",
+        "branch arms inside a timed region",
+        "a `while` loop's trip count cannot be proven inside a timed region",
+    ] {
+        assert!(
+            diagnostics.iter().any(|message| message.contains(expected)),
+            "expected `{expected}` in {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn return_inside_a_frame_handler_is_refused_like_any_other_timed_block() {
+    // A handler is emitted through the same `timed_region` a `cycles(...) { }` block is, with
+    // `pad` set and `interruptible` clear, so a `return` leaves before the budget is spent and
+    // before the `PLP`. Without this it would reach the analyser's backstop instead, whose message
+    // asks the author to report the file as a compiler bug.
+    let diagnostics = errors_with_spans(
+        "main { ppu.mask = 0 }\nframe bars using timed {\n    at scanline 10 {\n        return\n    }\n}\n",
+    );
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].message, RETURN_IN_A_TIMED_BLOCK);
 }

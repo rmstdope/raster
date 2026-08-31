@@ -1,0 +1,18 @@
+// A schedule written out of order, and a periodic range. The compiler sorts it and places every
+// occurrence on its own scanline; nothing here depends on the order it was typed in.
+main {
+    ppu.addr = $00
+    ppu.addr = $00
+}
+
+frame bars using timed {
+    at scanline 200 {
+        ppu.mask = 0
+    }
+    every 8 scanlines from 96 to 112 {
+        ppu.mask = 0
+    }
+    at scanline 40 {
+        ppu.mask = 0
+    }
+}

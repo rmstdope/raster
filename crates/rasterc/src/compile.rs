@@ -54,7 +54,7 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
     let output = generate_with_isa(&ir, LEGAL_ISA)
         .map_err(|error| noted(vec![codegen_diagnostic(error, source)]))?;
     let rom = link_mmc3_program(&output.program, output.main, LEGAL_ISA)
-        .map_err(|error| noted(vec![link_diagnostic(error)]))?;
+        .map_err(|error| noted(vec![link_diagnostic(error, ir.frame.is_some())]))?;
 
     Ok(Rom {
         image: rom.image,
@@ -174,17 +174,29 @@ with a clearer message; please report this file",
     }
 }
 
-fn link_diagnostic(error: LinkError) -> Diagnostic {
+/// A link failure, as a diagnostic. `has_timed_frame` is not decoration: a timed frame emits its
+/// schedule once per frame of its pass, so an author whose program overflows the bank is otherwise
+/// shown a byte count three times the size of anything they wrote, with nothing to explain it.
+fn link_diagnostic(error: LinkError, has_timed_frame: bool) -> Diagnostic {
     match error {
         LinkError::FixedBankTooLarge { actual, maximum } => {
-            Diagnostic::without_span("the program does not fit the MMC3 fixed bank")
-                .with_note(format!(
-                    "{actual} bytes of code, and $E000-$FFFF holds {maximum}"
-                ))
-                .with_note(
-                    "PRG bank switching is not supported yet, so all code lives\n\
+            let diagnostic =
+                Diagnostic::without_span("the program does not fit the MMC3 fixed bank")
+                    .with_note(format!(
+                        "{actual} bytes of code, and $E000-$FFFF holds {maximum}"
+                    ))
+                    .with_note(
+                        "PRG bank switching is not supported yet, so all code lives\n\
                      in the fixed bank",
+                    );
+            if has_timed_frame {
+                diagnostic.with_note(
+                    "a `frame ... using timed` emits its schedule once per frame of its\n\
+                     three-frame pass, so a handler costs three times its own size",
                 )
+            } else {
+                diagnostic
+            }
         }
         LinkError::RelativeBranchOutOfRange { from, target } => {
             Diagnostic::without_span("a branch is too far for the 6502").with_note(format!(
