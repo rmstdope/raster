@@ -142,15 +142,29 @@ fn prologue(entry: Label) -> Vec<FixedBankItem> {
         Some(APU_DMC_CONTROL),
     )); // no DMC IRQ
 
-    // The MMC3 into a known state. The console powers up with the bank registers
-    // undefined, which an emulator forgives and hardware does not; PRG mode 0
-    // with R6 = 0 and R7 = 1 gives a linear 32 KiB map, all this code living in
-    // the fixed last bank at $E000.
+    // The MMC3 into a known state. The console powers up with all eight bank
+    // registers undefined, which an emulator forgives and hardware does not.
+    // PRG mode 0 with R6 = 0 and R7 = 1 gives a linear 32 KiB map, all this
+    // code living in the fixed last bank at $E000; CHR mode 0 with R0-R5
+    // counting up gives a flat 8 KiB CHR map, pattern table 0 at PPU $0000
+    // and pattern table 1 at $1000.
     for (value, register) in [
         (0x00, MMC3_IRQ_DISABLE),     // disable and acknowledge the MMC3 IRQ
         (0x00, MMC3_MIRRORING),       // vertical mirroring: chosen, not inherited
         (0x00, MMC3_PRG_RAM_PROTECT), // PRG RAM disabled, unprotected
-        (0x06, MMC3_BANK_SELECT),     // select R6, PRG mode 0, CHR mode 0
+        (0x00, MMC3_BANK_SELECT),     // select R0, PRG mode 0, CHR mode 0
+        (0x00, MMC3_BANK_DATA),       // R0 = 2K CHR at PPU $0000
+        (0x01, MMC3_BANK_SELECT),     // select R1
+        (0x02, MMC3_BANK_DATA),       // R1 = 2K CHR at PPU $0800
+        (0x02, MMC3_BANK_SELECT),     // select R2
+        (0x04, MMC3_BANK_DATA),       // R2 = 1K CHR at PPU $1000
+        (0x03, MMC3_BANK_SELECT),     // select R3
+        (0x05, MMC3_BANK_DATA),       // R3 = 1K CHR at PPU $1400
+        (0x04, MMC3_BANK_SELECT),     // select R4
+        (0x06, MMC3_BANK_DATA),       // R4 = 1K CHR at PPU $1800
+        (0x05, MMC3_BANK_SELECT),     // select R5
+        (0x07, MMC3_BANK_DATA),       // R5 = 1K CHR at PPU $1C00
+        (0x06, MMC3_BANK_SELECT),     // select R6
         (0x00, MMC3_BANK_DATA),       // R6 = 8K PRG bank 0 -> $8000
         (0x07, MMC3_BANK_SELECT),     // select R7
         (0x01, MMC3_BANK_DATA),       // R7 = 8K PRG bank 1 -> $A000
