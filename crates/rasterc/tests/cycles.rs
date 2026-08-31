@@ -7,7 +7,11 @@
 //! Only the marked window is measured — never whole-ROM execution — so reset, the two-vblank wait
 //! and the emulator's own startup fall outside every count.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    panic::{self, UnwindSafe},
+    path::PathBuf,
+};
 
 use raster_6502::Instruction;
 use raster_codegen::generate_with_isa;
@@ -51,8 +55,26 @@ fn emitted(source: &str) -> Vec<Instruction> {
 }
 
 /// The instructions between the region's `SEI` and `PLP` — exactly what was analysed.
+///
+/// The measurement half of this file finds its region by *executing* the ROM until a `PHP`, while
+/// this half finds it by scanning what codegen *emitted*; the two coincide only while a fixture
+/// has exactly one region, in `main`. `raster-codegen` emits every function before `main`, and it
+/// supports nested regions, so either would silently make these two halves describe different
+/// code — and a nested region would make first-`PHP`-to-first-`PLP` no region at all. A fixture
+/// that grows a second pair fails here rather than passing while comparing nonsense.
 fn timed_region(source: &str) -> Vec<Instruction> {
     let instructions = emitted(source);
+    let pairs = |opcode: u8| {
+        instructions
+            .iter()
+            .filter(|instruction| instruction.opcode == opcode)
+            .count()
+    };
+    assert_eq!(
+        (pairs(PHP), pairs(PLP)),
+        (1, 1),
+        "this file compares one region per fixture, and its two halves would pick different ones"
+    );
     let start = instructions
         .iter()
         .position(|instruction| instruction.opcode == PHP)
@@ -127,19 +149,18 @@ fn measured(name: &str, source: &str) -> u32 {
         .unwrap_or_else(|error| panic!("{name} is measurable: {error}"))
 }
 
-/// How a prediction and a measurement disagree, or `None` when they do not.
+/// Compare a prediction with a measurement, failing with everything a mismatch is about.
 ///
-/// A bare `assert_eq!` would name two numbers and leave whoever reads the failure to work out
-/// which fixture produced them and which way round they went, so the message says all four things
-/// a mismatch is about: the fixture, what was predicted, what was spent, and the gap.
-fn disagreement(name: &str, predicted: u32, actual: u32) -> Option<String> {
-    (predicted != actual).then(|| {
-        format!(
-            "{name}: the compiler predicted {predicted} cycles and the region spent {actual}, \
-             a difference of {}",
-            i64::from(actual) - i64::from(predicted)
-        )
-    })
+/// Every measurement in this file goes through here, so the diagnostic the plan asked for cannot
+/// be bypassed by a test that reaches for `assert_eq!` instead: two anonymous numbers would leave
+/// whoever reads the failure to work out which fixture produced them and which way round.
+fn compare(name: &str, predicted: u32, actual: u32) {
+    assert!(
+        predicted == actual,
+        "{name}: the compiler predicted {predicted} cycles and the region spent {actual}, \
+         a difference of {}",
+        i64::from(actual) - i64::from(predicted)
+    );
 }
 
 /// A fixture whose predicted cost a 6502 is expected to spend exactly.
@@ -149,11 +170,27 @@ fn disagreement(name: &str, predicted: u32, actual: u32) -> Option<String> {
 /// evidence rather than a tautology.
 fn assert_prediction_is_spent(name: &str) {
     let source = fixture(name);
-    let predicted = cost(&timed_region(&source));
-    let actual = measured(name, &source);
+    compare(name, cost(&timed_region(&source)), measured(name, &source));
+}
 
-    if let Some(message) = disagreement(name, predicted, actual) {
-        panic!("{message}");
+/// The message a failing comparison actually fails with.
+///
+/// Asserting the formatter's output directly would leave the diagnostic green after it stopped
+/// being reached; this goes through the panic [`compare`] raises, which is the path a drifting
+/// fixture takes. The hook is silenced only so a passing run does not print a backtrace that
+/// reads like a failure.
+fn failure_of(comparison: impl FnOnce() + UnwindSafe) -> String {
+    let previous = panic::take_hook();
+    panic::set_hook(Box::new(|_| {}));
+    let payload = panic::catch_unwind(comparison);
+    panic::set_hook(previous);
+
+    match payload
+        .expect_err("the comparison fails")
+        .downcast::<String>()
+    {
+        Ok(message) => *message,
+        Err(_) => panic!("the failure carries a message"),
     }
 }
 
@@ -169,8 +206,14 @@ fn bare(opcode: u8) -> Instruction {
 #[test]
 fn exact_padded_region_executes_for_114_cycles() {
     let source = fixture("padded.raster");
-    assert_eq!(cost(&timed_region(&source)), 114, "the prediction is 114");
-    assert_eq!(measured("padded.nes", &source), 114);
+    let predicted = cost(&timed_region(&source));
+
+    assert_eq!(predicted, 114, "one NTSC scanline is 114 cycles");
+    compare(
+        "padded.raster",
+        predicted,
+        measured("padded.raster", &source),
+    );
 }
 
 #[test]
@@ -186,7 +229,7 @@ fn every_timed_fixture_spends_exactly_what_the_compiler_predicted() {
 }
 
 #[test]
-fn predictions_cover_the_branch_a_delay_loop_takes() {
+fn a_delay_spends_its_planned_cycles_across_the_branch_its_loop_takes() {
     let source = fixture("delay-bracketed.raster");
     let planned = delay_cycles(&plan_delay(1000, true).expect("a thousand cycles are reachable"));
     assert_eq!(planned, 1000, "the plan spends what the source asked for");
@@ -195,7 +238,7 @@ fn predictions_cover_the_branch_a_delay_loop_takes() {
     // so it costs those two instructions as well as the delay between them.
     let predicted = planned + cost(&[bare(PLP), bare(PHP)]);
     let actual = cycles_between(
-        "delay-bracketed.nes",
+        "delay-bracketed.raster",
         &compile_source(&source).expect("the fixture compiles").image,
         Window::new(PLP, PHP),
     )
@@ -204,6 +247,10 @@ fn predictions_cover_the_branch_a_delay_loop_takes() {
     // `DelayStep::Loop` closes on a `JMP` so that only one branch is ever taken, and the compiler
     // reserves exactly one cycle for that branch crossing a page. Asserting the whole range is
     // asserting the guarantee; asserting a single number would assert a linker layout instead.
+    //
+    // Which also means the upper end is unexercised: this loop happens to sit within one page, so
+    // the reserved cycle is charged by `worst_case_cycles` and measured by nothing. Forcing the
+    // branch across a page needs alignment control the linker cannot yet express.
     assert!(
         (predicted..=predicted + 1).contains(&actual),
         "delay-bracketed.raster: the compiler predicted {predicted} cycles and the delay spent \
@@ -213,14 +260,14 @@ fn predictions_cover_the_branch_a_delay_loop_takes() {
 
 #[test]
 fn measurement_failure_identifies_fixture_and_delta() {
-    let message = disagreement("padded.raster", 114, 118).expect("118 cycles are not 114");
-    assert!(message.contains("padded.raster"), "{message}");
-    assert!(message.contains("114"), "{message}");
-    assert!(message.contains("118"), "{message}");
-    assert!(message.contains("a difference of 4"), "{message}");
+    let over = failure_of(|| compare("padded.raster", 114, 118));
+    assert!(over.contains("padded.raster"), "{over}");
+    assert!(over.contains("114"), "{over}");
+    assert!(over.contains("118"), "{over}");
+    assert!(over.contains("a difference of 4"), "{over}");
 
-    let under = disagreement("exact.raster", 14, 12).expect("12 cycles are not 14");
+    let under = failure_of(|| compare("exact.raster", 14, 12));
     assert!(under.contains("a difference of -2"), "{under}");
 
-    assert_eq!(disagreement("padded.raster", 114, 114), None);
+    compare("padded.raster", 114, 114);
 }
