@@ -216,7 +216,7 @@ fn body(background: BackgroundData<'_>) -> RelocatableProgram {
 /// The error is [`LinkError::FixedBankTooLarge`], for a `chr` slice longer than
 /// the fixed bank has room for. Measured on this layout: the largest `chr` that
 /// links is 6516 bytes, and a full 8 KiB CHR page does **not** fit — it reports
-/// `FixedBankTooLarge { actual: 8386, maximum: 8186 }`. No background reaches
+/// `FixedBankTooLarge { actual: 9953, maximum: 8186 }`. No background reaches
 /// that: `raster_assets::encode_background` caps at 256 distinct tiles, so
 /// `chr` is at most 4096 bytes, which links with about 2.4 KiB to spare.
 pub fn m5_background_rom(background: BackgroundData<'_>) -> Result<LinkedRom, LinkError> {
