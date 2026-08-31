@@ -1,0 +1,137 @@
+<!doctype html>
+<title>raster-hqh — the agreed rule for a ppu.data read</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+  .silent { color:#4a4f61; font-size:.9rem; font-style:italic; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost, .silent { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  }
+</style>
+<main>
+<h1>The agreed rule for a <code>ppu.data</code> read</h1>
+<p class="sub"><code>$2007</code> reads through the PPU&rsquo;s buffer: it hands back the byte the previous read fetched
+and loads the byte at the current address for the next read. So one read returns the wrong byte, and the two-read idiom
+&mdash; discard the first, keep the second &mdash; returns the right one.</p>
+
+<h2>What was chosen, and over what</h2>
+<p class="note"><strong>rasterc warns on a lone read and stays silent on a pair</strong>, and refuses a compound
+assignment outright. Rejected: <em>warn on every read</em>, which warns twice on the correct idiom on every build with
+nothing in this release to silence it; and <em>refuse every read</em>, which would remove VRAM reads from the language
+&mdash; <code>peek</code>/<code>poke</code> are specified (&sect;9.2) but not implemented, and <code>asm</code> is
+refused, so there is no escape hatch. <em>Emitting the dummy read for the author</em> was ruled out by the decision
+already recorded in <code>.cerebro/traps.md</code>: a compiler that inserts PPU accesses the source did not ask for is a
+compiler whose cycle counts you cannot trust.</p>
+
+<h2>The rule, in one sentence</h2>
+<p class="note">A <code>ppu.data</code> read warns unless <strong>the statement immediately before it, or the statement
+immediately after it, in the same block</strong>, also reads <code>ppu.data</code>. A single statement that reads it
+twice counts as its own neighbour. Nothing else counts &mdash; not the PPU address, not what the source does with the
+byte.</p>
+
+<h2>1 &middot; The pair &mdash; silent</h2>
+<div class="src">    var discard: u8 = ppu.data
+    var tile:    u8 = ppu.data</div>
+<div class="term"><span class="g">(nothing)</span></div>
+
+<h2>2 &middot; Three or more in a row &mdash; silent, all of them</h2>
+<div class="src">    var a: u8 = ppu.data
+    var b: u8 = ppu.data
+    var c: u8 = ppu.data</div>
+<div class="term"><span class="g">(nothing)</span></div>
+<p class="note">Reading a run of VRAM bytes is exactly this shape: prime once, then one read per byte. Every read after
+the first is correct, and the first is the deliberate discard.</p>
+
+<h2>3 &middot; Two reads in one statement &mdash; silent</h2>
+<div class="src">    var sum: u8 = ppu.data + ppu.data</div>
+<div class="term"><span class="g">(nothing)</span></div>
+<p class="note">Two <code>LDA $2007</code> are emitted in order, so this is the idiom written on one line. The rule is
+about the reads, not about what the source then does with them.</p>
+
+<h2>4 &middot; Separated by anything at all &mdash; both warn</h2>
+<div class="src">    var a: u8 = ppu.data
+    ppu.addr = $20
+    var b: u8 = ppu.data</div>
+<div class="term"><span class="w">warning: ...</span> <span class="g">at 1:17</span>
+<span class="w">warning: ...</span> <span class="g">at 3:17</span></div>
+<p class="note">Correct here: the address moved between them, so the second read really is unprimed. rasterc is not
+reasoning about the address &mdash; it warns because neither read has a neighbour, and it would warn the same way if the
+middle statement were harmless.</p>
+
+<h2>5 &middot; Across a block boundary &mdash; both warn</h2>
+<div class="src">    if ready {
+        var a: u8 = ppu.data
+    }
+    var b: u8 = ppu.data</div>
+<div class="term"><span class="w">warning: ...</span> <span class="g">at 2:21</span>
+<span class="w">warning: ...</span> <span class="g">at 4:17</span></div>
+<p class="note">Adjacent on the page, not adjacent in the emitted code: a branch runs between them, so the first read
+may not have happened at all. <strong>A neighbour never crosses a <code>{ }</code></strong> &mdash; the same for a
+<code>cycles(...)</code> region, a <code>while</code> body and a <code>frame</code> event. A read in a global
+<code>var</code> initializer has no neighbours either, and always warns.</p>
+
+<h2>6 &middot; A refused compound assignment beside a read &mdash; the read still warns</h2>
+<div class="src">    ppu.data += 1
+    var a: u8 = ppu.data</div>
+<div class="term"><span class="w">warning: ...</span> <span class="g">at 2:17  (the read: its neighbour was refused, so it has none)</span>
+<span class="e">error: ...</span> <span class="g">at 1:5   (the compound assignment)</span></div>
+<p class="note">The build fails on the error either way, and warnings print before errors &mdash; so one run shows the
+author both things rather than two runs showing one each.</p>
+
+<h2>7 &middot; A read on the only line of <code>main</code> &mdash; warns</h2>
+<div class="src">main {
+    var a: u8 = ppu.data
+}</div>
+<div class="term"><span class="w">warning: ...</span> <span class="g">at 2:17</span></div>
+<p class="note">No statement before it and none after it, so no neighbour. Nothing special-cases the edges of a
+block.</p>
+
+<h2>8 &middot; The whole run, when it succeeds</h2>
+<div class="term"><span class="w">warning: this `ppu.data` read gives you the byte before the one you asked for</span>
+ <span class="g">--&gt; vram.raster:5:20</span>
+  <span class="g">|</span>
+<span class="g">5 |</span>     var tile: u8 = ppu.data
+  <span class="g">|</span>                    <span class="w">^^^^^^^^</span> nothing next to this read primes the PPU's read buffer
+  <span class="g">= note:</span> $2007 hands back what the previous read fetched, and loads the
+          byte at this address for the next read
+  <span class="g">= note:</span> read `ppu.data` twice in a row, discard the first and keep the
+          second; a palette address, $3F00 to $3FFF, is not buffered and
+          reads back at once
+
+<span class="ok"> Compiled</span>  vram.raster -&gt; vram.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 231 of 8186 bytes used
+    yours  17 bytes
+  runtime  214 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $E0E7, irq $E0E7
+ warnings  1</div>
+<p class="note">The <code>warnings</code> row and the count already exist; this change adds nothing to the summary.</p>
+</main>
