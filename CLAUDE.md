@@ -37,7 +37,7 @@ after that use `bd dolt pull` and `bd dolt push`.
 ## Development practices
 
 - Work is delivered in small increments that stand on their own.
-- Code is written test-first.
+- Code is written using test driven development
 - The full pull-request gate is `cargo fmt --check && cargo clippy -- -D warnings && cargo test`.
 - Prefer the simple design; say so when you decline a more general one.
 
