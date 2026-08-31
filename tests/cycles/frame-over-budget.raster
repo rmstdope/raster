@@ -1,0 +1,14 @@
+// A handler that does not fit the scanline it is scheduled on. A whole scanline is 114 cycles, and
+// this handler's own annotation asks for two hundred.
+main {
+    ppu.addr = $00
+    ppu.addr = $00
+}
+
+frame bars using timed {
+    at scanline 60 {
+        cycles(200) pad {
+            ppu.mask = 1
+        }
+    }
+}

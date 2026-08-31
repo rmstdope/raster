@@ -607,6 +607,55 @@ main {
         ));
     }
 
+    /// `using timed` is the strategy this release lowers, and its schedule is written with
+    /// literal scanlines. The spans are what a diagnostic about an event underlines, so they are
+    /// asserted rather than assumed.
+    #[test]
+    fn frame_parser_accepts_timed_scanline_events() {
+        let source = r#"
+            frame bars using timed {
+                at scanline 60 { ppu.mask = 1 }
+                every 8 scanlines from 96 to 200 { ppu.mask = 2 }
+            }
+        "#;
+
+        let program = parse(source).expect("a timed frame parses");
+        let Item::Frame(frame) = &program.items[0].value else {
+            panic!("expected a frame");
+        };
+        assert_eq!(frame.name.value, "bars");
+        assert_eq!(
+            frame
+                .strategy
+                .as_ref()
+                .map(|strategy| strategy.value.as_str()),
+            Some("timed")
+        );
+
+        let FrameEvent::At {
+            position: FramePosition::Scanline(position),
+            ..
+        } = &frame.events[0].value
+        else {
+            panic!("expected an `at scanline` event");
+        };
+        assert_eq!(slice(source, position.span), "60");
+
+        let FrameEvent::Every {
+            interval, from, to, ..
+        } = &frame.events[1].value
+        else {
+            panic!("expected an `every` event");
+        };
+        assert_eq!(slice(source, interval.span), "8");
+        assert_eq!(slice(source, from.span), "96");
+        assert_eq!(slice(source, to.span), "200");
+        assert_eq!(
+            slice(source, frame.events[1].span),
+            "every 8 scanlines from 96 to 200 { ppu.mask = 2 }"
+        );
+    }
+
     #[test]
     fn parser_retains_wait_modes_and_assembly_employs() {
         let source = r#"

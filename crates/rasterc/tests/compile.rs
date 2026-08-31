@@ -28,7 +28,7 @@ fn reports_every_error_from_the_failing_stage() {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>(),
         [
-            "`frame` blocks are not supported yet",
+            "`at vblank` is not supported yet",
             "`loop` is not supported yet",
             "only `wait cycles` is supported yet; frame waits arrive with frame scheduling",
         ]
@@ -112,5 +112,30 @@ fn a_program_too_large_names_the_bank_it_does_not_fit() {
     assert_eq!(
         diagnostics[0].notes[1],
         "PRG bank switching is not supported yet, so all code lives\nin the fixed bank"
+    );
+}
+
+#[test]
+fn a_frame_too_large_for_the_bank_says_the_schedule_is_emitted_three_times() {
+    // Every handler fits its scanline; there are simply too many of them for the bank.
+    let diagnostics = compile_source(
+        "main { ppu.mask = 0 }\n\
+         frame bars using timed {\n\
+         \x20   every 1 scanlines from 0 to 239 { ppu.mask = 0 }\n\
+         }\n",
+    )
+    .expect_err("the fixed bank is finite");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "the program does not fit the MMC3 fixed bank"
+    );
+    assert!(
+        diagnostics[0]
+            .notes
+            .iter()
+            .any(|note| note.contains("costs three times its own size")),
+        "the author is owed the reason their program measures three times its size: {:?}",
+        diagnostics[0].notes
     );
 }
