@@ -123,7 +123,9 @@ Options:
 <span class="e">error:</span> could not compile demo.raster (2 errors)</pre>
 <p class="note">Two rules the note obeys. It says what the release <i>can</i> build, so it belongs
 beside a construct the release does not have at all &mdash; and it is said <b>once</b> per run,
-beside the first of them, because twice is noise and never leaves &ldquo;yet&rdquo; unexplained.</p>
+beside the first of them, because twice is noise and never leaves &ldquo;yet&rdquo; unexplained.
+Its text is revised in <b>05</b>: the list above predates timed regions and frames, both of which
+now compile.</p>
 
 <h2><span class="n">04</span> Failure text</h2>
 <p class="note" style="margin:0 0 10px">Four errors an ordinary user can reach, with their notes.</p>
@@ -151,11 +153,16 @@ beside the first of them, because twice is noise and never leaves &ldquo;yet&rdq
    <span class="d">= note: the zero page holds 240 variables, from $10 to $FF</span></pre>
 
 <h2><span class="n">05</span> Which refusals carry a note</h2>
-<p class="note" style="margin:0 0 10px">Agreed for bead <b>raster-fu0</b>. A refusal earns the
-&ldquo;this release compiles&hellip;&rdquo; note when it names a construct the specification defines
-and this release does not compile anywhere &mdash; not when its wording happens to end in a
-particular phrase. Six constructs gain it: <code>wait vblank</code>, strings, characters,
-<code>bool</code>, function timing specifications, and storage classes other than <code>in zp</code>.</p>
+<p class="note" style="margin:0 0 10px">Agreed for bead <b>raster-fu0</b>. A refusal earns a note
+because of what kind of refusal it is, not because its wording ends in a particular phrase. There are
+two notes, and each is said once per run, beside the first refusal of its kind.</p>
+
+<p class="note" style="margin:18px 0 10px"><b>One &mdash; the construct is not in this release.</b>
+The specification defines it and <code>rasterc</code> compiles it nowhere. Six constructs gain this
+note that did not have it: <code>wait vblank</code>, strings, characters, <code>bool</code>, function
+timing specifications, and storage classes other than <code>in zp</code>. Its text is corrected here
+too &mdash; the old list predates <code>cycles</code>, <code>pad</code>, <code>sync exact</code>,
+<code>wait cycles</code> and <code>frame</code>, all of which now compile.</p>
 <pre class="term"><span class="d">// a construct this release does not have</span>
 <span class="e">error:</span> only <span class="w">`wait cycles`</span> is supported yet; frame waits arrive with frame scheduling
  --&gt; demo.raster:8:5
@@ -163,22 +170,29 @@ particular phrase. Six constructs gain it: <code>wait vblank</code>, strings, ch
 8 |     wait vblank
   |     ^^^^^^^^^^^ only `wait cycles` is supported yet; frame waits arrive with frame scheduling
   <span class="d">= note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8
-          arithmetic and `ppu.*` / `mmc3.*` register writes</span></pre>
-<p class="note" style="margin:14px 0 10px">A construct that is fine in general and cannot be used
-<i>inside a timed region</i> is a different refusal, and gets a note of its own. Five of these:
-branch arms, a <code>for</code> loop, <code>wait cycles</code>, <code>*</code> <code>/</code>
-<code>%</code> and shifts, and a call. Said once per run, like the other.</p>
+          arithmetic, and `ppu.*` / `mmc3.*` register writes; timed regions
+          with `cycles`, `pad`, `sync exact` and `wait cycles`; and one
+          `frame` of `every ... scanlines` events</span></pre>
+
+<p class="note" style="margin:18px 0 10px"><b>Two &mdash; a timed region cannot charge its cost.</b>
+The construct is fine, and a region costed as straight-line code cannot price it. Eight refusals:
+an unbounded loop, a <code>while</code> loop, a <code>for</code> loop, branch arms,
+<code>wait cycles</code>, <code>*</code> <code>/</code> <code>%</code>, a shift, and a call.</p>
 <pre class="term"><span class="d">// a construct the region's cost model cannot charge</span>
 <span class="e">error:</span> a shift inside a timed region compiles to a loop whose cost is not yet proven
  --&gt; shift.raster:4:23
   |
 4 |         level = level &gt;&gt; 1
   |                       ^^ a shift inside a timed region compiles to a loop whose cost is not yet proven
-  <span class="d">= note: a timed region is costed as straight-line code; loops and calls
-          will be admitted once their cost can be measured</span></pre>
-<p class="note">Everything else &mdash; a mistake in the program, and the catch-all arms that name no
-construct &mdash; carries neither note. Each of those already says what to do instead, and a list of
-supported constructs beside it would be noise.</p>
+  <span class="d">= note: a timed region is costed as straight-line code; loops, branches
+          and calls will be admitted once their cost can be measured</span></pre>
+
+<p class="note" style="margin:18px 0 0"><b>Everything else carries no note.</b> A mistake in the
+program; the catch-all arms that name no construct; and three refusals that mention a timed region
+but are not cost-model gaps &mdash; <code>wait vblank</code> and <code>wait scanline</code> inside a
+region, which have no cost to measure ever, and <code>sync exact</code> in the wrong place, which is
+a placement rule. Each of those already says what to do instead, and a note would only promise
+something the compiler cannot deliver.</p>
 
 <footer>Agreed CLI surface for beads raster-6sl.5 and raster-fu0 &middot; the three screens in 01 are measured pixel values from tetanes; the transcripts in 03 and 05 are real <code>rasterc</code> output &middot; colour is decoration only</footer>
 </div></body></html>
