@@ -1,0 +1,17 @@
+[package]
+name = "raster-codegen"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+raster-6502 = { path = "../raster-6502" }
+raster-ir = { path = "../raster-ir" }
+raster-link = { path = "../raster-link" }
+raster-syntax = { path = "../raster-syntax" }
+
+[dev-dependencies]
+raster-sema = { path = "../raster-sema" }
+raster-syntax = { path = "../raster-syntax" }

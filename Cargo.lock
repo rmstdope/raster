@@ -310,6 +310,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "raster-codegen"
+version = "0.1.0"
+dependencies = [
+ "raster-6502",
+ "raster-ir",
+ "raster-link",
+ "raster-sema",
+ "raster-syntax",
+]
+
+[[package]]
 name = "raster-diag"
 version = "0.1.0"
 
@@ -318,6 +329,14 @@ name = "raster-emu"
 version = "0.1.0"
 dependencies = [
  "tetanes-core",
+]
+
+[[package]]
+name = "raster-ir"
+version = "0.1.0"
+dependencies = [
+ "raster-sema",
+ "raster-syntax",
 ]
 
 [[package]]
