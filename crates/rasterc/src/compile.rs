@@ -159,6 +159,18 @@ add a cycle of work",
             format!("a delay of {requested_cycles} cycles was asked for"),
         )
         .with_note("the shortest instruction the 6502 has costs two cycles"),
+        TimingError::ControlFlowInRegion { opcode, .. } => at(
+            "rasterc cannot prove this timed block's cost",
+            format!("this block compiles to a branch or a jump (${opcode:02X})"),
+        )
+        .with_note(
+            "a timed block is costed by adding up its instructions, so one
+that jumps has no single cost",
+        )
+        .with_note(
+            "rasterc should have refused the construct that produced this
+with a clearer message; please report this file",
+        ),
     }
 }
 

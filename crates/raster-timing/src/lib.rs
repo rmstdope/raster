@@ -41,6 +41,9 @@ pub enum TimingError {
     UnreachablePadding { remaining: u32 },
     /// A delay of fewer than two cycles has no instruction short enough to spend it.
     DelayTooShort { requested_cycles: u32 },
+    /// A region contains an instruction that leaves the straight line, so summing its instructions
+    /// is not its cost.
+    ControlFlowInRegion { index: usize, opcode: u8 },
 }
 
 /// `NOP`: two cycles in one byte, and the only official instruction with no effect at all.
@@ -146,7 +149,23 @@ pub fn synthesize_padding(
 /// branch's taken and page-crossing penalties, so every one of them is charged at its worst case:
 /// a timed region that costs less than it is charged is a region whose budget was met early, while
 /// the reverse would be a ROM that misses its raster.
+///
+/// A sum is only a region's cost while its instructions run one after another, and nothing else
+/// checks that they do. So a region holding anything [`leaves_straight_line`] names is refused
+/// outright — before the [`CycleConstraint::Report`] path, which would otherwise print a measured
+/// cost that is simply false.
 pub fn analyze(region: &TimedRegion, legal_isa: bool) -> Result<TimingReport, TimingError> {
+    if let Some((index, instruction)) = region
+        .instructions
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| leaves_straight_line(instruction))
+    {
+        return Err(TimingError::ControlFlowInRegion {
+            index,
+            opcode: instruction.opcode,
+        });
+    }
     let measured_cycles = worst_case_cycles(&region.instructions);
     let budget = match &region.constraint {
         CycleConstraint::Exact(budget) | CycleConstraint::AtMost(budget) => *budget,

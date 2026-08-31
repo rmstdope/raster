@@ -19,6 +19,15 @@ fn store_absolute() -> Instruction {
     }
 }
 
+/// `JMP $0000`, three cycles, and the plainest thing that leaves the straight line.
+fn jmp_absolute() -> Instruction {
+    Instruction {
+        opcode: 0x4c,
+        mode: AddressingMode::Absolute,
+        operand: Some(0),
+    }
+}
+
 fn region(constraint: CycleConstraint, instructions: Vec<Instruction>) -> TimedRegion {
     TimedRegion {
         constraint,
@@ -120,19 +129,24 @@ fn indexed_reads_and_branches_are_charged_their_worst_case() {
         operand: Some(0),
     };
 
+    // The branch cannot go through `analyze`, which refuses a region containing one — the worst
+    // case of a branch is exactly what a flat sum cannot prove. `worst_case_cycles` is still the
+    // worst-case model, and is called directly on slices `analyze` never sees.
+    assert_eq!(raster_timing::worst_case_cycles(&[indexed, branch]), 9);
+    // And `analyze` costs a region with that model rather than a plainer one.
     assert_eq!(
         analyze(
             &region(
                 CycleConstraint::Report {
                     label: "worst".to_owned()
                 },
-                vec![indexed, branch]
+                vec![indexed]
             ),
             true,
         )
         .expect("a report constraint never fails")
         .measured_cycles,
-        9
+        5
     );
 }
 
@@ -348,4 +362,44 @@ fn leaves_straight_line_accepts_every_branch_jump_call_and_return() {
             "${code:02X} stays in the straight line"
         );
     }
+}
+
+#[test]
+fn a_region_containing_a_jump_is_refused_under_every_constraint() {
+    let instructions = vec![load_immediate(), jmp_absolute(), store_absolute()];
+
+    for constraint in [
+        CycleConstraint::Exact(20),
+        CycleConstraint::AtMost(20),
+        CycleConstraint::Report {
+            label: "hblank".to_owned(),
+        },
+    ] {
+        assert_eq!(
+            analyze(&region(constraint.clone(), instructions.clone()), true),
+            Err(TimingError::ControlFlowInRegion {
+                index: 1,
+                opcode: 0x4c,
+            }),
+            "{constraint:?} is refused a region that jumps"
+        );
+    }
+}
+
+#[test]
+fn the_first_control_flow_instruction_is_the_one_reported() {
+    let instructions = vec![
+        instruction(0xf0),
+        load_immediate(),
+        jmp_absolute(),
+        store_absolute(),
+    ];
+
+    assert_eq!(
+        analyze(&region(CycleConstraint::AtMost(40), instructions), true),
+        Err(TimingError::ControlFlowInRegion {
+            index: 0,
+            opcode: 0xf0,
+        })
+    );
 }
