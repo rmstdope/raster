@@ -101,7 +101,7 @@ done nothing wrong and the point is that <em>rasterc</em> cannot check it.</p>
  <span class="g">--&gt; dynamic.raster:7:5</span>
   <span class="g">|</span>
 <span class="g">7 |</span>     mmc3.bank_select = which
-  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^^^^</span> this value is not a constant, so bits 6 and 7 are unknown here
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^^^^</span> rasterc cannot see this value here, so bits 6 and 7 are unknown
   <span class="g">= note:</span> bit 6 is PRG mode and bit 7 is CHR A12 inversion; keeping
           both clear keeps the map reset chose
 
