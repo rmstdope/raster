@@ -6,7 +6,7 @@
 use raster_codegen::{generate_with_isa, CodegenError};
 use raster_diag::{Diagnostic, Refusal, Span};
 use raster_ir::lower;
-use raster_link::{link_mmc3_program, InterruptVectors, LinkError};
+use raster_link::{link_mmc3_program, mmc3_reset_runtime_bytes, InterruptVectors, LinkError};
 use raster_sema::analyze;
 use raster_syntax::parse;
 use raster_timing::TimingError;
@@ -39,6 +39,10 @@ const ZERO_PAGE_VARIABLES: usize = 0x100 - 0x10;
 pub struct Rom {
     pub image: Vec<u8>,
     pub code_len: usize,
+    /// How many of `code_len` the reset runtime contributed. `code_len` minus
+    /// this is what the author's source compiled to, which is the number the
+    /// summary leads with.
+    pub runtime_len: usize,
     pub vectors: InterruptVectors,
     /// The measured cost of each `cycles(?)` region, which the summary prints.
     pub reports: Vec<(String, u32)>,
@@ -93,6 +97,7 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
     Ok(Rom {
         image: rom.image,
         code_len: rom.code_len,
+        runtime_len: rom.runtime_len,
         vectors: rom.vectors,
         reports: output.reports,
         warnings,
@@ -265,10 +270,19 @@ with a clearer message; please report this file",
 fn link_diagnostic(error: LinkError, has_timed_frame: bool) -> Diagnostic {
     match error {
         LinkError::FixedBankTooLarge { actual, maximum } => {
+            let runtime = mmc3_reset_runtime_bytes();
+            // Only ever constructed when `actual > maximum`; saturating rather
+            // than a subtraction that would panic in debug on a path nothing
+            // can reach.
+            let over = actual.saturating_sub(maximum);
             let diagnostic =
                 Diagnostic::without_span("the program does not fit the MMC3 fixed bank")
                     .with_note(format!(
                         "{actual} bytes of code, and $E000-$FFFF holds {maximum}"
+                    ))
+                    .with_note(format!(
+                        "{runtime} of those are the reset runtime, so {over} bytes of your own\n\
+                         have to go"
                     ))
                     .with_note(
                         "PRG bank switching is not supported yet, so all code lives\n\
@@ -301,6 +315,34 @@ fn internal_compiler_error(error: &impl std::fmt::Debug) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The figures are a real overflow: 1700 `ppu.mask = 1` statements compile
+    /// to 8631 bytes, of which 445 are over the bank. Pinned here rather than
+    /// through `compile_source` so the strings are asserted without a 1700-line
+    /// fixture, and so a codegen change elsewhere cannot silently move them.
+    #[test]
+    fn the_overflow_refusal_says_how_many_of_the_author_s_own_bytes_have_to_go() {
+        let diagnostic = link_diagnostic(
+            LinkError::FixedBankTooLarge {
+                actual: 8631,
+                maximum: 8186,
+            },
+            false,
+        );
+
+        assert_eq!(
+            diagnostic.message,
+            "the program does not fit the MMC3 fixed bank"
+        );
+        assert_eq!(
+            diagnostic.notes,
+            [
+                "8631 bytes of code, and $E000-$FFFF holds 8186",
+                "132 of those are the reset runtime, so 445 bytes of your own\nhave to go",
+                "PRG bank switching is not supported yet, so all code lives\nin the fixed bank",
+            ]
+        );
+    }
 
     /// The backstop is by design unreachable from any source `raster-sema` already refuses, so its
     /// rendering is pinned here rather than through `compile_source`. Asserting `message` exactly

@@ -50,6 +50,9 @@ pub struct LinkedRom {
     pub image: Vec<u8>,
     /// Bytes of the fixed bank actually used, runtime included.
     pub code_len: usize,
+    /// How many of `code_len` are the reset runtime rather than the program.
+    /// `code_len - runtime_len` is what the caller's `body` compiled to.
+    pub runtime_len: usize,
     /// The resolved `$FFFA` / `$FFFC` / `$FFFE` vectors.
     pub vectors: InterruptVectors,
 }
@@ -68,10 +71,7 @@ pub fn link_mmc3_program(
         items: prologue(entry),
     };
     program.items.extend(body.items.iter().cloned());
-    program.items.push(FixedBankItem::Label(INTERRUPT_LABEL));
-    program
-        .items
-        .push(FixedBankItem::instruction(RTI, Implied, None));
+    program.items.extend(interrupt_epilogue());
 
     let (code, labels) = link_fixed_bank(&program, legal_isa)?;
     let interrupt = *labels
@@ -98,8 +98,37 @@ pub fn link_mmc3_program(
     Ok(LinkedRom {
         image,
         code_len,
+        runtime_len: mmc3_reset_runtime_bytes(),
         vectors,
     })
+}
+
+/// What the runtime appends after the program: the interrupt vector target and
+/// the handler itself, which does nothing and returns.
+fn interrupt_epilogue() -> Vec<FixedBankItem> {
+    vec![
+        FixedBankItem::Label(INTERRUPT_LABEL),
+        FixedBankItem::instruction(RTI, Implied, None),
+    ]
+}
+
+/// The bytes [`link_mmc3_program`] adds around every program: the reset
+/// prologue at the front of the fixed bank and the interrupt handler at the
+/// back. 132 today, and the same 132 for every program this compiler builds.
+///
+/// Measured from the item lists the linker actually emits rather than written
+/// down as a constant, so it cannot drift from them. `entry` decides a
+/// relocation's operand and never an instruction's width, so measuring the
+/// prologue with any label gives the width the linker will use.
+///
+/// One number, two spellings: [`LinkedRom::runtime_len`] is per-ROM and this is
+/// not, and today they agree because every program gets the same epilogue. The
+/// day the epilogue stops being one `RTI` for every program — a real NMI handler
+/// for a `frame` block is where that lands — the field stays right and this does
+/// not. It exists because the refusal path has no `LinkedRom` to read; a caller
+/// holding one should read the field.
+pub fn mmc3_reset_runtime_bytes() -> usize {
+    crate::items_len(&prologue(RESET_LABEL)) + crate::items_len(&interrupt_epilogue())
 }
 
 fn prologue(entry: Label) -> Vec<FixedBankItem> {

@@ -21,18 +21,21 @@ fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
     )
 }
 
-/// The six rows every successful build prints, then whatever this build adds
+/// The eight rows every successful build prints, then whatever this build adds
 /// after them. `reset` is always `$E000`, and `nmi` and `irq` share an address
-/// for a program with no `frame`.
+/// for a program with no `frame`. `yours` is the author's own share of
+/// `code_len`; the runtime's is the rest, which is 132 for every program.
 fn summary_of(
     input: &Path,
     output: &Path,
     code_len: usize,
+    yours: usize,
     handler: u16,
     trailing: &str,
 ) -> String {
+    let runtime = code_len - yours;
     format!(
-        " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, {code_len} of 8186 bytes used\n    entry  reset $E000, nmi ${handler:04X}, irq ${handler:04X}\n{trailing}",
+        " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, {code_len} of 8186 bytes used\n    yours  {yours} bytes\n  runtime  {runtime} bytes, the reset sequence around your program\n    entry  reset $E000, nmi ${handler:04X}, irq ${handler:04X}\n{trailing}",
         input.display(),
         output.display()
     )
@@ -40,7 +43,7 @@ fn summary_of(
 
 /// The demo's summary, which three tests assert byte for byte.
 fn summary(input: &Path, output: &Path) -> String {
-    summary_of(input, output, 160, 0xE09F, "")
+    summary_of(input, output, 160, 28, 0xE09F, "")
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -514,7 +517,7 @@ fn a_bank_select_warning_prints_to_stderr_and_still_writes_a_rom() {
     );
     assert_eq!(
         stdout,
-        summary_of(&input, &output, 145, 0xE090, " warnings  1\n")
+        summary_of(&input, &output, 145, 13, 0xE090, " warnings  1\n")
     );
 }
 
@@ -566,5 +569,51 @@ fn two_warnings_and_an_error_are_counted_in_the_plural() {
             path = input.display()
         )),
         "each severity is pluralised on its own count, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn an_empty_main_is_three_bytes_of_the_author_s_own() {
+    let directory = Scratch::new("emptymain");
+    let input = directory.path().join("empty.raster");
+    let output = directory.path().join("empty.nes");
+    fs::write(&input, "main {\n}\n").unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(stderr, "");
+    // The three bytes are the halt loop rasterc puts at the end of every `main`.
+    // They are the author's: the line is drawn at the linker, so `yours` is
+    // never 0 and never 1, and neither row needs a plural.
+    assert_eq!(stdout, summary_of(&input, &output, 135, 3, 0xE086, ""));
+}
+
+#[test]
+fn a_program_too_big_for_the_bank_is_told_how_much_of_its_own_has_to_go() {
+    let directory = Scratch::new("overflow");
+    let input = directory.path().join("huge.raster");
+    let mut source = String::from("main {\n");
+    for _ in 0..1700 {
+        source.push_str("    ppu.mask = 1\n");
+    }
+    source.push_str("}\n");
+    fs::write(&input, source).unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.contains("error: the program does not fit the MMC3 fixed bank"),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("132 of those are the reset runtime, so "),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("bytes of your own\n          have to go"),
+        "got:\n{stderr}"
     );
 }

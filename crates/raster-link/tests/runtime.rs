@@ -3,9 +3,9 @@ use raster_6502::{
     Instruction,
 };
 use raster_link::{
-    link_mmc3_program, FixedBankItem, InterruptVectors, Label, RelocatableProgram, Relocation,
-    RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE, MMC3_FIXED_BANK_START,
-    MMC3_PRG_ROM_SIZE,
+    link_mmc3_program, mmc3_reset_runtime_bytes, FixedBankItem, InterruptVectors, Label,
+    RelocatableProgram, Relocation, RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
+    MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
 };
 
 /// The 131-byte reset runtime every compiled program is wrapped in.
@@ -64,6 +64,11 @@ fn one_instruction_body() -> RelocatableProgram {
 }
 
 #[test]
+fn the_reset_runtime_measures_its_own_prologue_and_interrupt_handler() {
+    assert_eq!(mmc3_reset_runtime_bytes(), PROLOGUE.len() + 1);
+}
+
+#[test]
 fn emits_the_reset_prologue_before_the_program() {
     let rom = link_mmc3_program(&one_instruction_body(), Label(0), true).expect("the body links");
 
@@ -78,6 +83,18 @@ fn emits_the_reset_prologue_before_the_program() {
             irq: 0xe084,
         }
     );
+}
+
+#[test]
+fn a_linked_rom_says_how_many_of_its_bytes_are_the_runtime() {
+    let rom = link_mmc3_program(&one_instruction_body(), Label(0), true).expect("the body links");
+
+    assert_eq!(rom.code_len, 133);
+    assert_eq!(rom.runtime_len, 132);
+    // The split's meaning, stated rather than guarded: the two figures above
+    // pin it already, and what this line adds is that their difference is the
+    // one byte this program's body actually is.
+    assert_eq!(rom.code_len - rom.runtime_len, 1);
 }
 
 #[test]

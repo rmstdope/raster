@@ -27,6 +27,17 @@ pub fn summary(input: &str, output: &str, rom: &Rom) -> String {
             ),
         ),
         row(
+            "yours",
+            &format!("{} bytes", rom.code_len - rom.runtime_len),
+        ),
+        row(
+            "runtime",
+            &format!(
+                "{} bytes, the reset sequence around your program",
+                rom.runtime_len
+            ),
+        ),
+        row(
             "entry",
             &format!(
                 "reset ${:04X}, nmi ${:04X}, irq ${:04X}",
