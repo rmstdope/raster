@@ -178,3 +178,40 @@ fn a_string_expression_says_what_the_release_can_build() {
         "{diagnostics:?}"
     );
 }
+
+const TIMED_REGION_COST: &str = concat!(
+    "a timed region is costed as straight-line code; loops, branches\n",
+    "and calls will be admitted once their cost can be measured"
+);
+
+#[test]
+fn a_timed_region_says_why_it_cannot_charge_a_loop() {
+    let diagnostics = compile_source(
+        "var level: u8\nmain {\n    sync exact\n    cycles(20) pad {\n        level = level >> 1\n    }\n}\n",
+    )
+    .expect_err("a shift compiles to a loop");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "a shift inside a timed region compiles to a loop whose cost is not yet proven"
+    );
+    assert_eq!(diagnostics[0].notes, [TIMED_REGION_COST]);
+}
+
+#[test]
+fn a_hardware_wait_inside_a_timed_region_carries_no_note() {
+    let diagnostics = compile_source(
+        "main {\n    sync exact\n    cycles(20) pad {\n        wait vblank\n    }\n}\n",
+    )
+    .expect_err("a vblank wait has no provable cost");
+
+    let waited = diagnostics
+        .iter()
+        .find(|d| d.message == "`wait vblank` has no provable cost inside a timed region")
+        .expect("the vblank wait is refused");
+    assert!(
+        waited.notes.is_empty(),
+        "a wait has no cost to measure ever, so the note would promise nothing: {:?}",
+        waited.notes
+    );
+}

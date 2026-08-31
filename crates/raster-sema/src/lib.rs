@@ -379,7 +379,7 @@ impl Analyzer {
     /// Refuse something whose cost a straight-line region cannot charge.
     fn reject_in_timed_region(&mut self, span: Span, message: &str) {
         if self.in_timed_region() {
-            self.error(span, message.to_owned());
+            self.cannot_be_costed(span, message.to_owned());
         }
     }
 
@@ -392,7 +392,7 @@ impl Analyzer {
             Statement::Block(block) => self.check_block(block),
             Statement::Loop(block) => {
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
                         "an unbounded loop has no provable cycle cost inside a timed region",
                     );
@@ -405,7 +405,7 @@ impl Analyzer {
                 else_body,
             } => {
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
                         "branch arms inside a timed region cannot yet be balanced, because each \
                          path through them costs a different number of cycles",
@@ -419,7 +419,7 @@ impl Analyzer {
             }
             Statement::While { condition, body } => {
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
                         "a `while` loop's trip count cannot be proven inside a timed region",
                     );
@@ -434,7 +434,7 @@ impl Analyzer {
                 body,
             } => {
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
                         "a `for` loop inside a timed region compiles to a loop whose cost is not \
                          yet proven, because the region is costed as straight-line code",
@@ -485,7 +485,7 @@ impl Analyzer {
             Statement::Wait(Wait::Cycles(value)) => {
                 self.require_static(value, "wait bound");
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
                         "`wait cycles` inside a timed region spends its cycles in a loop, which \
                          the region's straight-line cost model cannot yet charge; widen the \
@@ -855,7 +855,7 @@ impl Analyzer {
         // ask for the very thing the compiler then rejects. A call's cost is the callee's, and
         // nothing measures a callee yet.
         if self.in_timed_region() {
-            self.error(
+            self.cannot_be_costed(
                 name.span,
                 format!(
                     "`{}` cannot be called inside a timed region yet: a call's cost is the \
