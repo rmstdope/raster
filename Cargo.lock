@@ -358,6 +358,13 @@ name = "raster-syntax"
 version = "0.1.0"
 
 [[package]]
+name = "raster-timing"
+version = "0.1.0"
+dependencies = [
+ "raster-6502",
+]
+
+[[package]]
 name = "rasterc"
 version = "0.1.0"
 dependencies = [

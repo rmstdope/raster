@@ -9,6 +9,7 @@ members = [
     "crates/raster-ir",
     "crates/raster-link",
     "crates/raster-codegen",
+    "crates/raster-timing",
     "crates/rasterc",
 ]
 resolver = "2"
