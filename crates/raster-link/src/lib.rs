@@ -18,7 +18,9 @@ pub use m1::m1_solid_backdrop_rom;
 pub use m5::{
     m5_background_rom, BackgroundData, PPU_ATTRIBUTE_BYTES, PPU_NAMETABLE_BYTES, PPU_PALETTE_BYTES,
 };
-pub use runtime::{link_mmc3_program, LinkedRom, INTERRUPT_LABEL, RESET_LABEL};
+pub use runtime::{
+    link_mmc3_program, mmc3_reset_runtime_bytes, LinkedRom, INTERRUPT_LABEL, RESET_LABEL,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Label(pub u32);
@@ -269,6 +271,20 @@ fn incompatible_relocation(
         expected,
         actual,
     })
+}
+
+/// How many bytes an item list lays down. A `Label` occupies none; everything
+/// else is sized by its addressing mode or its own length, exactly as
+/// `measure_labels` and `emit_fixed_bank` size it.
+pub(crate) fn items_len(items: &[FixedBankItem]) -> usize {
+    items
+        .iter()
+        .map(|item| match item {
+            FixedBankItem::Label(_) => 0,
+            FixedBankItem::Instruction { instruction, .. } => instruction_bytes(instruction.mode),
+            FixedBankItem::Data(data) => data.len(),
+        })
+        .sum()
 }
 
 const fn instruction_bytes(mode: AddressingMode) -> usize {

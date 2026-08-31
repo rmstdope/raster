@@ -89,8 +89,10 @@ main {
    mapper  MMC3 (4), NTSC
       prg  32 KiB, 4 banks of 8 KiB
       chr  8 KiB RAM
-    fixed  $E000-$FFFF, 100 of 8186 bytes used
-    entry  reset $E000, nmi $E063, irq $E063</pre>
+    fixed  $E000-$FFFF, 160 of 8186 bytes used
+    yours  28 bytes
+  runtime  132 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $E09F, irq $E09F</pre>
 <p class="note">Every value starts in the same column, including the one after <code>Compiled</code>. The summary goes to standard output; diagnostics go to standard error.</p>
 
 <pre class="term" style="margin-top:14px"><span class="p">$</span> rasterc --help
@@ -136,6 +138,8 @@ now compile.</p>
 <span class="d">// more code than the fixed bank holds</span>
 <span class="e">error:</span> the program does not fit the MMC3 fixed bank
   <span class="d">= note: 8402 bytes of code, and $E000-$FFFF holds 8186
+  = note: 132 of those are the reset runtime, so 216 bytes of your own
+          have to go
   = note: PRG bank switching is not supported yet, so all code lives
           in the fixed bank</span>
 
