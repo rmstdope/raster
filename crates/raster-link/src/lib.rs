@@ -1,13 +1,246 @@
+use std::collections::BTreeMap;
+
+use raster_6502::{assemble, AddressingMode, AssembleError, Instruction};
+
 pub const INES_HEADER_SIZE: usize = 16;
 pub const MMC3_PRG_ROM_SIZE: usize = 32 * 1024;
 pub const MMC3_FIXED_BANK_SIZE: usize = 8 * 1024;
 pub const MMC3_FIXED_BANK_START: u16 = 0xe000;
 
 const INES_PRG_ROM_BANK_SIZE: usize = 16 * 1024;
+const MMC3_FIXED_BANK_CODE_SIZE: usize = MMC3_FIXED_BANK_SIZE - 6;
 
 mod m1;
 
 pub use m1::m1_solid_backdrop_rom;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Label(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelocationKind {
+    Absolute,
+    Relative,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Relocation {
+    pub kind: RelocationKind,
+    pub target: Label,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FixedBankItem {
+    Label(Label),
+    Instruction {
+        instruction: Instruction,
+        relocation: Option<Relocation>,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RelocatableProgram {
+    pub items: Vec<FixedBankItem>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EntryPoints {
+    pub nmi: Label,
+    pub reset: Label,
+    pub irq: Label,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinkError {
+    DuplicateLabel { label: Label },
+    UndefinedLabel { label: Label },
+    RelativeBranchOutOfRange { from: u16, target: u16 },
+    FixedBankTooLarge { actual: usize, maximum: usize },
+    EntryPointOutsideCode { vector: &'static str, address: u16 },
+    Assemble(AssembleError),
+}
+
+pub fn link_fixed_bank(
+    program: &RelocatableProgram,
+    legal_isa: bool,
+) -> Result<(Vec<u8>, BTreeMap<Label, u16>), LinkError> {
+    let labels = measure_labels(program)?;
+    let instructions = resolve_relocations(program, &labels)?;
+    let bytes = assemble(&instructions, legal_isa).map_err(LinkError::Assemble)?;
+    Ok((bytes, labels))
+}
+
+pub fn link_mmc3_ines(
+    program: &RelocatableProgram,
+    entry_points: EntryPoints,
+    legal_isa: bool,
+) -> Result<Vec<u8>, LinkError> {
+    let (code, labels) = link_fixed_bank(program, legal_isa)?;
+    let vectors = InterruptVectors {
+        nmi: entry_point_address(&labels, "nmi", entry_points.nmi)?,
+        reset: entry_point_address(&labels, "reset", entry_points.reset)?,
+        irq: entry_point_address(&labels, "irq", entry_points.irq)?,
+    };
+    emit_mmc3_ines(&code, vectors).map_err(|error| match error {
+        RomError::FixedBankTooLarge { actual, maximum } => {
+            LinkError::FixedBankTooLarge { actual, maximum }
+        }
+        RomError::VectorOutsideFixedBank { .. } => {
+            unreachable!("resolved fixed-bank labels are always valid vectors")
+        }
+    })
+}
+
+fn measure_labels(program: &RelocatableProgram) -> Result<BTreeMap<Label, u16>, LinkError> {
+    let mut labels = BTreeMap::new();
+    let mut offset = 0usize;
+    let maximum = MMC3_FIXED_BANK_CODE_SIZE;
+    for item in &program.items {
+        match item {
+            FixedBankItem::Label(label) => {
+                if offset > maximum {
+                    return Err(LinkError::FixedBankTooLarge {
+                        actual: offset,
+                        maximum,
+                    });
+                }
+                let address_offset =
+                    u16::try_from(offset).map_err(|_| LinkError::FixedBankTooLarge {
+                        actual: offset,
+                        maximum,
+                    })?;
+                let address = MMC3_FIXED_BANK_START.checked_add(address_offset).ok_or(
+                    LinkError::FixedBankTooLarge {
+                        actual: offset,
+                        maximum,
+                    },
+                )?;
+                if labels.insert(*label, address).is_some() {
+                    return Err(LinkError::DuplicateLabel { label: *label });
+                }
+            }
+            FixedBankItem::Instruction { instruction, .. } => {
+                offset += instruction_bytes(instruction.mode);
+            }
+        }
+    }
+
+    if offset > maximum {
+        return Err(LinkError::FixedBankTooLarge {
+            actual: offset,
+            maximum,
+        });
+    }
+    Ok(labels)
+}
+
+fn resolve_relocations(
+    program: &RelocatableProgram,
+    labels: &BTreeMap<Label, u16>,
+) -> Result<Vec<Instruction>, LinkError> {
+    let mut instructions = Vec::new();
+    let mut offset = 0usize;
+    for item in &program.items {
+        let FixedBankItem::Instruction {
+            instruction,
+            relocation,
+        } = item
+        else {
+            continue;
+        };
+
+        let mut resolved = *instruction;
+        if let Some(relocation) = relocation {
+            let target = entry_address(labels, relocation.target)?;
+            match relocation.kind {
+                RelocationKind::Absolute => {
+                    if !matches!(
+                        resolved.mode,
+                        AddressingMode::Absolute
+                            | AddressingMode::AbsoluteX
+                            | AddressingMode::AbsoluteY
+                            | AddressingMode::Indirect
+                    ) {
+                        return Err(incompatible_relocation(
+                            resolved.opcode,
+                            AddressingMode::Absolute,
+                            resolved.mode,
+                        ));
+                    }
+                    resolved.operand = Some(target);
+                }
+                RelocationKind::Relative => {
+                    if resolved.mode != AddressingMode::Relative {
+                        return Err(incompatible_relocation(
+                            resolved.opcode,
+                            AddressingMode::Relative,
+                            resolved.mode,
+                        ));
+                    }
+                    let from = MMC3_FIXED_BANK_START + offset as u16;
+                    let following = from + instruction_bytes(resolved.mode) as u16;
+                    let displacement = i32::from(target) - i32::from(following);
+                    if !(i32::from(i8::MIN)..=i32::from(i8::MAX)).contains(&displacement) {
+                        return Err(LinkError::RelativeBranchOutOfRange { from, target });
+                    }
+                    resolved.operand = Some(displacement as i8 as u8 as u16);
+                }
+            }
+        }
+        offset += instruction_bytes(resolved.mode);
+        instructions.push(resolved);
+    }
+    Ok(instructions)
+}
+
+fn incompatible_relocation(
+    opcode: u8,
+    expected: AddressingMode,
+    actual: AddressingMode,
+) -> LinkError {
+    LinkError::Assemble(AssembleError::AddressingModeMismatch {
+        opcode,
+        expected,
+        actual,
+    })
+}
+
+const fn instruction_bytes(mode: AddressingMode) -> usize {
+    match mode {
+        AddressingMode::Implied | AddressingMode::Accumulator => 1,
+        AddressingMode::Immediate
+        | AddressingMode::ZeroPage
+        | AddressingMode::ZeroPageX
+        | AddressingMode::ZeroPageY
+        | AddressingMode::Relative
+        | AddressingMode::IndexedIndirect
+        | AddressingMode::IndirectIndexed => 2,
+        AddressingMode::Absolute
+        | AddressingMode::AbsoluteX
+        | AddressingMode::AbsoluteY
+        | AddressingMode::Indirect => 3,
+    }
+}
+
+fn entry_address(labels: &BTreeMap<Label, u16>, label: Label) -> Result<u16, LinkError> {
+    labels
+        .get(&label)
+        .copied()
+        .ok_or(LinkError::UndefinedLabel { label })
+}
+
+fn entry_point_address(
+    labels: &BTreeMap<Label, u16>,
+    vector: &'static str,
+    label: Label,
+) -> Result<u16, LinkError> {
+    let address = entry_address(labels, label)?;
+    let maximum = MMC3_FIXED_BANK_START + MMC3_FIXED_BANK_CODE_SIZE as u16 - 1;
+    if !(MMC3_FIXED_BANK_START..=maximum).contains(&address) {
+        return Err(LinkError::EntryPointOutsideCode { vector, address });
+    }
+    Ok(address)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InterruptVectors {
@@ -26,7 +259,7 @@ pub fn emit_mmc3_ines(
     fixed_bank_code: &[u8],
     vectors: InterruptVectors,
 ) -> Result<Vec<u8>, RomError> {
-    let maximum_code_size = MMC3_FIXED_BANK_SIZE - 6;
+    let maximum_code_size = MMC3_FIXED_BANK_CODE_SIZE;
     if fixed_bank_code.len() > maximum_code_size {
         return Err(RomError::FixedBankTooLarge {
             actual: fixed_bank_code.len(),

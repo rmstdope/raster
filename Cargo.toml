@@ -6,7 +6,9 @@ members = [
     "crates/raster-emu",
     "crates/raster-syntax",
     "crates/raster-sema",
+    "crates/raster-ir",
     "crates/raster-link",
+    "crates/raster-codegen",
     "crates/rasterc",
 ]
 resolver = "2"
