@@ -1902,4 +1902,3 @@ fn comparison_operator(operator: Operator) -> Option<Comparison> {
         _ => None,
     }
 }
-

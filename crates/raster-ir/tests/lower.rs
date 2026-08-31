@@ -625,7 +625,10 @@ fn every_write_only_register_refuses_a_read_and_every_readable_one_does_not() {
         if register.is_write_only() {
             let failure = result.expect_err(name);
             assert_eq!(failure.errors.len(), 1, "{name}");
-            assert_eq!(failure.errors[0].message, format!("`{name}` cannot be read"));
+            assert_eq!(
+                failure.errors[0].message,
+                format!("`{name}` cannot be read")
+            );
         } else {
             assert!(result.is_ok(), "{name} reads");
         }
