@@ -50,6 +50,7 @@ fn emitted(source: &str) -> Vec<Instruction> {
         .filter_map(|item| match item {
             FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
             FixedBankItem::Label(_) => None,
+            FixedBankItem::Data(_) => unreachable!("raster-codegen emits no data blocks"),
         })
         .collect()
 }

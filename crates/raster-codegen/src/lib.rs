@@ -261,6 +261,7 @@ impl Generator<'_> {
             .filter_map(|item| match item {
                 FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
                 FixedBankItem::Label(_) => None,
+                FixedBankItem::Data(_) => unreachable!("raster-codegen emits no data blocks"),
             })
             .collect();
         // The `PLP` closing the region is measured before it is emitted, so the padding that makes

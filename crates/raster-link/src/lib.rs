@@ -38,6 +38,16 @@ pub enum FixedBankItem {
         instruction: Instruction,
         relocation: Option<Relocation>,
     },
+    /// Literal bytes, laid out where they sit in the item list.
+    ///
+    /// A `Label` immediately before a block addresses its first byte, so code
+    /// reaches it with an ordinary absolute relocation. The bytes count against
+    /// the fixed bank's budget like instructions do.
+    ///
+    /// Nothing checks that the block is unreachable. The 6502 will happily
+    /// execute it, so the caller places data where control does not fall
+    /// through — after a halt loop, an `RTS` or a `JMP`.
+    Data(Vec<u8>),
 }
 
 impl FixedBankItem {
@@ -98,8 +108,7 @@ pub fn link_fixed_bank(
     legal_isa: bool,
 ) -> Result<(Vec<u8>, BTreeMap<Label, u16>), LinkError> {
     let labels = measure_labels(program)?;
-    let instructions = resolve_relocations(program, &labels)?;
-    let bytes = assemble(&instructions, legal_isa).map_err(LinkError::Assemble)?;
+    let bytes = emit_fixed_bank(program, &labels, legal_isa)?;
     Ok((bytes, labels))
 }
 
@@ -161,6 +170,7 @@ fn measure_labels(program: &RelocatableProgram) -> Result<BTreeMap<Label, u16>, 
             FixedBankItem::Instruction { instruction, .. } => {
                 offset += instruction_bytes(instruction.mode);
             }
+            FixedBankItem::Data(data) => offset += data.len(),
         }
     }
 
@@ -173,63 +183,76 @@ fn measure_labels(program: &RelocatableProgram) -> Result<BTreeMap<Label, u16>, 
     Ok(labels)
 }
 
-fn resolve_relocations(
+/// Resolve every relocation and lay the program out as the bytes of the fixed bank.
+///
+/// The bytes are built as the walk goes rather than assembled from one flat
+/// instruction list at the end, because a data block has no `Instruction` to
+/// put in such a list.
+fn emit_fixed_bank(
     program: &RelocatableProgram,
     labels: &BTreeMap<Label, u16>,
-) -> Result<Vec<Instruction>, LinkError> {
-    let mut instructions = Vec::new();
+    legal_isa: bool,
+) -> Result<Vec<u8>, LinkError> {
+    let mut bytes = Vec::new();
     let mut offset = 0usize;
     for item in &program.items {
-        let FixedBankItem::Instruction {
-            instruction,
-            relocation,
-        } = item
-        else {
-            continue;
-        };
-
-        let mut resolved = *instruction;
-        if let Some(relocation) = relocation {
-            let target = entry_address(labels, relocation.target)?;
-            match relocation.kind {
-                RelocationKind::Absolute => {
-                    if !matches!(
-                        resolved.mode,
-                        AddressingMode::Absolute
-                            | AddressingMode::AbsoluteX
-                            | AddressingMode::AbsoluteY
-                            | AddressingMode::Indirect
-                    ) {
-                        return Err(incompatible_relocation(
-                            resolved.opcode,
-                            AddressingMode::Absolute,
-                            resolved.mode,
-                        ));
+        match item {
+            FixedBankItem::Label(_) => {}
+            FixedBankItem::Data(data) => {
+                offset += data.len();
+                bytes.extend_from_slice(data);
+            }
+            FixedBankItem::Instruction {
+                instruction,
+                relocation,
+            } => {
+                let mut resolved = *instruction;
+                if let Some(relocation) = relocation {
+                    let target = entry_address(labels, relocation.target)?;
+                    match relocation.kind {
+                        RelocationKind::Absolute => {
+                            if !matches!(
+                                resolved.mode,
+                                AddressingMode::Absolute
+                                    | AddressingMode::AbsoluteX
+                                    | AddressingMode::AbsoluteY
+                                    | AddressingMode::Indirect
+                            ) {
+                                return Err(incompatible_relocation(
+                                    resolved.opcode,
+                                    AddressingMode::Absolute,
+                                    resolved.mode,
+                                ));
+                            }
+                            resolved.operand = Some(target);
+                        }
+                        RelocationKind::Relative => {
+                            if resolved.mode != AddressingMode::Relative {
+                                return Err(incompatible_relocation(
+                                    resolved.opcode,
+                                    AddressingMode::Relative,
+                                    resolved.mode,
+                                ));
+                            }
+                            let from = MMC3_FIXED_BANK_START + offset as u16;
+                            let following = from + instruction_bytes(resolved.mode) as u16;
+                            let displacement = i32::from(target) - i32::from(following);
+                            if !(i32::from(i8::MIN)..=i32::from(i8::MAX)).contains(&displacement) {
+                                return Err(LinkError::RelativeBranchOutOfRange { from, target });
+                            }
+                            resolved.operand = Some(displacement as i8 as u8 as u16);
+                        }
                     }
-                    resolved.operand = Some(target);
                 }
-                RelocationKind::Relative => {
-                    if resolved.mode != AddressingMode::Relative {
-                        return Err(incompatible_relocation(
-                            resolved.opcode,
-                            AddressingMode::Relative,
-                            resolved.mode,
-                        ));
-                    }
-                    let from = MMC3_FIXED_BANK_START + offset as u16;
-                    let following = from + instruction_bytes(resolved.mode) as u16;
-                    let displacement = i32::from(target) - i32::from(following);
-                    if !(i32::from(i8::MIN)..=i32::from(i8::MAX)).contains(&displacement) {
-                        return Err(LinkError::RelativeBranchOutOfRange { from, target });
-                    }
-                    resolved.operand = Some(displacement as i8 as u8 as u16);
-                }
+                offset += instruction_bytes(resolved.mode);
+                bytes.extend(
+                    assemble(std::slice::from_ref(&resolved), legal_isa)
+                        .map_err(LinkError::Assemble)?,
+                );
             }
         }
-        offset += instruction_bytes(resolved.mode);
-        instructions.push(resolved);
     }
-    Ok(instructions)
+    Ok(bytes)
 }
 
 fn incompatible_relocation(

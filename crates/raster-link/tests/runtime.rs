@@ -1,7 +1,11 @@
-use raster_6502::{AddressingMode::Implied, Instruction};
+use raster_6502::{
+    AddressingMode::{AbsoluteX, Implied},
+    Instruction,
+};
 use raster_link::{
-    link_mmc3_program, FixedBankItem, InterruptVectors, Label, RelocatableProgram,
-    INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE, MMC3_PRG_ROM_SIZE,
+    link_mmc3_program, FixedBankItem, InterruptVectors, Label, RelocatableProgram, Relocation,
+    RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE, MMC3_FIXED_BANK_START,
+    MMC3_PRG_ROM_SIZE,
 };
 
 /// The 71-byte reset runtime every compiled program is wrapped in.
@@ -72,4 +76,43 @@ fn points_nmi_and_irq_at_an_rti_after_the_program() {
         [0x48, 0xe0, 0x00, 0xe0, 0x48, 0xe0]
     );
     assert_eq!(fixed_bank(&rom.image)[0x48], 0x40);
+}
+
+#[test]
+fn ships_embedded_data_in_the_linked_rom() {
+    let entry = Label(0);
+    let table = Label(1);
+    let body = RelocatableProgram {
+        items: vec![
+            FixedBankItem::Label(entry),
+            FixedBankItem::Instruction {
+                instruction: Instruction {
+                    opcode: 0xbd,
+                    mode: AbsoluteX,
+                    operand: None,
+                },
+                relocation: Some(Relocation {
+                    kind: RelocationKind::Absolute,
+                    target: table,
+                }),
+            },
+            FixedBankItem::Label(table),
+            FixedBankItem::Data(vec![0xc0, 0xff, 0xee, 0x11]),
+        ],
+    };
+
+    let rom = link_mmc3_program(&body, entry, true).expect("the program links");
+
+    let body_start = PROLOGUE.len();
+    let data_address = MMC3_FIXED_BANK_START + u16::try_from(body_start + 3).unwrap();
+    let [low, high] = data_address.to_le_bytes();
+    let bank = fixed_bank(&rom.image);
+
+    assert_eq!(&bank[body_start..body_start + 3], [0xbd, low, high]);
+    assert_eq!(
+        &bank[body_start + 3..body_start + 7],
+        [0xc0, 0xff, 0xee, 0x11]
+    );
+    assert_eq!(bank[body_start + 7], 0x40); // the runtime's RTI, after the data
+    assert_eq!(rom.code_len, body_start + 8);
 }
