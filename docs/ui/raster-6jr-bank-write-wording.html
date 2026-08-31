@@ -1,0 +1,98 @@
+<!doctype html>
+<title>raster-6jr — Wording A: name the bit</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  }
+</style>
+<main>
+<h1>Wording A — name the bit and the mode it sets</h1>
+<p class="sub">The message says what the <em>register</em> just did; the notes say what reset had chosen and how
+to keep it. An author who knows the MMC3 recognises it instantly; one who does not is taught the bit.</p>
+
+<h2>1 &middot; Bit 7 &mdash; CHR A12 inversion</h2>
+<div class="term"><span class="w">warning: this bank select changes the MMC3 mapping mode</span>
+ <span class="g">--&gt; demo.raster:5:5</span>
+  <span class="g">|</span>
+<span class="g">5 |</span>     mmc3.bank_select = $80
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^^</span> bit 7 swaps the two pattern tables from here on
+  <span class="g">= note:</span> reset chose CHR A12 inversion off, so pattern table 0 is at
+          PPU $0000; clearing bit 7 keeps that map
+  <span class="g">= note:</span> bits 6 and 7 take effect from whichever bank select was
+          written last, not from the bank data that follows</div>
+
+<h2>2 &middot; Bit 6 &mdash; PRG mode 1</h2>
+<div class="term"><span class="w">warning: this bank select changes the MMC3 mapping mode</span>
+ <span class="g">--&gt; prg.raster:5:5</span>
+  <span class="g">|</span>
+<span class="g">5 |</span>     mmc3.bank_select = $46
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^^</span> bit 6 moves the fixed PRG bank from $C000 to $8000
+  <span class="g">= note:</span> reset chose PRG mode 0, a linear 32 KiB map with this code
+          in the fixed bank at $E000; clearing bit 6 keeps that map
+  <span class="g">= note:</span> bits 6 and 7 take effect from whichever bank select was
+          written last, not from the bank data that follows</div>
+
+<h2>3 &middot; Both bits set at once &mdash; one warning, both labels</h2>
+<div class="term"><span class="w">warning: this bank select changes the MMC3 mapping mode</span>
+ <span class="g">--&gt; both.raster:5:5</span>
+  <span class="g">|</span>
+<span class="g">5 |</span>     mmc3.bank_select = $C0
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^^</span> bit 6 moves the fixed PRG bank and bit 7 swaps the pattern tables
+  <span class="g">= note:</span> reset chose PRG mode 0 and CHR A12 inversion off: a linear
+          32 KiB map, and pattern table 0 at PPU $0000
+  <span class="g">= note:</span> bits 6 and 7 take effect from whichever bank select was
+          written last, not from the bank data that follows</div>
+
+<h2>4 &middot; A value rasterc cannot fold</h2>
+<div class="term"><span class="w">warning: rasterc cannot tell whether this bank select changes the mapping mode</span>
+ <span class="g">--&gt; dynamic.raster:7:5</span>
+  <span class="g">|</span>
+<span class="g">7 |</span>     mmc3.bank_select = which
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^^^^^^^</span> this value is not a constant, so bits 6 and 7 are unknown here
+  <span class="g">= note:</span> bit 6 is PRG mode and bit 7 is CHR A12 inversion; keeping
+          both clear keeps the map reset chose</div>
+
+<h2>5 &middot; The summary row</h2>
+<div class="term"> Compiled  demo.raster -&gt; demo.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 214 of 8186 bytes used
+    entry  reset $E000, nmi $E0D5, irq $E0D5
+   cycles  hblank: 26 cycles
+ warnings  1</div>
+<p class="note">Last row, after the <code>cycles</code> rows, right-aligned in the same nine columns as every
+other label. Absent when the count is zero.</p>
+
+<h2>6 &middot; The count line when the build also failed</h2>
+<div class="term"><span class="e">error: could not compile broken.raster (1 error, 1 warning)</span></div>
+<div class="term"><span class="e">error: could not compile broken.raster (3 errors, 2 warnings)</span></div>
+</main>
