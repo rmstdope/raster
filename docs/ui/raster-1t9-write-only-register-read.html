@@ -1,0 +1,172 @@
+<!doctype html>
+<title>raster-1t9 — Reading a write-only register</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 66rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:58em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:58em; }
+  table { border-collapse:collapse; font-size:.88rem; margin:.6rem 0 0; }
+  th,td { text-align:left; padding:.28rem .9rem .28rem 0; border-bottom:1px solid #e0e2ea; }
+  th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:.74rem;}
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background:#e9ebf1; padding:.1em .35em; border-radius:3px;}
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost, th { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    th,td { border-color:#242733; }
+    code { background:#1e2029; color:#c9cddb; }
+  }
+
+</style>
+<main>
+
+<span class="tag">AGREED &middot; THE RULE</span>
+<h1>Reading a write-only register is an error</h1>
+<p class="sub">Thirteen of rasterc's sixteen named registers are write-only ports. A read of one does not
+return the last value written &mdash; a PPU port returns whatever was last on the PPU's data bus, and an MMC3
+port returns a byte of the author's own program from the PRG bank mapped there. There is no right-hand side
+that makes such a read correct, so rasterc refuses it and says what to write instead.</p>
+
+<h2>1 &middot; A compound assignment &mdash; the read is not in the source</h2>
+<p class="note"><code>+=</code> reads its destination before it writes, so this line reads $8000 without the
+author ever having asked for a read. That is why this case gets a note the others do not.</p>
+<div class="src">main {
+    mmc3.bank_select += $80
+}</div>
+<div class="term" style="margin-top:.6rem"><span class="e">error: `mmc3.bank_select` cannot be read</span>
+ <span class="g">--&gt; demo.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     mmc3.bank_select += $80
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^^^^^^^</span> $8000 is a write-only port
+  <span class="g">= note:</span> `+=` reads its destination before it writes, so this reads $8000
+  <span class="g">= note:</span> reading $8000 returns a byte of your own program from the PRG
+          bank mapped there, not the last value written
+  <span class="g">= note:</span> keep what you wrote in a variable of your own
+          and write the whole value
+
+<span class="e">error: could not compile demo.raster (1 error)</span></div>
+<p class="cost">The carets cover the <strong>destination only</strong>, not the whole statement: the label names
+the port, and <code>$80</code> is not part of the port.</p>
+
+<h2>2 &middot; A read the author did write</h2>
+<div class="src">main {
+    var m: u8 = ppu.mask
+}</div>
+<div class="term" style="margin-top:.6rem"><span class="e">error: `ppu.mask` cannot be read</span>
+ <span class="g">--&gt; demo.raster:2:17</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     var m: u8 = ppu.mask
+  <span class="g">|</span>                 <span class="e">^^^^^^^^</span> $2001 is a write-only port
+  <span class="g">= note:</span> reading $2001 returns whatever was last on the PPU's data bus,
+          not the last value written
+  <span class="g">= note:</span> keep what you wrote in a variable of your own
+          and write the whole value</div>
+
+<h2>3 &middot; Two reads on one line are two errors</h2>
+<div class="src">main {
+    ppu.ctrl = ppu.mask | ppu.scroll
+}</div>
+<div class="term" style="margin-top:.6rem"><span class="e">error: `ppu.mask` cannot be read</span>
+ <span class="g">--&gt; demo.raster:2:16</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.ctrl = ppu.mask | ppu.scroll
+  <span class="g">|</span>                <span class="e">^^^^^^^^</span> $2001 is a write-only port
+  <span class="g">= note:</span> reading $2001 returns whatever was last on the PPU's data bus,
+          not the last value written
+  <span class="g">= note:</span> keep what you wrote in a variable of your own
+          and write the whole value
+
+<span class="e">error: `ppu.scroll` cannot be read</span>
+ <span class="g">--&gt; demo.raster:2:27</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.ctrl = ppu.mask | ppu.scroll
+  <span class="g">|</span>                           <span class="e">^^^^^^^^^^</span> $2005 is a write-only port
+  <span class="g">= note:</span> reading $2005 returns whatever was last on the PPU's data bus,
+          not the last value written
+  <span class="g">= note:</span> keep what you wrote in a variable of your own
+          and write the whole value
+
+<span class="e">error: could not compile demo.raster (2 errors)</span></div>
+<p class="cost">One error per read, the way every other stage reports every fault it can see &mdash; so a file
+is one read rather than a run-fix-run treadmill.</p>
+
+<h2>4 &middot; The error suppresses the bank-select warning on the same line</h2>
+<p class="note"><code>mmc3.bank_select += $80</code> would also trip the mapping-mode warning, whose
+&ldquo;cannot tell&rdquo; arm fires on any value rasterc cannot fold. It does not fire here: the statement is
+being rewritten, so what its value would have been is moot, and one fault gets one message. Section 1 above is
+the whole of what this source prints.</p>
+
+<h2>5 &middot; A register that reads is untouched</h2>
+<div class="src">main {
+    ppu.addr = $3f
+    ppu.addr = $00
+    var entry: u8 = ppu.data
+}</div>
+<div class="term" style="margin-top:.6rem"><span class="g"> Compiled</span>  demo.raster -&gt; demo.nes
+<span class="g">   mapper</span>  MMC3 (4), NTSC
+<span class="g">      prg</span>  32 KiB, 4 banks of 8 KiB
+<span class="g">      chr</span>  8 KiB RAM</div>
+<p class="cost"><code>ppu.data</code>'s read is <em>buffered</em> &mdash; it returns the previous byte &mdash;
+and reading <code>ppu.status</code> clears the vblank flag and the $2005/$2006 latch. Both are real hazards and
+both have their own beads; neither is this one, which is only about ports that do not read at all.</p>
+
+<h2>6 &middot; Every register, and its verdict</h2>
+<table>
+<tr><th>Register</th><th>Address</th><th>A read of it</th></tr>
+<tr><td><code>ppu.ctrl</code></td><td>$2000</td><td>refused</td></tr>
+<tr><td><code>ppu.mask</code></td><td>$2001</td><td>refused</td></tr>
+<tr><td><code>ppu.status</code></td><td>$2002</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>ppu.oam_addr</code></td><td>$2003</td><td>refused</td></tr>
+<tr><td><code>ppu.oam_data</code></td><td>$2004</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>ppu.scroll</code></td><td>$2005</td><td>refused</td></tr>
+<tr><td><code>ppu.addr</code></td><td>$2006</td><td>refused</td></tr>
+<tr><td><code>ppu.data</code></td><td>$2007</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.bank_select</code></td><td>$8000</td><td>refused</td></tr>
+<tr><td><code>mmc3.bank_data</code></td><td>$8001</td><td>refused</td></tr>
+<tr><td><code>mmc3.mirroring</code></td><td>$A000</td><td>refused</td></tr>
+<tr><td><code>mmc3.ram_protect</code></td><td>$A001</td><td>refused</td></tr>
+<tr><td><code>mmc3.irq_latch</code></td><td>$C000</td><td>refused</td></tr>
+<tr><td><code>mmc3.irq_reload</code></td><td>$C001</td><td>refused</td></tr>
+<tr><td><code>mmc3.irq_disable</code></td><td>$E000</td><td>refused</td></tr>
+<tr><td><code>mmc3.irq_enable</code></td><td>$E001</td><td>refused</td></tr>
+</table>
+<p class="note">Thirteen refused, three allowed. Writes are unaffected: every one of the sixteen may still be
+written, and this bead changes nothing about a write.</p>
+
+<h2>7 &middot; What was rejected</h2>
+<p class="cost"><strong>Warn instead of refusing.</strong> Reuses the machinery raster-6jr shipped and never
+blocks an author &mdash; but there is nothing here the author could know that rasterc does not, so a warning
+would let an always-wrong program become a ROM.<br><br>
+<strong>Say nothing; document it only.</strong> No false positives ever &mdash; but spec &sect;9.1 already
+promises the compiler warns when a sequence violates a known hardware requirement, and a documented trap the
+compiler can see and does not mention fails silently, in a ROM, on someone else's hardware.<br><br>
+<strong>Catch only the compound assignment.</strong> Matches the original report and is one hook instead of
+two &mdash; but <code>ppu.ctrl = ppu.mask | $80</code> reads the same dead port and looks like ordinary
+read-modify-write code, which makes it the more insidious of the two.<br><br>
+<strong>Refuse writing <code>ppu.status</code> in the same bead.</strong> The mirror-image bug, and nearly free
+&mdash; but it widens a bead that already grew from <code>+=</code> to every read, and the write side gets its
+own interview.</p>
+
+</main>
