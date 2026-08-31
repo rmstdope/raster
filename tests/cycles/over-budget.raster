@@ -1,0 +1,7 @@
+// Four cycles of budget for six cycles of work: the diagnostic names both.
+main {
+    sync exact
+    cycles(<= 4) {
+        ppu.mask = 1
+    }
+}

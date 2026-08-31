@@ -363,3 +363,102 @@ fn reports_several_errors_separated_by_a_blank_line_and_a_count() {
         )
     );
 }
+
+#[test]
+fn timing_overage_diagnostic_names_cost_budget_and_span() {
+    let directory = Scratch::new("overbudget");
+    let input = directory.path().join("hblank.raster");
+    fs::write(
+        &input,
+        "main {\n    sync exact\n    cycles(<= 4) {\n        ppu.mask = 1\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "error: timed block exceeds its budget\n",
+                " --> {path}:3:5\n",
+                "  |\n",
+                "3 |     cycles(<= 4) {{\n",
+                "  |     ^^^^^^^^^^^^ block costs 6 cycles, budget is 4\n",
+                "  = note: an indexed read that may cross a page and a branch that may be\n",
+                "          taken are both charged their worst case\n",
+                "\n",
+                "error: could not compile {path} (1 error)\n",
+            ),
+            path = input.display()
+        )
+    );
+}
+
+#[test]
+fn a_report_region_prints_its_measured_cost_in_the_build_summary() {
+    let directory = Scratch::new("cyclesreport");
+    let input = directory.path().join("report.raster");
+    let output = directory.path().join("report.nes");
+    fs::write(
+        &input,
+        "main {\n    sync exact\n    cycles(?) hblank {\n        ppu.mask = 1\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(stderr, "");
+    assert!(
+        stdout.contains("   cycles  hblank: 6 cycles\n"),
+        "the build summary reports a `cycles(?)` region, got:\n{stdout}"
+    );
+    assert!(output.exists());
+}
+
+#[test]
+fn a_block_one_cycle_short_of_its_budget_says_why_it_cannot_be_padded() {
+    let directory = Scratch::new("unpaddable");
+    let input = directory.path().join("short.raster");
+    fs::write(
+        &input,
+        "main {\n    sync exact\n    cycles(7) pad {\n        ppu.mask = 1\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (_, _, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert!(
+        stderr.contains("error: a timed block cannot be padded to its budget"),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no instruction costs a single cycle"),
+        "got:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_block_short_of_an_exact_budget_is_told_about_pad() {
+    let directory = Scratch::new("underbudget");
+    let input = directory.path().join("under.raster");
+    fs::write(
+        &input,
+        "main {\n    sync exact\n    cycles(20) {\n        ppu.mask = 1\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (_, _, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert!(
+        stderr.contains("error: timed block does not fill its budget"),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("`pad` would fill the remaining 14 cycles"),
+        "got:\n{stderr}"
+    );
+}

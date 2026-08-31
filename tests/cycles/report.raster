@@ -1,0 +1,7 @@
+// `cycles(?)` measures without constraining, and the cost reaches the build summary.
+main {
+    sync exact
+    cycles(?) hblank {
+        ppu.mask = 1
+    }
+}

@@ -13,6 +13,8 @@ raster-ir = { path = "../raster-ir" }
 raster-link = { path = "../raster-link" }
 raster-sema = { path = "../raster-sema" }
 raster-syntax = { path = "../raster-syntax" }
+raster-timing = { path = "../raster-timing" }
 
 [dev-dependencies]
+raster-6502 = { path = "../raster-6502" }
 raster-emu = { path = "../raster-emu" }

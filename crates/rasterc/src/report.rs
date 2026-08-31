@@ -33,6 +33,12 @@ pub fn summary(input: &str, output: &str, rom: &Rom) -> String {
                 rom.vectors.reset, rom.vectors.nmi, rom.vectors.irq
             ),
         ),
+        // What every `cycles(?)` region measured, which is the whole point of
+        // writing one: the author asked, so the answer belongs in the summary.
+        rom.reports
+            .iter()
+            .map(|(label, measured)| row("cycles", &format!("{label}: {measured} cycles")))
+            .collect(),
     ]
     .concat()
 }
