@@ -13,7 +13,9 @@ fn compiles_the_demo_to_the_same_rom_as_m1() {
 
 const SUPPORTED_SUBSET: &str = concat!(
     "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
-    "arithmetic and `ppu.*` / `mmc3.*` register writes"
+    "arithmetic, and `ppu.*` / `mmc3.*` register writes; timed regions\n",
+    "with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n",
+    "`frame` of `every ... scanlines` events"
 );
 
 #[test]

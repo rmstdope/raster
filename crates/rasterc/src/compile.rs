@@ -14,7 +14,9 @@ use raster_timing::TimingError;
 /// What this release of the compiler can build, listed once per run beside the
 /// first construct it had to refuse for not being in it.
 const SUPPORTED_SUBSET: &str = "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n\
-                                arithmetic and `ppu.*` / `mmc3.*` register writes";
+                                arithmetic, and `ppu.*` / `mmc3.*` register writes; timed regions\n\
+                                with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n\
+                                `frame` of `every ... scanlines` events";
 
 /// Why a timed region refuses a construct that is fine everywhere else, said
 /// once per run beside the first of them.
