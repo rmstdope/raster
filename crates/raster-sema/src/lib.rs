@@ -49,11 +49,23 @@ struct Analyzer {
     errors: Vec<SemanticError>,
     constants: BTreeMap<String, u32>,
     return_type: ValueType,
-    /// Whether each enclosing timed region carries `pad`, innermost last.
-    timed_regions: Vec<bool>,
+    /// Each enclosing timed region, innermost last.
+    timed_regions: Vec<TimedBlock>,
     /// Whether the statements being checked run from a position the compiler has synchronized —
     /// which is what a `frame` handler does, and nothing else yet.
     synchronized: bool,
+}
+
+/// One enclosing timed region.
+struct TimedBlock {
+    /// Whether this is a `cycles(...) { }` block statement rather than a function's own annotation.
+    ///
+    /// Both put their body under the same restrictions, but only one of them is a block. `lower`
+    /// refuses a function carrying a cycle annotation outright, and a refusal whose advice is
+    /// "put it after the block" has nothing to name there.
+    block: bool,
+    /// Whether the region carries `interruptible`, and so emits no `PHP`/`SEI`/`PLP`.
+    interruptible: bool,
 }
 
 pub fn analyze(program: &Program) -> Result<TypedProgram, Vec<SemanticError>> {
@@ -235,7 +247,10 @@ impl Analyzer {
         let function_return_type = self.lookup_function_return(function);
         let previous_return_type = std::mem::replace(&mut self.return_type, function_return_type);
         if let Some(spec) = &function.cycle_spec {
-            self.timed_regions.push(spec.pad);
+            self.timed_regions.push(TimedBlock {
+                block: false,
+                interruptible: spec.interruptible,
+            });
         }
         self.check_block_statements(&function.body);
         if function.cycle_spec.is_some() {
@@ -268,8 +283,13 @@ impl Analyzer {
     /// the construct exists to do for them.
     fn check_frame_event(&mut self, event: &FrameEvent) {
         let outer = std::mem::replace(&mut self.synchronized, true);
-        // `pad`, because lowering pads every handler to its scanline's budget.
-        self.timed_regions.push(true);
+        // A handler is emitted through the same `timed_region` a `cycles(...) { }` block is, with
+        // `pad` set and `interruptible` clear, so it carries the same restrictions and the same
+        // `PHP`/`SEI`/`PLP` — see `Generator::frame`.
+        self.timed_regions.push(TimedBlock {
+            block: true,
+            interruptible: false,
+        });
         self.check_frame_event_body(event);
         self.timed_regions.pop();
         self.synchronized = outer;
@@ -328,6 +348,14 @@ impl Analyzer {
 
     fn in_timed_region(&self) -> bool {
         !self.timed_regions.is_empty()
+    }
+
+    /// The innermost enclosing `cycles(...) { }` block statement, if any.
+    ///
+    /// A function's own cycle annotation is not one, and is always outermost — so where the
+    /// innermost region is that annotation, there is no block between it and the statement.
+    fn innermost_cycles_block(&self) -> Option<&TimedBlock> {
+        self.timed_regions.last().filter(|region| region.block)
     }
 
     /// Refuse something whose cost a straight-line region cannot charge.
@@ -420,7 +448,10 @@ impl Analyzer {
                     );
                 }
                 self.check_cycle_bound(&spec.bound);
-                self.timed_regions.push(spec.pad);
+                self.timed_regions.push(TimedBlock {
+                    block: true,
+                    interruptible: spec.interruptible,
+                });
                 self.check_block(body);
                 self.timed_regions.pop();
             }
@@ -444,20 +475,36 @@ impl Analyzer {
                     );
                 }
             }
-            Statement::Return(value) => match value {
-                Some(value) => self.require_type(
-                    value,
-                    self.return_type.clone(),
-                    "return expression does not match function return type",
-                ),
-                None if self.return_type != ValueType::Void => {
-                    self.error(
-                        statement_span,
-                        "return expression is required for this function",
-                    );
+            Statement::Return(value) => {
+                // The two sentences differ by one clause because an `interruptible` block emits no
+                // `PHP`/`SEI`/`PLP`, so there is no interrupt flag left masked when the `return`
+                // jumps out. `reject_in_timed_region` takes one fixed message and cannot say both.
+                if let Some(block) = self.innermost_cycles_block() {
+                    let message = if block.interruptible {
+                        "`return` inside a timed block jumps out before the block has spent its \
+                         budget, so it belongs after the block rather than inside one"
+                    } else {
+                        "`return` inside a timed block jumps out before the block has spent its \
+                         budget and before the interrupt flag is restored, so it belongs after the \
+                         block rather than inside one"
+                    };
+                    self.error(statement_span, message.to_owned());
                 }
-                None => {}
-            },
+                match value {
+                    Some(value) => self.require_type(
+                        value,
+                        self.return_type.clone(),
+                        "return expression does not match function return type",
+                    ),
+                    None if self.return_type != ValueType::Void => {
+                        self.error(
+                            statement_span,
+                            "return expression is required for this function",
+                        );
+                    }
+                    None => {}
+                }
+            }
             Statement::Expression(expression) => {
                 self.expression_type(expression);
             }

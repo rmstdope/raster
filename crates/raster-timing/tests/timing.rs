@@ -1,5 +1,5 @@
 use raster_6502::{AddressingMode, Instruction};
-use raster_timing::{analyze, CycleConstraint, TimedRegion, TimingError};
+use raster_timing::{analyze, leaves_straight_line, CycleConstraint, TimedRegion, TimingError};
 
 /// `LDA #$00`, two cycles.
 fn load_immediate() -> Instruction {
@@ -16,6 +16,15 @@ fn store_absolute() -> Instruction {
         opcode: 0x8d,
         mode: AddressingMode::Absolute,
         operand: Some(0x0010),
+    }
+}
+
+/// `JMP $0000`, three cycles, and the plainest thing that leaves the straight line.
+fn jmp_absolute() -> Instruction {
+    Instruction {
+        opcode: 0x4c,
+        mode: AddressingMode::Absolute,
+        operand: Some(0),
     }
 }
 
@@ -106,7 +115,7 @@ fn report_constraint_returns_the_measured_total_under_its_label() {
 }
 
 #[test]
-fn indexed_reads_and_branches_are_charged_their_worst_case() {
+fn indexed_reads_and_branches_are_charged_their_worst_case_by_the_cost_model() {
     // `LDA $1234,X` costs four cycles, or five when the index crosses a page.
     let indexed = Instruction {
         opcode: 0xbd,
@@ -120,19 +129,24 @@ fn indexed_reads_and_branches_are_charged_their_worst_case() {
         operand: Some(0),
     };
 
+    // The branch cannot go through `analyze`, which refuses a region containing one — the worst
+    // case of a branch is exactly what a flat sum cannot prove. `worst_case_cycles` is still the
+    // worst-case model, and is called directly on slices `analyze` never sees.
+    assert_eq!(raster_timing::worst_case_cycles(&[indexed, branch]), 9);
+    // And `analyze` costs a region with that model rather than a plainer one.
     assert_eq!(
         analyze(
             &region(
                 CycleConstraint::Report {
                     label: "worst".to_owned()
                 },
-                vec![indexed, branch]
+                vec![indexed]
             ),
             true,
         )
         .expect("a report constraint never fails")
         .measured_cycles,
-        9
+        5
     );
 }
 
@@ -308,6 +322,86 @@ fn a_counted_loop_takes_its_branch_once_however_long_it_runs() {
             "a loop of {iterations} iterations"
         );
     }
+}
+
+/// Every instruction the predicate must name, built from the opcode table so the test cannot
+/// disagree with the cost model about what an instruction is.
+fn instruction(code: u8) -> Instruction {
+    let definition = raster_6502::opcode(code);
+    Instruction {
+        opcode: code,
+        mode: definition.mode,
+        operand: (definition.bytes > 1).then_some(0),
+    }
+}
+
+#[test]
+fn leaves_straight_line_accepts_every_branch_jump_call_and_return() {
+    for code in [
+        0x10, 0x30, 0x50, 0x70, 0x90, 0xb0, 0xd0, 0xf0, // every branch
+        0x00, // BRK
+        0x20, // JSR
+        0x40, // RTI
+        0x4c, // JMP $nnnn
+        0x60, // RTS
+        0x6c, // JMP ($nnnn)
+    ] {
+        assert!(
+            leaves_straight_line(&instruction(code)),
+            "${code:02X} leaves the straight line"
+        );
+    }
+
+    for code in [
+        0xea, 0x85, 0x04, 0x14, // the filler synthesize_padding emits
+        0x08, 0x78, 0x28, // PHP, SEI, PLP — the block's own prologue and epilogue
+        0xa9, 0x8d, // LDA #, STA $nnnn
+    ] {
+        assert!(
+            !leaves_straight_line(&instruction(code)),
+            "${code:02X} stays in the straight line"
+        );
+    }
+}
+
+#[test]
+fn a_region_containing_a_jump_is_refused_under_every_constraint() {
+    let instructions = vec![load_immediate(), jmp_absolute(), store_absolute()];
+
+    for constraint in [
+        CycleConstraint::Exact(20),
+        CycleConstraint::AtMost(20),
+        CycleConstraint::Report {
+            label: "hblank".to_owned(),
+        },
+    ] {
+        assert_eq!(
+            analyze(&region(constraint.clone(), instructions.clone()), true),
+            Err(TimingError::ControlFlowInRegion {
+                index: 1,
+                opcode: 0x4c,
+            }),
+            "{constraint:?} is refused a region that jumps"
+        );
+    }
+}
+
+#[test]
+fn the_first_control_flow_instruction_is_the_one_reported() {
+    let instructions = vec![
+        instruction(0xf0),
+        load_immediate(),
+        jmp_absolute(),
+        store_absolute(),
+    ];
+
+    assert_eq!(
+        analyze(&region(CycleConstraint::AtMost(40), instructions), true),
+        Err(TimingError::ControlFlowInRegion {
+            index: 0,
+            opcode: 0xf0,
+        })
+    );
 }
 
 /// What a caller spends returning to the top of the pass — `JMP absolute`, for the tests here.

@@ -116,6 +116,18 @@ fn a_program_too_large_names_the_bank_it_does_not_fit() {
 }
 
 #[test]
+fn a_cycle_annotated_function_that_returns_still_names_the_real_refusal() {
+    let diagnostics = compile_source("fn f() -> u8 cycles(20) {\n    return 1\n}\nmain { }\n")
+        .expect_err("function timing specifications are not supported yet");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "function timing specifications are not supported"
+    );
+}
+
+#[test]
 fn a_frame_too_large_for_the_bank_says_the_schedule_is_emitted_three_times() {
     // Every handler fits its scanline; there are simply too many of them for the bank.
     let diagnostics = compile_source(
