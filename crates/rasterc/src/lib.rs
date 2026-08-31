@@ -41,7 +41,7 @@ pub fn run(
 }
 
 /// The ROM `rasterc input.raster` writes: the source path with a `.nes` extension.
-pub fn rom_path(source: &Path) -> PathBuf {
+fn rom_path(source: &Path) -> PathBuf {
     source.with_extension("nes")
 }
 
