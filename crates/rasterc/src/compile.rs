@@ -53,7 +53,7 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
         .map_err(|errors| spanned(errors.into_iter().map(|e| (e.message, e.span)), source))?;
     let output = generate_with_isa(&ir, LEGAL_ISA)
         .map_err(|error| noted(vec![codegen_diagnostic(error, source)]))?;
-    let rom = link_mmc3_program(&output.program, output.main, LEGAL_ISA)
+    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA)
         .map_err(|error| noted(vec![link_diagnostic(error, ir.frame.is_some())]))?;
 
     Ok(Rom {

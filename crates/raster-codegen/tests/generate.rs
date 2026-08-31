@@ -180,7 +180,7 @@ fn allocates_zero_page_deterministically_reserving_hardware_bytes() {
 #[test]
 fn generated_main_links_to_an_executable_register_store() {
     let output = generate_source("main { ppu.mask = 1 }");
-    let rom = link_mmc3_program(&output.program, output.main, true).unwrap();
+    let rom = link_mmc3_program(&output.program, output.main, None, true).unwrap();
     let fixed_bank = INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - MMC3_FIXED_BANK_SIZE;
     // The fixed bank now opens with the runtime's reset sequence, and the
     // program's own first bytes follow the 71-byte prologue.

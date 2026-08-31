@@ -201,3 +201,104 @@ fn irq_frame_reads_a_ppu_configuration_written_by_a_called_function() {
         .map(|_| ())
         .expect("the configuration a called function wrote is the one the frame inherits");
 }
+
+/// Where `address` sits in a linked image: the fixed bank is the last 8 KiB of PRG ROM, and it is
+/// mapped at `$E000`.
+fn fixed_bank_offset(address: u16) -> usize {
+    use raster_link::{
+        INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE, MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
+    };
+    INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - MMC3_FIXED_BANK_SIZE
+        + usize::from(address - MMC3_FIXED_BANK_START)
+}
+
+/// A `frame ... using irq` is a chain of handlers, and every link of it is asserted here as bytes.
+///
+/// The order is the one spec section 7.3 requires and hardware does not forgive: the latch at
+/// `$C000` before the reload request at `$C001`, and the acknowledgement at `$E000` before the
+/// re-arm at `$E001`. Acknowledging after enabling would leave the line asserted and the console
+/// would take the same interrupt for ever.
+///
+/// Nothing here is reached by falling through: the handlers sit past the frame loop's own `JMP`,
+/// and control arrives through `$FFFE` — which is why the vectors and the `$E000` placement are
+/// part of the same test rather than a separate one.
+#[test]
+fn irq_lowering_acknowledges_before_rearming_and_returns_from_fixed_bank() {
+    use raster_link::MMC3_FIXED_BANK_START;
+
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.data = $12 }\n\
+                  \n    at scanline 120 { ppu.data = $21 }\n}\n";
+    let rom = compile_source(source).expect("the fixture compiles");
+    let image = &rom.image;
+    let at = |address: u16, length: usize| {
+        let offset = fixed_bank_offset(address);
+        &image[offset..offset + length]
+    };
+
+    // The IRQ vector is the frame's own entry, in the fixed bank, and not the runtime's bare `RTI`
+    // that `$FFFA` still points at.
+    assert!(rom.vectors.irq >= MMC3_FIXED_BANK_START);
+    assert_ne!(rom.vectors.irq, rom.vectors.nmi);
+    assert_eq!(
+        at(rom.vectors.nmi, 1),
+        &[0x40],
+        "the NMI vector is an `RTI`"
+    );
+    // `JMP ($000E)`: the entry dispatches through the two RAM bytes each handler leaves pointing at
+    // its successor, which is what makes one vector serve a whole chain.
+    assert_eq!(at(rom.vectors.irq, 3), &[0x6c, 0x0e, 0x00]);
+
+    // The frame loop arms the first handler in vblank: the dispatch vector, then the latch, the
+    // reload request, and the enable.
+    let armed = image
+        .windows(8)
+        .position(|window| {
+            window[0] == 0xa9
+                && window[2..4] == [0x85, 0x0e]
+                && window[4] == 0xa9
+                && window[6..8] == [0x85, 0x0f]
+        })
+        .expect("the frame loop points the dispatch vector at its first handler");
+    let first = u16::from_le_bytes([image[armed + 1], image[armed + 5]]);
+    assert!(
+        first >= MMC3_FIXED_BANK_START,
+        "a handler is in the fixed bank"
+    );
+    assert_eq!(
+        &image[armed + 8..armed + 8 + 11],
+        // Armed from the pre-render line, an IRQ on scanline 60 is a latch of 60.
+        &[0xa9, 60, 0x8d, 0x00, 0xc0, 0x8d, 0x01, 0xc0, 0x8d, 0x01, 0xe0],
+        "the arming sequence latches, requests a reload, and enables"
+    );
+
+    // The first handler: its body, then the chain to the second, then back out of the interrupt.
+    let chained = at(first, 30);
+    assert_eq!(
+        &chained[..20],
+        &[
+            0x48, // PHA — the spin loop the frame runs in holds nothing else
+            0xa9, 0x12, 0x8d, 0x07, 0x20, // ppu.data = $12
+            0xa9, 59, // 120 - 60 scanlines away is a latch of 59
+            0x8d, 0x00, 0xc0, // $C000: the latch
+            0x8d, 0x01, 0xc0, // $C001: reload on the next A12 rise
+            0x8d, 0x00, 0xe0, // $E000: acknowledge and disable, before ...
+            0x8d, 0x01, 0xe0, // ... $E001 re-arms the line
+        ]
+    );
+    // The dispatch vector, left pointing at the handler that runs next.
+    assert_eq!(chained[20], 0xa9);
+    assert_eq!(&chained[22..24], &[0x85, 0x0e]);
+    assert_eq!(chained[24], 0xa9);
+    assert_eq!(&chained[26..28], &[0x85, 0x0f]);
+    assert_eq!(&chained[28..30], &[0x68, 0x40], "PLA then RTI");
+    let second = u16::from_le_bytes([chained[21], chained[25]]);
+
+    // The last handler acknowledges and stops: the frame loop arms the next frame from vblank, so
+    // a chain that re-enabled here would fire again on a counter nothing reloaded.
+    assert!(second >= MMC3_FIXED_BANK_START);
+    assert_eq!(
+        at(second, 11),
+        &[0x48, 0xa9, 0x21, 0x8d, 0x07, 0x20, 0x8d, 0x00, 0xe0, 0x68, 0x40]
+    );
+}

@@ -52,7 +52,8 @@ fn one_instruction_body() -> RelocatableProgram {
 
 #[test]
 fn emits_the_reset_prologue_before_the_program() {
-    let rom = link_mmc3_program(&one_instruction_body(), Label(0), true).expect("the body links");
+    let rom =
+        link_mmc3_program(&one_instruction_body(), Label(0), None, true).expect("the body links");
 
     assert_eq!(&fixed_bank(&rom.image)[..PROLOGUE.len()], PROLOGUE);
     assert_eq!(fixed_bank(&rom.image)[PROLOGUE.len()], 0x60);
@@ -69,7 +70,8 @@ fn emits_the_reset_prologue_before_the_program() {
 
 #[test]
 fn points_nmi_and_irq_at_an_rti_after_the_program() {
-    let rom = link_mmc3_program(&one_instruction_body(), Label(0), true).expect("the body links");
+    let rom =
+        link_mmc3_program(&one_instruction_body(), Label(0), None, true).expect("the body links");
 
     assert_eq!(
         &rom.image[rom.image.len() - 6..],
@@ -101,7 +103,7 @@ fn ships_embedded_data_in_the_linked_rom() {
         ],
     };
 
-    let rom = link_mmc3_program(&body, entry, true).expect("the program links");
+    let rom = link_mmc3_program(&body, entry, None, true).expect("the program links");
 
     let body_start = PROLOGUE.len();
     let data_address = MMC3_FIXED_BANK_START + u16::try_from(body_start + 3).unwrap();
