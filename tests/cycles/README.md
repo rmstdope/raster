@@ -14,6 +14,10 @@ the timing analysis judged.
 the same delay between two `cycles(?)` regions, measured from the `PLP` that closes the first to
 the `PHP` that opens the second.
 
+Two fixtures are compiled to be **refused** rather than measured: `over-budget.raster`, whose
+block costs more than its budget, and `return-in-a-block.raster`, whose block leaves before it has
+spent one. Their tests assert the diagnostic rather than a cycle count, because there is no ROM.
+
 `ppu.mask = 1` is the unit these are built from. It generates `LDA #$01` (two cycles) and
 `STA $2001` (four), so it costs six.
 

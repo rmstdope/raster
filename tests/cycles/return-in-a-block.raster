@@ -1,0 +1,7 @@
+// `return` inside a timed block leaves before the block has spent its budget. Charged 20 cycles,
+// it spends 8, jumps over its own padding, and never reaches the `PLP` that unmasks interrupts.
+main {
+    cycles(20) pad {
+        return
+    }
+}

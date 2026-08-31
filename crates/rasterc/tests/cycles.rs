@@ -271,3 +271,20 @@ fn measurement_failure_identifies_fixture_and_delta() {
 
     compare("padded.raster", 114, 114);
 }
+
+#[test]
+fn a_return_inside_a_timed_block_is_refused_rather_than_mistimed() {
+    let diagnostics = compile_source(&fixture("return-in-a-block.raster"))
+        .expect_err("a block that jumps out has no provable cost");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "`return` inside a timed block jumps out before the block has spent its budget and before \
+         the interrupt flag is restored, so it belongs after the block rather than inside one"
+    );
+    assert!(
+        diagnostics[0].span.is_some(),
+        "the diagnostic is source-spanned"
+    );
+}
