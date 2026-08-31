@@ -225,8 +225,10 @@ fn irq_frame_reads_a_ppu_configuration_written_through_a_value_call() {
         .expect("an initializer's call configures the PPU as surely as a statement does");
 }
 
-/// `return` in a handler would leave the interrupt without its `RTI`, three bytes of stack at a
-/// time. Refused, rather than compiled into a ROM that runs for eighty frames and then wanders.
+/// `return` in an IRQ handler would leave the interrupt without its `RTI`, three bytes of stack at
+/// a time — a ROM that runs for eighty frames and then wanders. It is refused for the same reason
+/// a `return` inside any handler is, which is why this asserts the refusal rather than a message of
+/// its own.
 #[test]
 fn a_frame_handler_cannot_return() {
     let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
@@ -234,9 +236,12 @@ fn a_frame_handler_cannot_return() {
                   \n        return\n    }\n}\n";
     let diagnostics = compile_source(source).expect_err("a handler has nowhere to return to");
 
-    assert_eq!(
-        diagnostics[0].message,
-        "`return` is not supported inside a frame handler yet"
+    assert!(
+        diagnostics[0]
+            .message
+            .starts_with("`return` inside a timed block jumps out"),
+        "found {:?}",
+        diagnostics[0].message
     );
     assert!(diagnostics[0].span.is_some());
 }

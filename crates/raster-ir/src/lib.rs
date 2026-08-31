@@ -477,7 +477,7 @@ impl Lowerer {
                     }
                     FramePosition::Scanline(value) => {
                         if let Some(scanline) = self.visible_scanline(value) {
-                            let body = self.lower_frame_body(body, event.span);
+                            let body = self.lower_frame_body(body);
                             events.push(FrameEvent {
                                 scanline,
                                 body,
@@ -509,7 +509,7 @@ impl Lowerer {
                     // The body is lowered once and cloned per occurrence. Lowering it again for
                     // each would allocate a fresh temporary every time, and `every 1 scanlines
                     // from 0 to 239` would exhaust the zero page on a handler that needs one slot.
-                    let body = self.lower_frame_body(body, event.span);
+                    let body = self.lower_frame_body(body);
                     let mut scanline = Some(from);
                     while let Some(current) = scanline.filter(|&current| current <= to) {
                         events.push(FrameEvent {
@@ -625,17 +625,13 @@ impl Lowerer {
 
     /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
     ///
-    /// A `return` is refused here rather than lowered: a handler is not a function, and codegen
-    /// compiles a `return` into a jump to the end of `main`. Under `using irq` that leaves the
-    /// interrupt without its `RTI` and three bytes of stack behind every event; under `using timed`
-    /// it re-enters the frame loop from inside a region whose interrupt flag was never restored.
-    fn lower_frame_body(&mut self, body: &Block, span: Span) -> Vec<Statement> {
+    /// A `return` never reaches here: `raster-sema` refuses one in a frame handler, which is what
+    /// keeps an IRQ handler's `RTI` reachable — codegen compiles a `return` into a jump to the end
+    /// of `main`, and an interrupt left that way keeps its three bytes of stack for ever.
+    fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
         self.enter_scope();
         let (statements, _) = self.lower_statements(body);
         self.leave_scope();
-        if statements.iter().any(returns_from_handler) {
-            self.error(span, "`return` is not supported inside a frame handler yet");
-        }
         statements
     }
 
@@ -1693,15 +1689,6 @@ fn destination_value(destination: Destination) -> Value {
     match destination {
         Destination::Place(place) => Value::Place(place),
         Destination::Register(register) => Value::Register(register),
-    }
-}
-
-/// Whether a lowered handler body leaves through a `return`, at any depth a handler can nest one.
-fn returns_from_handler(statement: &Statement) -> bool {
-    match statement {
-        Statement::Return(_) => true,
-        Statement::Timed { body, .. } => body.iter().any(returns_from_handler),
-        _ => false,
     }
 }
 
