@@ -535,3 +535,27 @@ fn a_compound_bank_select_cannot_be_folded_and_warns() {
         "rasterc cannot see this value here, so bits 6 and 7 are unknown"
     );
 }
+
+#[test]
+fn reading_a_write_only_register_is_refused() {
+    let errors = lower_errors("main {\n    var m: u8 = ppu.mask\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "`ppu.mask` cannot be read");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$2001 is a write-only port")
+    );
+    assert_eq!(
+        errors[0].notes,
+        [
+            "reading $2001 returns whatever was last on the PPU's data bus,\nnot the last value written",
+            "keep what you wrote in a variable of your own\nand write the whole value",
+        ]
+    );
+    assert_eq!(errors[0].refusal, Refusal::Rejected);
+    // `var m: u8 = ppu.mask` — line 2 begins at byte 7, and `ppu.mask` is
+    // sixteen characters further along.
+    assert_eq!(errors[0].span.start, 23);
+    assert_eq!(errors[0].span.end, 31);
+}

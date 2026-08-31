@@ -1,3 +1,4 @@
+use raster_diag::Severity;
 use rasterc::compile_source;
 
 mod common;
@@ -311,4 +312,23 @@ fn a_link_failure_still_reports_its_warnings() {
         diagnostics[1].message,
         "the program does not fit the MMC3 fixed bank"
     );
+}
+
+#[test]
+fn a_write_only_register_read_renders_its_own_label_and_notes() {
+    let diagnostics = compile_source("main {\n    var m: u8 = ppu.mask\n}\n")
+        .expect_err("a read of $2001 is refused");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].message, "`ppu.mask` cannot be read");
+    // The label is the refusal's own, not a mirror of the message — which is
+    // the whole reason lowering's errors no longer go through `spanned`.
+    assert_eq!(diagnostics[0].label, "$2001 is a write-only port");
+    assert_eq!(diagnostics[0].notes.len(), 2);
+    // `Refusal::Rejected` earns no note, so `noted` added nothing.
+    assert!(!diagnostics[0]
+        .notes
+        .iter()
+        .any(|n| n.contains("this release compiles")));
 }
