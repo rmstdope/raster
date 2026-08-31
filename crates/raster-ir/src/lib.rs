@@ -309,9 +309,11 @@ fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
             message: "rasterc cannot tell whether this bank select changes the mapping mode"
                 .to_owned(),
             label: "rasterc cannot see this value here, so bits 6 and 7 are unknown".to_owned(),
-            notes: vec!["bit 6 is PRG mode and bit 7 is CHR A12 inversion; keeping\n\
+            notes: vec![
+                "bit 6 is PRG mode and bit 7 is CHR A12 inversion; keeping\n\
                          both clear keeps the map reset chose"
-                .to_owned()],
+                    .to_owned(),
+            ],
             span,
         });
     };

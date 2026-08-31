@@ -62,7 +62,11 @@ pub fn diagnostics(name: &str, source: &str, diagnostics: &[Diagnostic]) -> Stri
     let counted = if warnings == 0 {
         plural(errors, "error")
     } else {
-        format!("{}, {}", plural(errors, "error"), plural(warnings, "warning"))
+        format!(
+            "{}, {}",
+            plural(errors, "error"),
+            plural(warnings, "warning")
+        )
     };
     rendered.push_str(&format!("error: could not compile {name} ({counted})\n"));
     rendered

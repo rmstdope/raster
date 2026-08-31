@@ -441,8 +441,7 @@ fn a_bank_select_rasterc_cannot_fold_is_a_warning() {
             "for {source:?}"
         );
         assert_eq!(
-            warning.label,
-            "rasterc cannot see this value here, so bits 6 and 7 are unknown",
+            warning.label, "rasterc cannot see this value here, so bits 6 and 7 are unknown",
             "for {source:?}"
         );
         assert_eq!(
