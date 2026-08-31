@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use raster_sema::TypedProgram;
 use raster_syntax::{
-    Block, CycleBound, Declaration, Expression as SyntaxExpression, Function as SyntaxFunction,
-    Item, Keyword, Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement,
-    Type, Wait,
+    Block, CycleBound, Declaration, Expression as SyntaxExpression, Frame as SyntaxFrame,
+    FrameEvent as SyntaxFrameEvent, FramePosition, Function as SyntaxFunction, Item, Keyword,
+    Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement, Type, Wait,
 };
 pub use raster_timing::CycleConstraint;
 
@@ -216,12 +216,42 @@ pub struct Main {
     pub span: Span,
 }
 
+/// The first scanline of the NTSC visible picture. A timed frame schedules work on the visible
+/// picture only: everything else is vblank, post-render or pre-render, where a raster effect has
+/// nothing to change.
+pub const FIRST_VISIBLE_SCANLINE: u32 = 0;
+/// The last scanline of the NTSC visible picture — spec Appendix A.
+pub const LAST_VISIBLE_SCANLINE: u32 = 239;
+
+/// A `frame ... using timed` schedule.
+///
+/// Every `every N scanlines` range is already expanded into one event per occurrence and the whole
+/// schedule is sorted by scanline, so codegen walks it forwards and never has to reason about
+/// source order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Frame {
+    pub name: String,
+    pub events: Vec<FrameEvent>,
+    pub span: Span,
+}
+
+/// One scheduled handler, and the visible scanline it runs on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameEvent {
+    pub scanline: u32,
+    pub body: Vec<Statement>,
+    /// The event in the source, which is what a budget diagnostic about this handler underlines.
+    pub span: Span,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Program {
     pub places: Vec<PlaceDefinition>,
     pub global_initializers: Vec<Statement>,
     pub functions: Vec<Function>,
     pub main: Option<Main>,
+    /// The one `frame` the program declares, if it declares one.
+    pub frame: Option<Frame>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -390,10 +420,128 @@ impl Lowerer {
                 }
                 Item::Target(_) => self.error(item.span, "`target` blocks are not supported yet"),
                 Item::Import(_) => self.error(item.span, "`import` is not supported yet"),
-                Item::Frame(_) => self.error(item.span, "`frame` blocks are not supported yet"),
+                Item::Frame(frame) => self.lower_frame(frame, item.span),
                 Item::Other(_) => self.error(item.span, "this top-level item is not supported"),
             }
         }
+    }
+
+    /// Lower a `frame ... using timed` into a sorted schedule of visible-scanline handlers.
+    ///
+    /// Only the shape codegen can realise reaches the IR: one frame, the `timed` strategy, and
+    /// events on the visible picture. Everything else is refused here, with the span of the part
+    /// that cannot be built, rather than left for codegen to discover with nothing to point at.
+    fn lower_frame(&mut self, frame: &SyntaxFrame, span: Span) {
+        if self.program.frame.is_some() {
+            self.error(span, "only one `frame` is supported yet");
+            return;
+        }
+        // An omitted strategy is the compiler's to choose (spec section 7.1), and `timed` is the
+        // only one this release can lower, so it is what an omitted clause means.
+        if let Some(strategy) = &frame.strategy {
+            if strategy.value != "timed" {
+                self.error(
+                    strategy.span,
+                    format!("`using {}` is not supported yet", strategy.value),
+                );
+                return;
+            }
+        }
+
+        let mut events = Vec::new();
+        for event in &frame.events {
+            match &event.value {
+                SyntaxFrameEvent::At { position, body } => match position {
+                    FramePosition::Vblank(span) => {
+                        self.error(*span, "`at vblank` is not supported yet");
+                    }
+                    FramePosition::Scanline(value) => {
+                        if let Some(scanline) = self.visible_scanline(value) {
+                            let body = self.lower_frame_body(body);
+                            events.push(FrameEvent {
+                                scanline,
+                                body,
+                                span: event.span,
+                            });
+                        }
+                    }
+                },
+                SyntaxFrameEvent::Every {
+                    interval,
+                    from,
+                    to,
+                    body,
+                } => {
+                    // All three are evaluated before the schedule is built, so a range with two
+                    // mistakes in it reports both rather than only the first.
+                    let interval_value = self.constant_value_u32(interval);
+                    let from_value = self.visible_scanline(from);
+                    let to_value = self.visible_scanline(to);
+                    let (Some(interval_value), Some(from), Some(to)) =
+                        (interval_value, from_value, to_value)
+                    else {
+                        continue;
+                    };
+                    if interval_value == 0 {
+                        // `analyze` has already refused this; a zero step here would not terminate.
+                        continue;
+                    }
+                    // The body is lowered once and cloned per occurrence. Lowering it again for
+                    // each would allocate a fresh temporary every time, and `every 1 scanlines
+                    // from 0 to 239` would exhaust the zero page on a handler that needs one slot.
+                    let body = self.lower_frame_body(body);
+                    let mut scanline = from;
+                    while scanline <= to {
+                        events.push(FrameEvent {
+                            scanline,
+                            body: body.clone(),
+                            span: event.span,
+                        });
+                        scanline += interval_value;
+                    }
+                }
+            }
+        }
+
+        events.sort_by_key(|event| event.scanline);
+        for pair in events.windows(2) {
+            if pair[0].scanline == pair[1].scanline {
+                self.error(
+                    pair[1].span,
+                    format!("two frame events share scanline {}", pair[1].scanline),
+                );
+            }
+        }
+
+        self.program.frame = Some(Frame {
+            name: frame.name.value.clone(),
+            events,
+            span,
+        });
+    }
+
+    /// A constant scanline that falls on the visible picture, or nothing and a diagnostic.
+    fn visible_scanline(&mut self, value: &Spanned<SyntaxExpression>) -> Option<u32> {
+        let scanline = self.constant_value_u32(value)?;
+        if !(FIRST_VISIBLE_SCANLINE..=LAST_VISIBLE_SCANLINE).contains(&scanline) {
+            self.error(
+                value.span,
+                format!(
+                    "a frame event must fall on a visible scanline, \
+                     {FIRST_VISIBLE_SCANLINE} to {LAST_VISIBLE_SCANLINE}"
+                ),
+            );
+            return None;
+        }
+        Some(scanline)
+    }
+
+    /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
+    fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
+        self.enter_scope();
+        let (statements, _) = self.lower_statements(body);
+        self.leave_scope();
+        statements
     }
 
     fn lower_top_level_declaration(&mut self, declaration: &Declaration) {

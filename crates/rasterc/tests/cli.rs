@@ -337,11 +337,11 @@ fn reports_several_errors_separated_by_a_blank_line_and_a_count() {
         stderr,
         format!(
             concat!(
-                "error: `frame` blocks are not supported yet\n",
-                " --> {path}:1:1\n",
+                "error: `at vblank` is not supported yet\n",
+                " --> {path}:1:20\n",
                 "  |\n",
                 "1 | frame display {{ at vblank {{}} }}\n",
-                "  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `frame` blocks are not supported yet\n",
+                "  |                    ^^^^^^ `at vblank` is not supported yet\n",
                 "  = note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
                 "          arithmetic and `ppu.*` / `mmc3.*` register writes\n",
                 "\n",
