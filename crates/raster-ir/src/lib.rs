@@ -463,8 +463,8 @@ impl Lowerer {
             self.bind(&parameter.name.value, Binding::Place(place));
             parameters.push(place);
         }
-        let statements = self.lower_statements(&function.body);
-        if function_returns_u8(function) && !self.block_always_returns(&function.body) {
+        let (statements, always_returns) = self.lower_statements(&function.body);
+        if function_returns_u8(function) && !always_returns {
             self.error(
                 function.name.span,
                 "u8-returning functions cannot fall through without returning",
@@ -485,7 +485,7 @@ impl Lowerer {
             return;
         };
         self.enter_scope();
-        let statements = self.lower_statements(block);
+        let (statements, _) = self.lower_statements(block);
         self.leave_scope();
         self.program.main = Some(Main {
             label,
@@ -495,34 +495,41 @@ impl Lowerer {
         });
     }
 
-    fn lower_statements(&mut self, block: &Block) -> Vec<Statement> {
+    fn lower_statements(&mut self, block: &Block) -> (Vec<Statement>, bool) {
         let mut statements = Vec::new();
+        let mut always_returns = false;
         for statement in &block.statements {
-            self.lower_statement(statement, &mut statements);
+            always_returns |= self.lower_statement(statement, &mut statements);
         }
-        statements
+        (statements, always_returns)
     }
 
     fn lower_statement(
         &mut self,
         statement: &Spanned<SyntaxStatement>,
         output: &mut Vec<Statement>,
-    ) {
+    ) -> bool {
         match &statement.value {
             SyntaxStatement::Declaration(declaration) => {
-                self.lower_local_declaration(declaration, output)
+                self.lower_local_declaration(declaration, output);
+                false
             }
             SyntaxStatement::Block(block) => {
                 self.enter_scope();
-                output.extend(self.lower_statements(block));
+                let (statements, always_returns) = self.lower_statements(block);
+                output.extend(statements);
                 self.leave_scope();
+                always_returns
             }
             SyntaxStatement::If {
                 condition,
                 then_body,
                 else_body,
             } => self.lower_if(condition, then_body, else_body.as_ref(), output),
-            SyntaxStatement::While { condition, body } => self.lower_while(condition, body, output),
+            SyntaxStatement::While { condition, body } => {
+                self.lower_while(condition, body, output);
+                false
+            }
             SyntaxStatement::For {
                 binding,
                 range,
@@ -534,32 +541,40 @@ impl Lowerer {
                 self.enter_scope();
                 let _ = self.lower_statements(block);
                 self.leave_scope();
+                false
             }
             SyntaxStatement::Cycles { body, .. } => {
                 self.error(statement.span, "timing blocks are not supported");
                 self.enter_scope();
                 let _ = self.lower_statements(body);
                 self.leave_scope();
+                false
             }
             SyntaxStatement::Wait(_) => {
-                self.error(statement.span, "wait statements are not supported")
+                self.error(statement.span, "wait statements are not supported");
+                false
             }
             SyntaxStatement::Sync(_) => {
-                self.error(statement.span, "sync statements are not supported")
+                self.error(statement.span, "sync statements are not supported");
+                false
             }
             SyntaxStatement::Break => {
-                self.error(statement.span, "break statements are not supported")
+                self.error(statement.span, "break statements are not supported");
+                false
             }
             SyntaxStatement::Continue => {
-                self.error(statement.span, "continue statements are not supported")
+                self.error(statement.span, "continue statements are not supported");
+                false
             }
             SyntaxStatement::Return(value) => {
                 output.push(Statement::Return(
                     value.as_ref().map(|value| self.lower_value(value)),
                 ));
+                true
             }
             SyntaxStatement::Expression(expression) => {
-                self.lower_expression_statement(expression, output)
+                self.lower_expression_statement(expression, output);
+                false
             }
         }
     }
@@ -622,7 +637,7 @@ impl Lowerer {
         then_body: &Block,
         else_body: Option<&Block>,
         output: &mut Vec<Statement>,
-    ) {
+    ) -> bool {
         let condition = self.lower_condition(condition);
         let otherwise = self.fresh_label();
         output.push(Statement::Branch {
@@ -630,18 +645,22 @@ impl Lowerer {
             if_false: otherwise,
         });
         self.enter_scope();
-        output.extend(self.lower_statements(then_body));
+        let (then_statements, then_always_returns) = self.lower_statements(then_body);
+        output.extend(then_statements);
         self.leave_scope();
         if let Some(else_body) = else_body {
             let end = self.fresh_label();
             output.push(Statement::Jump { target: end });
             output.push(Statement::Label(otherwise));
             self.enter_scope();
-            output.extend(self.lower_statements(else_body));
+            let (else_statements, else_always_returns) = self.lower_statements(else_body);
+            output.extend(else_statements);
             self.leave_scope();
             output.push(Statement::Label(end));
+            then_always_returns && else_always_returns
         } else {
             output.push(Statement::Label(otherwise));
+            false
         }
     }
 
@@ -659,7 +678,8 @@ impl Lowerer {
             if_false: end,
         });
         self.enter_scope();
-        output.extend(self.lower_statements(body));
+        let (body_statements, _) = self.lower_statements(body);
+        output.extend(body_statements);
         self.leave_scope();
         output.push(Statement::Jump { target: start });
         output.push(Statement::Label(end));
@@ -672,16 +692,16 @@ impl Lowerer {
         step: Option<&Spanned<SyntaxExpression>>,
         body: &Block,
         output: &mut Vec<Statement>,
-    ) {
+    ) -> bool {
         let SyntaxExpression::Range { start, end } = &range.value else {
             self.error(range.span, "for ranges must be compile-time constants");
-            return;
+            return false;
         };
         let Some(start) = self.constant_value(start) else {
-            return;
+            return false;
         };
         let Some(end) = self.constant_value(end) else {
-            return;
+            return false;
         };
         let step_span = step.map(|step| step.span).unwrap_or(range.span);
         let step = step.and_then(|step| self.constant_value(step)).unwrap_or(1);
@@ -690,7 +710,7 @@ impl Lowerer {
                 range.span,
                 "for ranges must advance through a finite u8 range",
             );
-            return;
+            return false;
         }
         let last_counter = u16::from(start)
             + ((u16::from(end) - 1 - u16::from(start)) / u16::from(step)) * u16::from(step);
@@ -699,7 +719,7 @@ impl Lowerer {
                 step_span,
                 "for step would overflow before the range terminates",
             );
-            return;
+            return false;
         }
 
         self.enter_scope();
@@ -722,7 +742,8 @@ impl Lowerer {
             ),
             if_false: loop_end,
         });
-        output.extend(self.lower_statements(body));
+        let (body_statements, body_always_returns) = self.lower_statements(body);
+        output.extend(body_statements);
         output.push(Statement::Assign {
             destination: Destination::Place(counter),
             value: self.binary(
@@ -735,6 +756,7 @@ impl Lowerer {
         output.push(Statement::Jump { target: loop_start });
         output.push(Statement::Label(loop_end));
         self.leave_scope();
+        body_always_returns
     }
 
     fn lower_expression_statement(
@@ -1153,100 +1175,6 @@ impl Lowerer {
 
     fn leave_scope(&mut self) {
         let _ = self.scopes.pop();
-    }
-
-    fn block_always_returns(&self, block: &Block) -> bool {
-        block
-            .statements
-            .iter()
-            .any(|statement| self.statement_always_returns(&statement.value))
-    }
-
-    fn statement_always_returns(&self, statement: &SyntaxStatement) -> bool {
-        match statement {
-            SyntaxStatement::Return(_) => true,
-            SyntaxStatement::Block(block) => self.block_always_returns(block),
-            SyntaxStatement::If {
-                then_body,
-                else_body: Some(else_body),
-                ..
-            } => self.block_always_returns(then_body) && self.block_always_returns(else_body),
-            SyntaxStatement::For {
-                range, step, body, ..
-            } => self.for_always_returns(range, step.as_ref(), body),
-            _ => false,
-        }
-    }
-
-    fn for_always_returns(
-        &self,
-        range: &Spanned<SyntaxExpression>,
-        step: Option<&Spanned<SyntaxExpression>>,
-        body: &Block,
-    ) -> bool {
-        let SyntaxExpression::Range { start, end } = &range.value else {
-            return false;
-        };
-        let Some(start) = self.static_constant_value(start) else {
-            return false;
-        };
-        let Some(end) = self.static_constant_value(end) else {
-            return false;
-        };
-        let step = match step {
-            Some(step) => {
-                let Some(step) = self.static_constant_value(step) else {
-                    return false;
-                };
-                step
-            }
-            None => 1,
-        };
-        if start >= end || step == 0 {
-            return false;
-        }
-        let last_counter = u16::from(start)
-            + ((u16::from(end) - 1 - u16::from(start)) / u16::from(step)) * u16::from(step);
-        last_counter + u16::from(step) <= u16::from(u8::MAX) && self.block_always_returns(body)
-    }
-
-    fn static_constant_value(&self, expression: &Spanned<SyntaxExpression>) -> Option<u8> {
-        to_u8(self.static_constant_value_u32(expression)?)
-    }
-
-    fn static_constant_value_u32(&self, expression: &Spanned<SyntaxExpression>) -> Option<u32> {
-        match &expression.value {
-            SyntaxExpression::Number(number) => parse_number(number),
-            SyntaxExpression::Name(name) => match self.lookup(&name.value) {
-                Some(Binding::Constant(value)) => Some(u32::from(value)),
-                _ => None,
-            },
-            SyntaxExpression::Prefix { operator, operand } if operator.value == Operator::Tilde => {
-                self.static_constant_value_u32(operand).map(|value| !value)
-            }
-            SyntaxExpression::Infix {
-                left,
-                operator,
-                right,
-            } => {
-                let left = self.static_constant_value_u32(left)?;
-                let right = self.static_constant_value_u32(right)?;
-                match operator.value {
-                    Operator::Plus => left.checked_add(right),
-                    Operator::Minus => left.checked_sub(right),
-                    Operator::Star => left.checked_mul(right),
-                    Operator::Slash if right != 0 => left.checked_div(right),
-                    Operator::Percent if right != 0 => left.checked_rem(right),
-                    Operator::Ampersand => Some(left & right),
-                    Operator::Pipe => Some(left | right),
-                    Operator::Caret => Some(left ^ right),
-                    Operator::ShiftLeft => left.checked_shl(right),
-                    Operator::ShiftRight => left.checked_shr(right),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
     }
 
     fn bind(&mut self, name: &str, binding: Binding) {

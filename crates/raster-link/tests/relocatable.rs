@@ -80,6 +80,36 @@ fn resolves_entry_labels_into_mmc3_vectors() {
 }
 
 #[test]
+fn rejects_entry_labels_at_the_vector_table() {
+    let entry = Label(8);
+    let program = RelocatableProgram {
+        items: (0..(MMC3_FIXED_BANK_SIZE - 6))
+            .map(|_| FixedBankItem::Instruction {
+                instruction: instruction(0xea, Implied),
+                relocation: None,
+            })
+            .chain(std::iter::once(FixedBankItem::Label(entry)))
+            .collect(),
+    };
+
+    assert_eq!(
+        link_mmc3_ines(
+            &program,
+            EntryPoints {
+                nmi: entry,
+                reset: entry,
+                irq: entry,
+            },
+            true,
+        ),
+        Err(LinkError::EntryPointOutsideCode {
+            vector: "nmi",
+            address: 0xfffa,
+        })
+    );
+}
+
+#[test]
 fn reports_relocation_and_assembly_errors() {
     let duplicate = Label(1);
     assert_eq!(

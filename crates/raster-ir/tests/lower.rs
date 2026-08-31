@@ -164,10 +164,34 @@ fn rejects_u8_functions_that_can_fall_through() {
         "#,
     );
 
+    lower_source(
+        r#"
+            fn scoped_loop_value() -> u8 {
+                {
+                    const LIMIT: u8 = 1
+                    for index in 0..LIMIT { return 1 }
+                }
+            }
+            main {}
+        "#,
+    );
+
     let errors = lower_errors(
         r#"
             fn value() -> u8 {
                 for index in 0..1 {}
+            }
+            main {}
+        "#,
+    );
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("fall through")));
+
+    let errors = lower_errors(
+        r#"
+            fn value(limit: u8) -> u8 {
+                while limit != 0 { return 1 }
             }
             main {}
         "#,
