@@ -1,0 +1,14 @@
+// The delay from `delay.raster`, bracketed so it can be measured. A delay carries no interrupt
+// masking of its own, so the window runs from the `PLP` closing the first region to the `PHP`
+// opening the second. Neither region writes a PPU register, so neither needs `sync exact`:
+// nothing here is about where on the screen the cycles are spent.
+main {
+    var value: u8 = 0
+    cycles(?) before {
+        value = 1
+    }
+    wait cycles(1000)
+    cycles(?) after {
+        value = 2
+    }
+}
