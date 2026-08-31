@@ -397,7 +397,7 @@ fn instructions(source: &str) -> Vec<raster_6502::Instruction> {
         .iter()
         .filter_map(|item| match item {
             FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
-            FixedBankItem::Label(_) => None,
+            FixedBankItem::Label(_) | FixedBankItem::Data(_) => None,
         })
         .collect()
 }
@@ -489,7 +489,7 @@ fn a_timed_frame_delays_from_the_origin_to_each_handlers_scanline() {
         .iter()
         .filter_map(|item| match item {
             FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
-            FixedBankItem::Label(_) => None,
+            FixedBankItem::Label(_) | FixedBankItem::Data(_) => None,
         })
         .collect();
 
