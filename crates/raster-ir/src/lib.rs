@@ -9,8 +9,8 @@ use raster_syntax::{
 };
 pub use raster_timing::CycleConstraint;
 use raster_timing::{
-    timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState,
-    TimedFrameNmi, NMI_CYCLES, PPU_CTRL_NMI,
+    mask_enables_rendering, timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError,
+    PpuConfiguration, RegisterState, TimedFrameNmi, NMI_CYCLES, PPU_CTRL_NMI,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1095,6 +1095,16 @@ fn is_ppu_status_member(expression: &SyntaxExpression) -> bool {
         if is_ppu_status(&base.value, &member.value))
 }
 
+/// Why a mask that clears both rendering bits is fatal under `using irq`, said in the refusal.
+const RENDERING_OFF_STOPS_THE_CHAIN: &str =
+    "the MMC3 counter clocks on PPU fetches, so rendering off stops\n\
+     the chain, and no handler runs to start it again";
+
+/// What to write instead. `using timed` counts cycles and needs no counter, so it may blank freely.
+const BLANK_WITH_A_TIMED_FRAME: &str =
+    "use `using timed` if the frame needs to blank the picture\n\
+                                        part-way down";
+
 /// Whether this `Member` expression's base and member spell `ppu.status`.
 fn is_ppu_status(base: &SyntaxExpression, member: &str) -> bool {
     matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") && member == "status"
@@ -1680,6 +1690,49 @@ impl Lowerer {
         let span = frame.strategy_span;
         if let Err(error) = validate_mmc3_irq_frame(&self.ppu_configuration()) {
             self.error(span, mmc3_irq_message(error));
+            return;
+        }
+        self.check_irq_handler_masks();
+    }
+
+    /// Refuse a `using irq` handler that turns rendering off.
+    ///
+    /// Only reached for an `irq` frame whose opening configuration is already proven good, so
+    /// everything found here is a hazard the program creates after the counter is running.
+    ///
+    /// The events are walked rather than the source, because lowering has already folded constants:
+    /// `const DARK = $00` then `ppu.mask = DARK` arrives here as `Value::Constant(0)` and is caught,
+    /// where a walk of the syntax would see a name. The price is that the diagnostics underline the
+    /// event rather than the store, since `Statement::Assign` carries no span - agreed with the
+    /// navigator, and the labels quote the store instead.
+    fn check_irq_handler_masks(&mut self) {
+        let Some(frame) = &self.program.frame else {
+            return;
+        };
+        let mut scanned: Vec<Span> = Vec::new();
+        let mut blanking: Vec<(Span, u8)> = Vec::new();
+        for event in &frame.events {
+            // An `every` body is lowered once and cloned per occurrence, so fourteen events can
+            // share one span and one body. Judging each of them would print one mistake fourteen
+            // times.
+            if scanned.contains(&event.span) {
+                continue;
+            }
+            scanned.push(event.span);
+            if let Some(value) = first_blanking_mask(&event.body) {
+                blanking.push((event.span, value));
+            }
+        }
+        for (span, value) in blanking {
+            self.refuse_with(
+                span,
+                "an `irq` handler cannot turn rendering off",
+                format!("`ppu.mask = ${value:02X}` clears both rendering bits"),
+                vec![
+                    RENDERING_OFF_STOPS_THE_CHAIN.to_owned(),
+                    BLANK_WITH_A_TIMED_FRAME.to_owned(),
+                ],
+            );
         }
     }
 
@@ -3275,6 +3328,28 @@ fn comparison_operator(operator: Operator) -> Option<Comparison> {
     }
 }
 
+/// The first constant `ppu.mask` in `statements` that clears both rendering bits.
+///
+/// The *first*, not every one: a handler that blanks the screen is one mistake, and reporting a
+/// second store under identical carets says nothing the first did not. Agreed with the navigator.
+fn first_blanking_mask(statements: &[Statement]) -> Option<u8> {
+    for statement in statements {
+        match statement {
+            Statement::Assign {
+                destination: Destination::Register(Register::PpuMask),
+                value: Value::Constant(value),
+            } if !mask_enables_rendering(*value) => return Some(*value),
+            Statement::Timed { body, .. } => {
+                if let Some(value) = first_blanking_mask(body) {
+                    return Some(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Record every store to `ppu.ctrl` and `ppu.mask` in `statements`, following calls.
 ///
 /// `visiting` is the call stack: `reject_recursive_calls` has already refused a recursive program,
@@ -3286,6 +3361,7 @@ fn comparison_operator(operator: Operator) -> Option<Comparison> {
 /// *textually* last store instead made `if c { mask = $1e } else { mask = $00 }` and the same two
 /// arms swapped disagree with each other, and let the second of them compile a ROM that turns
 /// rendering off on a path the check never looked at.
+
 fn collect_ppu_stores(
     statements: &[Statement],
     functions: &BTreeMap<Label, &Function>,

@@ -200,6 +200,40 @@ fn irq_frame_rejects_a_schedule_the_ppu_would_never_clock() {
     );
 }
 
+/// A handler that clears both rendering bits stops the counter that runs the chain, and after
+/// `main` halts there is no code left to start it again - so the frame shows one split and then
+/// freezes for ever. Refused at the store, in the words the author reads.
+#[test]
+fn an_irq_handler_that_turns_rendering_off_is_refused() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = $00 }\n}\n";
+    let diagnostics =
+        compile_source(source).expect_err("a handler that blanks the screen stops the chain");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler cannot turn rendering off"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "`ppu.mask = $00` clears both rendering bits"
+    );
+    assert_eq!(
+        diagnostics[0].notes,
+        [
+            "the MMC3 counter clocks on PPU fetches, so rendering off stops\n\
+             the chain, and no handler runs to start it again",
+            "use `using timed` if the frame needs to blank the picture\n\
+             part-way down",
+        ]
+    );
+    assert!(
+        diagnostics[0].span.is_some(),
+        "the diagnostic is source-spanned"
+    );
+}
+
 /// Rendering one half is rendering: the sprite pattern fetches happen either way, so a
 /// background-only split - the commonest MMC3 IRQ program there is - compiles.
 #[test]
