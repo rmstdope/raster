@@ -641,6 +641,14 @@ A compound assignment is refused outright: `ppu.data += 1` reads
 $2007 for you, and there is no way to prime a read that happens
 inside a statement.
 
+`ppu.status` reads back, and reading it changes the PPU. A $2002 read
+clears the vblank flag, and it resets the write latch that $2005 and
+$2006 share, so the next write to either is taken as a first write.
+rasterc warns when a read lands between the two halves of a `ppu.addr`
+or `ppu.scroll` pair, and when it takes the flag a `sync exact` on the
+next line is about to wait for. `sync exact` polls $2002 itself, so it
+breaks a half-written pair in the same way and warns in the same way.
+
 ---
 
 ## 10. Timeline

@@ -679,6 +679,359 @@ enum WriteSite {
     CompoundAssignment(&'static str),
 }
 
+/// Which of the two registers that share the $2005/$2006 write latch left a
+/// pair half written.
+///
+/// Not `Register`: only these two can open a pair, and a match over all
+/// sixteen would carry fourteen arms nobody can reach.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LatchPair {
+    Address,
+    Scroll,
+}
+
+/// The shared-latch note in `ppu.addr`'s words.
+///
+/// Every note constant here, and the four beside it, is one rendered note split
+/// with Rust's `\`+newline escape, which swallows the newline **and all the
+/// whitespace that follows it**. So the indentation of a continued line is not
+/// part of the string, rustfmt is free to move it, and it has left these six at
+/// three different indents. Do not "align" one to match its neighbour and do
+/// not drop the backslash: the only line breaks the reader sees are the `\n`s
+/// written out, and `crates/rasterc/tests/cli.rs` asserts the rendered output
+/// byte for byte.
+const ADDRESS_SHARED_LATCH_NOTE: &str =
+    "$2005 and $2006 share one write latch, and reading $2002 puts\n\
+     it back to expecting a high byte";
+
+/// What the PPU never sees when an address pair is broken.
+const ADDRESS_LOST_HALF_NOTE: &str =
+    "the PPU never sees the low byte, so it reads and writes at an\n\
+     address you did not ask for";
+
+/// The shared-latch note in `ppu.scroll`'s words. Deliberately not shared with
+/// the `ppu.addr` one: a scroll pair has an X scroll and a Y scroll, not a high
+/// and a low byte, and the navigator chose sharp words per register over one
+/// neutral set for both.
+const SCROLL_SHARED_LATCH_NOTE: &str =
+    "$2005 and $2006 share one write latch, and reading $2002 puts\n\
+     it back to expecting an X scroll";
+
+/// What the PPU never sees when a scroll pair is broken.
+const SCROLL_LOST_HALF_NOTE: &str = "the PPU never sees the Y scroll, so the picture scrolls\n\
+                                     somewhere you did not ask for";
+
+impl LatchPair {
+    /// The register as the author spells it: `ppu.addr` or `ppu.scroll`.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Address => "ppu.addr",
+            Self::Scroll => "ppu.scroll",
+        }
+    }
+
+    /// What the carets say under a `ppu.status` read.
+    const fn read_label(self) -> &'static str {
+        match self {
+            Self::Address => "the `ppu.addr` write below this becomes a second high byte",
+            Self::Scroll => "the `ppu.scroll` write below this becomes a second X scroll",
+        }
+    }
+
+    /// The note explaining the shared latch, in this register's own words.
+    const fn shared_latch_note(self) -> &'static str {
+        match self {
+            Self::Address => ADDRESS_SHARED_LATCH_NOTE,
+            Self::Scroll => SCROLL_SHARED_LATCH_NOTE,
+        }
+    }
+
+    /// The note saying what the PPU never sees, in this register's own words.
+    const fn lost_half_note(self) -> &'static str {
+        match self {
+            Self::Address => ADDRESS_LOST_HALF_NOTE,
+            Self::Scroll => SCROLL_LOST_HALF_NOTE,
+        }
+    }
+}
+
+/// What to do instead, when the author wrote the read.
+const MOVE_THE_READ: &str = "read `ppu.status` above the pair or below it, not inside it";
+
+/// What the carets say when the read is the one `sync exact` makes for you.
+/// There is no `$2002` in the source at all, so the label says where one came
+/// from.
+const SYNC_POLLS_STATUS: &str = "`sync exact` polls $2002, and that resets the latch mid-pair";
+
+/// What to do instead, when the read is the poll `sync exact` compiles to.
+const MOVE_THE_SYNC: &str = "put `sync exact` above the pair or below it, not inside it";
+
+/// Why the vblank flag is gone by the time the sync below looks for it.
+const FLAG_IS_ONCE_A_FRAME: &str =
+    "the flag is set once a frame, and any read of $2002 clears it,\n\
+                                    whoever does the reading";
+
+/// What the sync therefore does instead.
+const SYNC_WAITS_A_FRAME: &str = "`sync exact` therefore waits for the next frame rather than\n\
+                                  this one";
+
+/// What to write instead.
+const SYNC_FIRST: &str = "put `sync exact` first, and read `ppu.status` after it";
+
+/// Who did the reading, which decides the message, the label and the last note.
+#[derive(Clone, Copy)]
+enum LatchBreaker {
+    /// A `ppu.status` read the author wrote.
+    StatusRead,
+    /// The poll `sync exact` compiles to.
+    SyncExact,
+}
+
+/// What one statement does to the shared $2005/$2006 write latch, in its own
+/// right — not counting anything inside a nested block.
+#[derive(Clone, Copy)]
+struct LatchEffect {
+    /// The span of the **first** $2002 read this statement makes. `None` for a
+    /// statement that reads no port.
+    read: Option<Span>,
+    /// The `ppu.addr` or `ppu.scroll` write this statement makes, if it makes
+    /// one. A statement makes at most one, because `lower_expression_statement`
+    /// recognises an assignment only as the whole statement.
+    write: Option<LatchPair>,
+    /// Whether this statement is `sync exact`, whose poll reads $2002 without
+    /// any read appearing in the source.
+    sync: bool,
+    /// Whether rasterc cannot see what this statement does to the latch: it
+    /// contains a nested block, or a call whose callee rasterc does not follow.
+    opaque: bool,
+}
+
+/// Classify one statement. Purely syntactic and side-effect free: it runs
+/// before the statement is lowered, so it must report no error and touch no
+/// state. Mirrors `ppu_data_reads` arm for arm.
+fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
+    match &statement.value {
+        SyntaxStatement::Declaration(declaration) => LatchEffect {
+            read: declaration
+                .initializer
+                .as_ref()
+                .and_then(ppu_status_read_in),
+            write: None,
+            sync: false,
+            opaque: declaration.initializer.as_ref().is_some_and(contains_call),
+        },
+        SyntaxStatement::Expression(expression) => LatchEffect {
+            read: ppu_status_read_in(expression),
+            write: latch_write_in(expression),
+            sync: false,
+            opaque: contains_call(expression),
+        },
+        SyntaxStatement::Return(Some(expression)) => LatchEffect {
+            read: ppu_status_read_in(expression),
+            write: None,
+            sync: false,
+            opaque: contains_call(expression),
+        },
+        // The condition is classified because it is evaluated where the
+        // statement sits; the statement is opaque because its body is not, and
+        // a body rasterc did not walk may have written either half itself.
+        SyntaxStatement::If { condition, .. } => LatchEffect {
+            read: ppu_status_read_in(condition),
+            write: None,
+            sync: false,
+            opaque: true,
+        },
+        SyntaxStatement::While { condition, .. } => LatchEffect {
+            read: ppu_status_read_in(condition),
+            write: None,
+            sync: false,
+            opaque: true,
+        },
+        // Classified for completeness rather than for reach, exactly as
+        // `ppu_data_reads` does: `raster-sema` refuses a `for` range or step
+        // that is not a compile-time constant, so neither can hold a read.
+        SyntaxStatement::For { range, step, .. } => LatchEffect {
+            read: ppu_status_read_in(range).or_else(|| step.as_ref().and_then(ppu_status_read_in)),
+            write: None,
+            sync: false,
+            opaque: true,
+        },
+        // Matched on the statement rather than on the identifier:
+        // `raster-sema` already refuses any strategy but `exact`.
+        SyntaxStatement::Sync(_) => LatchEffect {
+            read: None,
+            write: None,
+            sync: true,
+            opaque: false,
+        },
+        SyntaxStatement::Block(_) | SyntaxStatement::Loop(_) | SyntaxStatement::Cycles { .. } => {
+            LatchEffect {
+                read: None,
+                write: None,
+                sync: false,
+                opaque: true,
+            }
+        }
+        // `raster-sema` refuses a `wait cycles` argument that is not a
+        // compile-time constant, so it can hold neither a read nor a call.
+        SyntaxStatement::Wait(_)
+        | SyntaxStatement::Break
+        | SyntaxStatement::Continue
+        | SyntaxStatement::Return(None) => LatchEffect {
+            read: None,
+            write: None,
+            sync: false,
+            opaque: false,
+        },
+    }
+}
+
+/// The span of the first `ppu.status` read in this expression, in source order.
+///
+/// Leftmost wins, so the recursion goes left before right, callee before
+/// arguments, and base before index.
+fn ppu_status_read_in(expression: &Spanned<SyntaxExpression>) -> Option<Span> {
+    match &expression.value {
+        SyntaxExpression::Member { base, member } => {
+            is_ppu_status(&base.value, &member.value).then_some(expression.span)
+        }
+        SyntaxExpression::Prefix { operand, .. } => ppu_status_read_in(operand),
+        SyntaxExpression::Infix {
+            left,
+            operator,
+            right,
+        } => {
+            // A plain `ppu.status = 0` is a write the PPU throws away, which is
+            // raster-xeo's bead and not a read. The four compound assignments
+            // really do emit `LDA $2002` before their store, so the destination
+            // itself is a read there, with the carets on `ppu.status`.
+            let left_read = if assigns(operator.value) && is_ppu_status_member(&left.value) {
+                match operator.value {
+                    Operator::Assign => None,
+                    _ => Some(left.span),
+                }
+            } else {
+                ppu_status_read_in(left)
+            };
+            left_read.or_else(|| ppu_status_read_in(right))
+        }
+        SyntaxExpression::Call { callee, arguments } => {
+            ppu_status_read_in(callee).or_else(|| arguments.iter().find_map(ppu_status_read_in))
+        }
+        SyntaxExpression::Index { base, index } => {
+            ppu_status_read_in(base).or_else(|| ppu_status_read_in(index))
+        }
+        SyntaxExpression::Range { start, end } => {
+            ppu_status_read_in(start).or_else(|| ppu_status_read_in(end))
+        }
+        SyntaxExpression::Name(_)
+        | SyntaxExpression::Number(_)
+        | SyntaxExpression::String(_)
+        | SyntaxExpression::Character(_)
+        | SyntaxExpression::Boolean(_) => None,
+    }
+}
+
+/// The `ppu.addr` or `ppu.scroll` write this expression is, if it is one.
+fn latch_write_in(expression: &Spanned<SyntaxExpression>) -> Option<LatchPair> {
+    let SyntaxExpression::Infix { left, operator, .. } = &expression.value else {
+        return None;
+    };
+    if !assigns(operator.value) {
+        return None;
+    }
+    let SyntaxExpression::Member { base, member } = &left.value else {
+        return None;
+    };
+    latch_pair(&base.value, &member.value)
+}
+
+/// The pair this `Member` expression's base and member open, if any.
+fn latch_pair(base: &SyntaxExpression, member: &str) -> Option<LatchPair> {
+    if !matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") {
+        return None;
+    }
+    match member {
+        "addr" => Some(LatchPair::Address),
+        "scroll" => Some(LatchPair::Scroll),
+        _ => None,
+    }
+}
+
+/// Whether this expression contains a call, whose callee rasterc does not
+/// follow. A called function may write either half of a pair itself, so the
+/// latch state is not knowable past one.
+fn contains_call(expression: &Spanned<SyntaxExpression>) -> bool {
+    match &expression.value {
+        SyntaxExpression::Call { .. } => true,
+        SyntaxExpression::Member { base, .. } => contains_call(base),
+        SyntaxExpression::Prefix { operand, .. } => contains_call(operand),
+        SyntaxExpression::Infix { left, right, .. } => contains_call(left) || contains_call(right),
+        SyntaxExpression::Index { base, index } => contains_call(base) || contains_call(index),
+        SyntaxExpression::Range { start, end } => contains_call(start) || contains_call(end),
+        SyntaxExpression::Name(_)
+        | SyntaxExpression::Number(_)
+        | SyntaxExpression::String(_)
+        | SyntaxExpression::Character(_)
+        | SyntaxExpression::Boolean(_) => false,
+    }
+}
+
+/// Whether this expression is the `ppu.status` member access itself, rather
+/// than something that merely contains one.
+fn is_ppu_status_member(expression: &SyntaxExpression) -> bool {
+    matches!(expression, SyntaxExpression::Member { base, member }
+        if is_ppu_status(&base.value, &member.value))
+}
+
+/// Whether this `Member` expression's base and member spell `ppu.status`.
+fn is_ppu_status(base: &SyntaxExpression, member: &str) -> bool {
+    matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") && member == "status"
+}
+
+/// The warning a `ppu.status` read earns when `sync exact` is the next
+/// statement: the read takes the flag the poll is about to spin on.
+fn stolen_vblank_flag(span: Span) -> LowerWarning {
+    LowerWarning {
+        message: "this `ppu.status` read costs you a frame at the `sync exact` below".to_owned(),
+        label: "reading $2002 clears the vblank flag the poll is waiting for".to_owned(),
+        notes: vec![
+            FLAG_IS_ONCE_A_FRAME.to_owned(),
+            SYNC_WAITS_A_FRAME.to_owned(),
+            SYNC_FIRST.to_owned(),
+        ],
+        span,
+    }
+}
+
+/// The warning a $2002 read earns when a `ppu.addr` or `ppu.scroll` pair is
+/// half written.
+fn half_written_pair(opener: LatchPair, span: Span, by: LatchBreaker) -> LowerWarning {
+    let name = opener.name();
+    let (message, label, move_it) = match by {
+        LatchBreaker::StatusRead => (
+            format!("this `ppu.status` read leaves your `{name}` pair half written"),
+            opener.read_label().to_owned(),
+            MOVE_THE_READ,
+        ),
+        LatchBreaker::SyncExact => (
+            format!("`sync exact` leaves your `{name}` pair half written"),
+            SYNC_POLLS_STATUS.to_owned(),
+            MOVE_THE_SYNC,
+        ),
+    };
+    LowerWarning {
+        message,
+        label,
+        notes: vec![
+            opener.shared_latch_note().to_owned(),
+            opener.lost_half_note().to_owned(),
+            move_it.to_owned(),
+        ],
+        span,
+    }
+}
+
 /// The warning a write to `mmc3.bank_select` earns, if it earns one.
 ///
 /// `None` for a constant with bits 6 and 7 clear. That selects a bank register
@@ -1362,8 +1715,48 @@ impl Lowerer {
         // right has not been lowered yet, so it cannot be observed while
         // lowering.
         let reads: Vec<usize> = block.statements.iter().map(ppu_data_reads).collect();
+        let effects: Vec<LatchEffect> = block.statements.iter().map(latch_effect).collect();
+        // A local, not a field on `Lowerer`: a nested block goes through its
+        // own `lower_statements` call and therefore starts with the latch
+        // closed for free, which is the agreed brace rule.
+        let mut latch: Option<LatchPair> = None;
         let outer = self.ppu_data_read_has_neighbour;
         for (index, statement) in block.statements.iter().enumerate() {
+            let effect = effects[index];
+            // Pushed before the statement is lowered, so the warnings vector
+            // stays in source order: a warning from inside a nested block would
+            // otherwise print ahead of one about the statement containing it.
+            if let Some(opener) = latch {
+                if let Some(span) = effect.read {
+                    self.warnings
+                        .push(half_written_pair(opener, span, LatchBreaker::StatusRead));
+                } else if effect.sync {
+                    self.warnings.push(half_written_pair(
+                        opener,
+                        statement.span,
+                        LatchBreaker::SyncExact,
+                    ));
+                }
+            }
+            // The latch warning is pushed first, so a read that trips both
+            // rules reads in the order the two faults have to be fixed in.
+            if let Some(span) = effect.read {
+                if effects.get(index + 1).is_some_and(|next| next.sync) {
+                    self.warnings.push(stolen_vblank_flag(span));
+                }
+            }
+            // Then the state, in the order the hardware sees it: a statement's
+            // reads happen before its write, because codegen emits the value
+            // and then the store.
+            if effect.read.is_some() || effect.sync {
+                latch = None;
+            }
+            if let Some(pair) = effect.write {
+                latch = if latch.is_some() { None } else { Some(pair) };
+            }
+            if effect.opaque {
+                latch = None;
+            }
             let before = index > 0 && reads[index - 1] > 0;
             let after = reads.get(index + 1).is_some_and(|count| *count > 0);
             self.ppu_data_read_has_neighbour = before || after || reads[index] >= 2;

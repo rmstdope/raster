@@ -1418,3 +1418,364 @@ fn a_ppu_data_read_inside_an_assignment_destination_is_still_a_read() {
 
     assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
 }
+
+#[test]
+fn a_ppu_status_read_inside_an_address_pair_warns() {
+    let source = "main {\n    ppu.addr = $3f\n    var s: u8 = ppu.status\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this `ppu.status` read leaves your `ppu.addr` pair half written"
+    );
+    assert_eq!(
+        warning.label,
+        "the `ppu.addr` write below this becomes a second high byte"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2005 and $2006 share one write latch, and reading $2002 puts\nit back to expecting a high byte",
+            "the PPU never sees the low byte, so it reads and writes at an\naddress you did not ask for",
+            "read `ppu.status` above the pair or below it, not inside it",
+        ]
+    );
+    assert_eq!(line_of(source, warning.span.start), 3);
+}
+
+#[test]
+fn a_ppu_status_read_before_a_complete_pair_is_silent() {
+    let program = lower_source(
+        "main {\n    var s: u8 = ppu.status\n    ppu.addr = $3f\n    ppu.addr = $00\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_ppu_status_read_with_no_pair_open_is_silent() {
+    let program = lower_source("main {\n    ppu.mask = $1e\n    var s: u8 = ppu.status\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+/// What pins the ordering inside one statement: the read is applied to the
+/// latch before the write is, because codegen emits the value and then the
+/// store.
+///
+/// The trailing read is what makes this a pin rather than a description. With
+/// the write applied first, the pair opened on line 2 is still open when line 4
+/// reads $2002, and this correct program warns; with the read applied first,
+/// line 3 closes the pair the first line opened and line 4 is silent. The
+/// two-line fixture the plan named warns under neither order.
+#[test]
+fn a_read_feeding_the_write_that_opens_a_pair_is_silent() {
+    let program = lower_source(
+        "main {\n    ppu.addr = ppu.status\n    ppu.addr = $00\n    var s: u8 = ppu.status\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_ppu_status_read_inside_a_scroll_pair_warns_in_scroll_words() {
+    let source =
+        "main {\n    ppu.scroll = $10\n    var s: u8 = ppu.status\n    ppu.scroll = $20\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this `ppu.status` read leaves your `ppu.scroll` pair half written"
+    );
+    assert_eq!(
+        warning.label,
+        "the `ppu.scroll` write below this becomes a second X scroll"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2005 and $2006 share one write latch, and reading $2002 puts\nit back to expecting an X scroll",
+            "the PPU never sees the Y scroll, so the picture scrolls\nsomewhere you did not ask for",
+            "read `ppu.status` above the pair or below it, not inside it",
+        ]
+    );
+    assert_eq!(line_of(source, warning.span.start), 3);
+}
+
+/// The two registers share one latch, so two writes close a pair whichever
+/// registers they were.
+#[test]
+fn an_address_write_then_a_scroll_write_closes_the_pair() {
+    let program = lower_source(
+        "main {\n    ppu.addr = $3f\n    ppu.scroll = $10\n    var s: u8 = ppu.status\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn sync_exact_inside_an_address_pair_warns() {
+    let source = "main {\n    ppu.addr = $3f\n    sync exact\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "`sync exact` leaves your `ppu.addr` pair half written"
+    );
+    assert_eq!(
+        warning.label,
+        "`sync exact` polls $2002, and that resets the latch mid-pair"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2005 and $2006 share one write latch, and reading $2002 puts\nit back to expecting a high byte",
+            "the PPU never sees the low byte, so it reads and writes at an\naddress you did not ask for",
+            "put `sync exact` above the pair or below it, not inside it",
+        ]
+    );
+    // The carets cover `sync exact` itself, not the lines around it.
+    assert_eq!(line_of(source, warning.span.start), 3);
+    assert_eq!(line_of(source, warning.span.end), 3);
+}
+
+#[test]
+fn sync_exact_outside_a_pair_is_silent() {
+    let program =
+        lower_source("main {\n    ppu.addr = $3f\n    ppu.addr = $00\n    sync exact\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_pair_is_not_tracked_into_a_nested_block() {
+    let program = lower_source(
+        "main {\n    var flag: u8 = 1\n    ppu.addr = $3f\n    if flag > 0 {\n        var s: u8 = ppu.status\n    }\n    ppu.addr = $00\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+/// The latch goes back to closed after a block rasterc cannot see through, so
+/// the read below is silent rather than wrong about a pair that may or may not
+/// still be open.
+#[test]
+fn a_pair_is_not_tracked_across_a_nested_block() {
+    let program = lower_source(
+        "main {\n    var flag: u8 = 1\n    ppu.addr = $3f\n    if flag > 0 {\n        ppu.mask = 0\n    }\n    var s: u8 = ppu.status\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_pair_is_not_tracked_across_a_call() {
+    let program = lower_source(
+        "fn paint() {\n    ppu.mask = $1e\n}\n\nmain {\n    ppu.addr = $3f\n    paint()\n    var s: u8 = ppu.status\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+/// A condition is evaluated where its statement sits, so a poll loop between
+/// the two halves of a pair breaks it like any other read.
+#[test]
+fn a_condition_that_reads_ppu_status_breaks_a_pair() {
+    let source =
+        "main {\n    ppu.addr = $3f\n    while ppu.status < $80 {\n    }\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].message,
+        "this `ppu.status` read leaves your `ppu.addr` pair half written"
+    );
+    // The carets are on the `ppu.status` in the condition, not on the `while`.
+    assert_eq!(line_of(source, program.warnings[0].span.start), 3);
+}
+
+/// The first read is what breaks the pair; the second finds the latch already
+/// back at its first write. The span is asserted rather than only the count,
+/// because the count passes whichever read it lands on.
+#[test]
+fn two_ppu_status_reads_in_one_statement_warn_once_on_the_first() {
+    let source =
+        "main {\n    ppu.addr = $3f\n    var s: u8 = ppu.status + ppu.status\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let span = program.warnings[0].span;
+    assert_eq!(line_of(source, span.start), 3);
+    assert_eq!(
+        &source[span.start as usize..span.end as usize],
+        "ppu.status"
+    );
+    // The first of the two, at column 17, not the second at column 30.
+    assert_eq!(span.start as usize, source.find("ppu.status").unwrap());
+}
+
+/// A compound assignment reads its own destination, so it really does break a
+/// pair. The carets cover the destination, which is the width raster-1t9 chose
+/// for a compound assignment.
+///
+/// Read off the failure rather than off a `Program`: `raster-xeo` merged while
+/// this bead was in review and now refuses a write to `ppu.status` outright, so
+/// this fixture no longer lowers. The classification is still this bead's to
+/// get right — a warning survives a failed lowering, and which statements read
+/// $2002 is not a fact about whether the program compiles.
+#[test]
+fn a_compound_assignment_to_ppu_status_is_a_read() {
+    let source = "main {\n    ppu.addr = $3f\n    ppu.status += 1\n    ppu.addr = $00\n}\n";
+    let failure = lower_failure(source);
+
+    assert_eq!(failure.warnings.len(), 1);
+    assert_eq!(
+        failure.warnings[0].message,
+        "this `ppu.status` read leaves your `ppu.addr` pair half written"
+    );
+    let span = failure.warnings[0].span;
+    assert_eq!(
+        &source[span.start as usize..span.end as usize],
+        "ppu.status"
+    );
+}
+
+/// A plain write is not a read, and this bead must not turn it into one.
+///
+/// `raster-xeo` merged while this bead was in review and now refuses the write
+/// itself, so the fixture fails to lower and the assertion is on the failure's
+/// warnings. That is still exactly the property this bead owns: whatever
+/// `raster-xeo` decides about the store, the latch rule must not add a second
+/// diagnostic claiming a read that never happened.
+#[test]
+fn a_plain_write_to_ppu_status_is_not_a_read() {
+    let failure =
+        lower_failure("main {\n    ppu.addr = $3f\n    ppu.status = 0\n    ppu.addr = $00\n}\n");
+
+    assert!(failure.warnings.is_empty());
+}
+
+#[test]
+fn a_ppu_status_read_directly_before_sync_exact_warns() {
+    let source = "main {\n    var s: u8 = ppu.status\n    sync exact\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this `ppu.status` read costs you a frame at the `sync exact` below"
+    );
+    assert_eq!(
+        warning.label,
+        "reading $2002 clears the vblank flag the poll is waiting for"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "the flag is set once a frame, and any read of $2002 clears it,\nwhoever does the reading",
+            "`sync exact` therefore waits for the next frame rather than\nthis one",
+            "put `sync exact` first, and read `ppu.status` after it",
+        ]
+    );
+    assert_eq!(line_of(source, warning.span.start), 2);
+}
+
+/// The rule looks at the very next statement and no further: a read and a sync
+/// with anything between them is a stale flag either way.
+#[test]
+fn a_ppu_status_read_two_statements_before_sync_exact_is_silent() {
+    let program =
+        lower_source("main {\n    var s: u8 = ppu.status\n    ppu.mask = $1e\n    sync exact\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+/// The loop only exits by consuming a set flag, so the sync below it always
+/// waits a frame.
+#[test]
+fn a_poll_loop_directly_before_sync_exact_warns() {
+    let source = "main {\n    while ppu.status < $80 {\n    }\n    sync exact\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].message,
+        "this `ppu.status` read costs you a frame at the `sync exact` below"
+    );
+    assert_eq!(line_of(source, program.warnings[0].span.start), 2);
+}
+
+/// Two faults whose fixes point in opposite directions — move the read down
+/// past the pair, move it up past the sync — so the author has to see both.
+#[test]
+fn a_read_that_trips_both_rules_warns_twice_with_the_latch_first() {
+    let program =
+        lower_source("main {\n    ppu.addr = $3f\n    var s: u8 = ppu.status\n    sync exact\n}\n");
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        program.warnings[0].message,
+        "this `ppu.status` read leaves your `ppu.addr` pair half written"
+    );
+    assert_eq!(
+        program.warnings[1].message,
+        "this `ppu.status` read costs you a frame at the `sync exact` below"
+    );
+    assert_eq!(program.warnings[0].span, program.warnings[1].span);
+}
+
+/// `sync exact` closes the pair it just broke, exactly as a `ppu.status` read
+/// does: its own poll has already put the latch back to expecting a high byte,
+/// so the read below it is correct and must stay silent.
+///
+/// The pin for the `effect.sync` half of the line that clears the latch. Test
+/// `a_read_that_trips_both_rules_warns_twice_with_the_latch_first` is the same
+/// pin for the `effect.read` half; without this one, dropping `|| effect.sync`
+/// leaves the whole suite green while this program grows a second warning
+/// blaming a read that is right.
+#[test]
+fn a_read_after_a_sync_that_broke_a_pair_is_silent_about_the_read() {
+    let program =
+        lower_source("main {\n    ppu.addr = $3f\n    sync exact\n    var s: u8 = ppu.status\n}\n");
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].message,
+        "`sync exact` leaves your `ppu.addr` pair half written"
+    );
+}
+
+/// The only agreed string combination `half_written_pair` composes that no
+/// other test covers: the `sync exact` message and label with the scroll pair's
+/// two notes.
+#[test]
+fn sync_exact_inside_a_scroll_pair_warns_in_scroll_words() {
+    let program =
+        lower_source("main {\n    ppu.scroll = $10\n    sync exact\n    ppu.scroll = $20\n}\n");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "`sync exact` leaves your `ppu.scroll` pair half written"
+    );
+    assert_eq!(
+        warning.label,
+        "`sync exact` polls $2002, and that resets the latch mid-pair"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2005 and $2006 share one write latch, and reading $2002 puts\nit back to expecting an X scroll",
+            "the PPU never sees the Y scroll, so the picture scrolls\nsomewhere you did not ask for",
+            "put `sync exact` above the pair or below it, not inside it",
+        ]
+    );
+}

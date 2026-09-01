@@ -868,3 +868,43 @@ fn a_register_that_accepts_a_write_still_compiles() {
     assert_eq!(stderr, "");
     assert!(output.exists());
 }
+
+#[test]
+fn a_status_read_inside_an_address_pair_warns_and_still_writes_a_rom() {
+    let directory = Scratch::new("ppustatuslatch");
+    let input = directory.path().join("latch.raster");
+    let output = directory.path().join("latch.nes");
+    fs::write(
+        &input,
+        "main {\n    ppu.addr = $3f\n    var s: u8 = ppu.status\n    ppu.addr = $00\n    ppu.data = $21\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert!(output.exists());
+    // Byte for byte: the caret run under `ppu.status` and the width each note
+    // wraps at are part of what the wording page fixes, and `contains` holds
+    // neither.
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: this `ppu.status` read leaves your `ppu.addr` pair half written\n",
+                " --> {path}:3:17\n",
+                "  |\n",
+                "3 |     var s: u8 = ppu.status\n",
+                "  |                 ^^^^^^^^^^ the `ppu.addr` write below this becomes a second high byte\n",
+                "  = note: $2005 and $2006 share one write latch, and reading $2002 puts\n",
+                "          it back to expecting a high byte\n",
+                "  = note: the PPU never sees the low byte, so it reads and writes at an\n",
+                "          address you did not ask for\n",
+                "  = note: read `ppu.status` above the pair or below it, not inside it\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+    assert!(stdout.ends_with(" warnings  1\n"), "got:\n{stdout}");
+}
