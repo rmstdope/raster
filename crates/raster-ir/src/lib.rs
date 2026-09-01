@@ -691,6 +691,15 @@ enum LatchPair {
 }
 
 /// The shared-latch note in `ppu.addr`'s words.
+///
+/// Every note constant here, and the four beside it, is one rendered note split
+/// with Rust's `\`+newline escape, which swallows the newline **and all the
+/// whitespace that follows it**. So the indentation of a continued line is not
+/// part of the string, rustfmt is free to move it, and it has left these six at
+/// three different indents. Do not "align" one to match its neighbour and do
+/// not drop the backslash: the only line breaks the reader sees are the `\n`s
+/// written out, and `crates/rasterc/tests/cli.rs` asserts the rendered output
+/// byte for byte.
 const ADDRESS_SHARED_LATCH_NOTE: &str =
     "$2005 and $2006 share one write latch, and reading $2002 puts\n\
      it back to expecting a high byte";

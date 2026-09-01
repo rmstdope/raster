@@ -1719,3 +1719,52 @@ fn a_read_that_trips_both_rules_warns_twice_with_the_latch_first() {
     );
     assert_eq!(program.warnings[0].span, program.warnings[1].span);
 }
+
+/// `sync exact` closes the pair it just broke, exactly as a `ppu.status` read
+/// does: its own poll has already put the latch back to expecting a high byte,
+/// so the read below it is correct and must stay silent.
+///
+/// The pin for the `effect.sync` half of the line that clears the latch. Test
+/// `a_read_that_trips_both_rules_warns_twice_with_the_latch_first` is the same
+/// pin for the `effect.read` half; without this one, dropping `|| effect.sync`
+/// leaves the whole suite green while this program grows a second warning
+/// blaming a read that is right.
+#[test]
+fn a_read_after_a_sync_that_broke_a_pair_is_silent_about_the_read() {
+    let program =
+        lower_source("main {\n    ppu.addr = $3f\n    sync exact\n    var s: u8 = ppu.status\n}\n");
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].message,
+        "`sync exact` leaves your `ppu.addr` pair half written"
+    );
+}
+
+/// The only agreed string combination `half_written_pair` composes that no
+/// other test covers: the `sync exact` message and label with the scroll pair's
+/// two notes.
+#[test]
+fn sync_exact_inside_a_scroll_pair_warns_in_scroll_words() {
+    let program =
+        lower_source("main {\n    ppu.scroll = $10\n    sync exact\n    ppu.scroll = $20\n}\n");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "`sync exact` leaves your `ppu.scroll` pair half written"
+    );
+    assert_eq!(
+        warning.label,
+        "`sync exact` polls $2002, and that resets the latch mid-pair"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2005 and $2006 share one write latch, and reading $2002 puts\nit back to expecting an X scroll",
+            "the PPU never sees the Y scroll, so the picture scrolls\nsomewhere you did not ask for",
+            "put `sync exact` above the pair or below it, not inside it",
+        ]
+    );
+}
