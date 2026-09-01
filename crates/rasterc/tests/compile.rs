@@ -234,6 +234,47 @@ fn an_irq_handler_that_turns_rendering_off_is_refused() {
     );
 }
 
+/// One mistake, one error. An `every` body is lowered once and cloned per occurrence, so fourteen
+/// events share one span and one body; two blanking stores in one handler is still one handler that
+/// blanks the screen. Two *different* handlers are two mistakes, because the dedupe is on the span.
+#[test]
+fn a_blanking_irq_handler_is_refused_once_however_often_it_runs() {
+    let repeated = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                    \nframe bars using irq {\n\
+                    \n    every 8 scanlines from 96 to 200 { ppu.mask = $00 }\n}\n";
+    let diagnostics = compile_source(repeated).expect_err("the handler blanks the screen");
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "fourteen occurrences of one body are one mistake, found {diagnostics:?}"
+    );
+
+    let twice = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                 \nframe bars using irq {\n\
+                 \n    at scanline 60 {\n        ppu.mask = $00\n        ppu.mask = $06\n    }\n}\n";
+    let diagnostics = compile_source(twice).expect_err("the handler blanks the screen");
+    assert_eq!(diagnostics.len(), 1, "found {diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler cannot turn rendering off"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "`ppu.mask = $00` clears both rendering bits",
+        "the first blanking store, not the last"
+    );
+
+    let two_handlers = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                        \nframe bars using irq {\n    at scanline 60 { ppu.mask = $00 }\n\
+                        \n    at scanline 120 { ppu.mask = $06 }\n}\n";
+    let diagnostics = compile_source(two_handlers).expect_err("both handlers blank the screen");
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "two handlers are two mistakes, found {diagnostics:?}"
+    );
+}
+
 /// Rendering one half is rendering: the sprite pattern fetches happen either way, so a
 /// background-only split - the commonest MMC3 IRQ program there is - compiles.
 #[test]
