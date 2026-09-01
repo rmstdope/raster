@@ -534,6 +534,19 @@ simple `$2006`/`$2007` sequence; assigning during rendering compiles to the
 scroll-safe variant that restores `$2005`/`$2006` afterwards, and the compiler will
 tell you that the safe version costs more and may not fit hblank.
 
+### 9.4 The reset map is yours after reset
+
+Reset programs all eight MMC3 bank registers: R0-R5 give a flat 8 KiB CHR map
+with pattern table 0 at PPU $0000, and R6/R7 give a linear 32 KiB PRG map with
+your code in the fixed bank at $E000.
+
+Nothing preserves that afterwards. Repointing a window with `mmc3.bank_select`
+and `mmc3.bank_data` is what those registers are for, and compiles silently.
+But bits 6 and 7 of a bank select are PRG mode and CHR A12 inversion, and they
+reinterpret every bank register at once, from whichever select was written
+last — so rasterc warns when it can see one of them set, and warns when it
+cannot see the value at all.
+
 ---
 
 ## 10. Timeline
@@ -700,6 +713,11 @@ error: timed block exceeds its budget
 
 The compiler should always say *what it cost*, *what the budget was*, and *where the
 cycles went*.
+
+A diagnostic is an `error`, which fails the build, or a `warning`, which does
+not. A warning names something that has stopped being true rather than
+something that is forbidden: the build still produces a ROM, and the summary
+counts the warnings it printed.
 
 ---
 

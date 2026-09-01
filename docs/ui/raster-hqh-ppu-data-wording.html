@@ -1,0 +1,78 @@
+<!doctype html>
+<title>raster-hqh — the agreed wording for a ppu.data read</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+  .silent { color:#4a4f61; font-size:.9rem; font-style:italic; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost, .silent { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  }
+</style>
+<main>
+<h1>The agreed wording <h1>Wording A &mdash; name what the author gets</h1>mdash; name what the author gets</h1>
+<p class="sub">The message is about the byte in the variable, not about the port. An author who has never heard of the
+PPU read buffer understands the first line; the notes teach the mechanism afterwards.</p>
+
+<h2>1 &middot; The lone read</h2>
+<div class="term"><span class="w">warning: this `ppu.data` read gives you the byte before the one you asked for</span>
+ <span class="g">--&gt; vram.raster:5:20</span>
+  <span class="g">|</span>
+<span class="g">5 |</span>     var tile: u8 = ppu.data
+  <span class="g">|</span>                    <span class="w">^^^^^^^^</span> nothing next to this read primes the PPU's read buffer
+  <span class="g">= note:</span> $2007 hands back what the previous read fetched, and loads the
+          byte at this address for the next read
+  <span class="g">= note:</span> read `ppu.data` twice in a row, discard the first and keep the
+          second; a palette address, $3F00 to $3FFF, is not buffered and
+          reads back at once</div>
+
+<h2>2 &middot; The compound assignment</h2>
+<div class="term"><span class="e">error: `ppu.data` cannot be the destination of a compound assignment</span>
+  <span class="g">--&gt; vram.raster:12:5</span>
+   <span class="g">|</span>
+<span class="g">12 |</span>     ppu.data += 1
+   <span class="g">|</span>     <span class="e">^^^^^^^^</span> `+=` reads $2007 before it writes, and that read is buffered
+   <span class="g">= note:</span> the byte it would add to is the one at the previous address,
+           not the one at the address you are writing
+   <span class="g">= note:</span> read the byte you want into a variable of your own, add to
+           that, and write the whole value</div>
+
+<h2>3 &middot; The spec, &sect;9.5</h2>
+<div class="src">| `ppu.data` | `$2007` | **allowed, and buffered** |</div>
+<p class="note">plus a paragraph under the table:</p>
+<div class="src">`ppu.data` reads back, but not the byte you just addressed. A $2007
+read hands you the byte the previous read fetched and loads the byte
+at the current address for the next one, so a single read gives you
+the wrong byte and rasterc warns about it. Read it twice in a row —
+discard the first, keep the second — and rasterc is silent. Palette
+addresses, $3F00 to $3FFF, are not buffered and read back at once.
+
+A compound assignment is refused outright: `ppu.data += 1` reads
+$2007 for you, and there is no way to prime a read that happens
+inside a statement.</div>
+</main>

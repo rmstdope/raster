@@ -336,6 +336,7 @@ dependencies = [
 name = "raster-ir"
 version = "0.1.0"
 dependencies = [
+ "raster-diag",
  "raster-sema",
  "raster-syntax",
  "raster-timing",
@@ -355,6 +356,7 @@ dependencies = [
 name = "raster-sema"
 version = "0.1.0"
 dependencies = [
+ "raster-diag",
  "raster-syntax",
 ]
 

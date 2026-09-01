@@ -9,11 +9,15 @@ fn compiles_the_demo_to_the_same_rom_as_m1() {
 
     assert_eq!(rom.image, raster_link::m1_solid_backdrop_rom());
     assert_eq!(rom.code_len, 160);
+    assert_eq!(rom.runtime_len, 132);
+    assert_eq!(rom.code_len - rom.runtime_len, 28);
 }
 
 const SUPPORTED_SUBSET: &str = concat!(
     "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
-    "arithmetic and `ppu.*` / `mmc3.*` register writes"
+    "arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks\n",
+    "with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n",
+    "`frame` of `every ... scanlines` events"
 );
 
 #[test]
@@ -103,14 +107,23 @@ fn a_program_too_large_names_the_bank_it_does_not_fit() {
         "the program does not fit the MMC3 fixed bank"
     );
     assert_eq!(diagnostics[0].span, None);
-    assert_eq!(diagnostics[0].notes.len(), 2);
+    assert_eq!(diagnostics[0].notes.len(), 3);
     assert!(
         diagnostics[0].notes[0].ends_with(" bytes of code, and $E000-$FFFF holds 8186"),
         "unexpected note: {}",
         diagnostics[0].notes[0]
     );
+    // The overshoot depends on what 2000 statements compile to, so the figures
+    // are left to `a_program_too_big_for_the_bank_is_told_how_much_of_its_own_has_to_go`
+    // and only the shape is pinned here.
+    assert!(
+        diagnostics[0].notes[1].starts_with("132 of those are the reset runtime, so ")
+            && diagnostics[0].notes[1].ends_with(" bytes of your own\nhave to go"),
+        "unexpected note: {}",
+        diagnostics[0].notes[1]
+    );
     assert_eq!(
-        diagnostics[0].notes[1],
+        diagnostics[0].notes[2],
         "PRG bank switching is not supported yet, so all code lives\nin the fixed bank"
     );
 }
@@ -455,5 +468,186 @@ fn a_single_event_irq_chain_wraps_onto_itself() {
         u16::from_le_bytes([emitted[21], emitted[25]]),
         handler,
         "the only handler chains to itself"
+    );
+}
+
+#[test]
+fn a_frame_wait_says_what_the_release_can_build() {
+    let diagnostics = compile_source("main {\n    wait vblank\n}\n")
+        .expect_err("frame waits are not in this release");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "only `wait cycles` is supported yet; frame waits arrive with frame scheduling"
+    );
+    assert_eq!(diagnostics[0].notes, [SUPPORTED_SUBSET]);
+}
+
+#[test]
+fn a_string_expression_says_what_the_release_can_build() {
+    let diagnostics = compile_source("main {\n    \"text\"\n}\n")
+        .expect_err("string expressions are not in this release");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message == "string expressions are not supported"
+                && d.notes == [SUPPORTED_SUBSET]),
+        "{diagnostics:?}"
+    );
+}
+
+const TIMED_REGION_COST: &str = concat!(
+    "a timed block is costed as straight-line code; loops, branches\n",
+    "and calls will be admitted once their cost can be measured"
+);
+
+#[test]
+fn a_timed_region_says_why_it_cannot_charge_a_loop() {
+    let diagnostics = compile_source(
+        "var level: u8\nmain {\n    sync exact\n    cycles(20) pad {\n        level = level >> 1\n    }\n}\n",
+    )
+    .expect_err("a shift compiles to a loop");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "a shift inside a timed block compiles to a loop whose cost is not yet proven"
+    );
+    assert_eq!(diagnostics[0].notes, [TIMED_REGION_COST]);
+}
+
+#[test]
+fn a_hardware_wait_inside_a_timed_region_carries_no_note() {
+    let diagnostics = compile_source(
+        "main {\n    sync exact\n    cycles(20) pad {\n        wait vblank\n    }\n}\n",
+    )
+    .expect_err("a vblank wait has no provable cost");
+
+    let waited = diagnostics
+        .iter()
+        .find(|d| d.message == "`wait vblank` has no provable cost inside a timed block")
+        .expect("the vblank wait is refused");
+    assert!(
+        waited.notes.is_empty(),
+        "a wait has no cost to measure ever, so the note would promise nothing: {:?}",
+        waited.notes
+    );
+}
+
+#[test]
+fn a_bank_select_warning_does_not_fail_the_build() {
+    let rom = compile_source("main { mmc3.bank_select = $80 }")
+        .expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1);
+    let warning = &rom.warnings[0];
+    assert_eq!(warning.severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        warning.message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert!(warning.span.is_some());
+}
+
+#[test]
+fn a_failed_build_reports_its_warnings_beside_its_errors() {
+    let diagnostics = compile_source("main {\n    mmc3.bank_select = $80\n    loop {}\n}\n")
+        .expect_err("`loop` is not supported yet");
+
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        diagnostics[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        diagnostics[0].notes,
+        [
+            "reset chose CHR A12 inversion off, so pattern table 0 is at\nPPU $0000; clearing bit 7 keeps that map",
+            "bits 6 and 7 take effect from whichever bank select was\nwritten last, not from the bank data that follows",
+        ]
+    );
+    assert_eq!(diagnostics[1].severity, raster_diag::Severity::Error);
+    assert_eq!(diagnostics[1].message, "`loop` is not supported yet");
+    assert_eq!(diagnostics[1].notes, [SUPPORTED_SUBSET]);
+}
+
+#[test]
+fn a_build_that_fails_after_lowering_still_reports_its_warnings() {
+    // Lowers cleanly and fails in codegen, so the warning has to survive a
+    // stage that is not `lower`. The author who fixes the zero page is the one
+    // who needed the mapping-mode warning.
+    let mut source = String::from("main {\n    mmc3.bank_select = $80\n");
+    for index in 0..300 {
+        source.push_str(&format!("    var v{index}: u8 = 1\n"));
+    }
+    source.push_str("}\n");
+
+    let diagnostics = compile_source(&source).expect_err("the zero page is exhausted");
+
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        diagnostics[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(diagnostics[1].severity, raster_diag::Severity::Error);
+    assert_eq!(
+        diagnostics[1].message,
+        "too many variables for the zero page"
+    );
+}
+
+#[test]
+fn a_link_failure_still_reports_its_warnings() {
+    // Lowers and generates, and overflows the fixed bank at link time — the
+    // other post-lowering arm.
+    let mut source = String::from("main {\n    mmc3.bank_select = $80\n");
+    for _ in 0..3000 {
+        source.push_str("    ppu.mask = 1\n");
+    }
+    source.push_str("}\n");
+
+    let diagnostics = compile_source(&source).expect_err("the fixed bank overflows");
+
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].severity, raster_diag::Severity::Warning);
+    assert_eq!(diagnostics[1].severity, raster_diag::Severity::Error);
+    assert_eq!(
+        diagnostics[1].message,
+        "the program does not fit the MMC3 fixed bank"
+    );
+}
+
+/// The byte count the bank refusal leads with, parsed out of its first note.
+fn reported_size(source: &str) -> usize {
+    let diagnostics = compile_source(source).expect_err("the fixed bank is finite");
+    let note = &diagnostics
+        .iter()
+        .find(|d| d.message == "the program does not fit the MMC3 fixed bank")
+        .expect("the bank refusal")
+        .notes[0];
+    note.split_whitespace().next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn the_refusal_figure_grows_with_the_program_after_the_overflow_point() {
+    // Every `if` lays down a label, and the refusal used to fire at the first one
+    // past the limit - so fifty-nine of these sixty blocks went uncounted and the
+    // author was told to delete far less than they had to.
+    let stores = "    ppu.mask = 1\n".repeat(1700);
+    let plain = format!("main {{\n{stores}}}\n");
+    let branchy = format!(
+        "main {{\n{stores}{}}}\n",
+        "    if 1 == 1 { ppu.mask = 1 }\n".repeat(60)
+    );
+
+    // `saturating_sub`, so a regression that made the branchy program report
+    // *fewer* bytes still fails with the message below rather than with
+    // `attempt to subtract with overflow`.
+    let grew = reported_size(&branchy).saturating_sub(reported_size(&plain));
+    assert!(
+        grew >= 600,
+        "sixty `if` blocks after the overflow point moved the reported size by {grew} bytes"
     );
 }

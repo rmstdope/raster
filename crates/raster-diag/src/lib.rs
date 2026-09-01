@@ -10,8 +10,56 @@ pub struct Span {
     pub end: usize,
 }
 
+/// Why the compiler refused a program, in a form the compiler itself can test.
+///
+/// The wording of a refusal is free to change; this is not. `rasterc` chooses
+/// which note to attach by asking this, so a reworded message cannot silently
+/// stop explaining itself — which is exactly what a `message.ends_with(...)`
+/// test allowed, twice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Refusal {
+    /// The language specification defines this construct and this release does
+    /// not compile it *anywhere*. These carry the list of what the release can
+    /// build instead.
+    NotInThisRelease,
+    /// The construct is fine, and a timed region cannot charge its cost,
+    /// because the region is costed as straight-line code. Only the cost-model
+    /// gaps: a hardware wait has no cost to measure ever, and a placement rule
+    /// is a rule, so both of those are `Rejected` even though their messages
+    /// mention a timed region.
+    TimedRegionCost,
+    /// A mistake in the program, or something Raster does not intend to do.
+    /// Carries no note: the message already says what to do instead, and a
+    /// list of supported constructs beside it would be noise.
+    Rejected,
+}
+
+/// Whether a diagnostic fails the build.
+///
+/// An `Error` refuses the program; a `Warning` names something that has stopped
+/// being true and lets the build finish. This is not `Refusal`: a `Refusal` says
+/// *why* the compiler refused, so every `Refusal` belongs to an error and a
+/// warning carries none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+impl Severity {
+    /// The word `render` prints before the message, and the word `report`
+    /// counts by.
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
+    pub severity: Severity,
     pub message: String,
     /// Where in the source this is about, when there is such a place. Some
     /// failures — a program with no `main`, a program too large for its bank —
@@ -61,6 +109,22 @@ impl SourceFile {
 impl Diagnostic {
     pub fn error(message: impl Into<String>, span: Span, label: impl Into<String>) -> Self {
         Self {
+            severity: Severity::Error,
+            message: message.into(),
+            span: Some(span),
+            label: label.into(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// A diagnostic that does not fail the build.
+    ///
+    /// There is no `warning_without_span`: no warning the compiler emits today
+    /// lacks a span, and a constructor with no caller is a constructor nobody
+    /// has thought about.
+    pub fn warning(message: impl Into<String>, span: Span, label: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Warning,
             message: message.into(),
             span: Some(span),
             label: label.into(),
@@ -78,6 +142,7 @@ impl Diagnostic {
     pub fn without_span(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
+            severity: Severity::Error,
             label: message.clone(),
             message,
             span: None,
@@ -95,7 +160,7 @@ const NOTE_MARKER: &str = " = note: ";
 
 pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
     let Some(Span { start, end }) = diagnostic.span else {
-        let mut rendered = format!("error: {}\n", diagnostic.message);
+        let mut rendered = format!("{}: {}\n", diagnostic.severity.prefix(), diagnostic.message);
         for note in &diagnostic.notes {
             rendered.push_str(&render_note(note, " "));
         }
@@ -132,7 +197,8 @@ pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
 
     let gutter = " ".repeat(line_number.to_string().len());
     let mut rendered = format!(
-        "error: {}\n{gutter}--> {}:{}:{}\n{gutter} |\n{} | {}\n{gutter} | {}{} {}\n",
+        "{}: {}\n{gutter}--> {}:{}:{}\n{gutter} |\n{} | {}\n{gutter} | {}{} {}\n",
+        diagnostic.severity.prefix(),
         diagnostic.message,
         source.name,
         line_number,

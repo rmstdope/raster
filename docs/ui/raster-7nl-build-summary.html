@@ -1,0 +1,128 @@
+<!doctype html>
+<title>raster-7nl &mdash; the build summary's byte split</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:54em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .new { color: var(--cyan); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 1.4rem; font-size:.9rem; color:#4a4f61; max-width:56em; }
+  .nav { font-size:.85rem; color:#666b7a; margin:1.6rem 0 0; }
+  .nav a { color:#3a5fd0; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost, .nav { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    .nav a { color:#7ea0ff; }
+  }
+
+</style>
+<main>
+<h1>The build summary, telling the author which bytes are theirs</h1>
+<p class="sub">Agreed with the navigator while planning raster-7nl. Every figure below is from a real
+build of <code>main</code> at b085e06, not an illustration: the reset runtime is 132 bytes &mdash; a
+131-byte reset prologue at the front of the fixed bank and the interrupt handler&rsquo;s one-byte
+<code>RTI</code> at the back &mdash; and it is the same 132 in every program this compiler builds.</p>
+
+<h2>01 &middot; The demo</h2>
+<p class="note"><code>examples/mvp/demo.raster</code>, five statements. The two new rows sit directly under
+<code>fixed</code>, which is the row they elaborate; <code>entry</code>, <code>cycles</code> and
+<code>warnings</code> keep their order below them.</p>
+<div class="term">$ rasterc examples/mvp/demo.raster
+ Compiled  examples/mvp/demo.raster -&gt; examples/mvp/demo.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 160 of 8186 bytes used
+<span class="new">    yours  28 bytes</span>
+<span class="new">  runtime  132 bytes, the reset sequence around your program</span>
+    entry  reset $E000, nmi $E09F, irq $E09F</div>
+<p class="cost">One number per row, like every other row in the block, so <code>yours</code> can be compared
+across two builds without reading a sentence. <code>runtime</code> carries a clause because its figure is
+the one the author cannot work out from the number; <code>yours</code> needs none.</p>
+
+<h2>02 &middot; An empty <code>main</code></h2>
+<p class="note">Source: <code>main { }</code> and nothing else. Three bytes are the halt loop rasterc puts
+at the end of every <code>main</code> so the console has somewhere to sit. They count as the author&rsquo;s:
+the line is drawn at the linker, so everything wrapped <em>around</em> the generated program is the runtime
+and everything the compiler made <em>from the source</em> is yours. Three is therefore the floor &mdash;
+<code>yours</code> is never 0 and never 1.</p>
+<div class="term">$ rasterc empty.raster
+    fixed  $E000-$FFFF, 135 of 8186 bytes used
+<span class="new">    yours  3 bytes</span>
+<span class="new">  runtime  132 bytes, the reset sequence around your program</span>
+    entry  reset $E000, nmi $E086, irq $E086</div>
+
+<h2>03 &middot; A function, a loop, and a <code>cycles(?)</code> region</h2>
+<p class="note">Four digits, and the rows below the split unchanged.</p>
+<div class="term">$ rasterc big.raster
+    fixed  $E000-$FFFF, 221 of 8186 bytes used
+<span class="new">    yours  89 bytes</span>
+<span class="new">  runtime  132 bytes, the reset sequence around your program</span>
+    entry  reset $E000, nmi $E0DC, irq $E0DC
+   cycles  hblank: 15 cycles</div>
+
+<h2>04 &middot; One byte from full</h2>
+<div class="term">$ rasterc edge.raster
+    fixed  $E000-$FFFF, 8185 of 8186 bytes used
+<span class="new">    yours  8053 bytes</span>
+<span class="new">  runtime  132 bytes, the reset sequence around your program</span>
+    entry  reset $E000, nmi $FFF8, irq $FFF8</div>
+
+<h2>05 &middot; And when it does not fit</h2>
+<p class="note">The refusal quotes the same conflated figure, so it gets the split too &mdash; turned into the
+action, because at this moment the author does not want to know how the bytes divide, they want to know how
+many of their own have to go. The new note is second of the three, after the sizes it does arithmetic on and
+before the standing explanation about bank switching.</p>
+<div class="term">$ rasterc huge.raster
+<span class="e">error: the program does not fit the MMC3 fixed bank</span>
+  <span class="g">= note:</span> 8631 bytes of code, and $E000-$FFFF holds 8186
+  <span class="g">= note:</span> <span class="new">132 of those are the reset runtime, so 445 bytes of your own</span>
+          <span class="new">have to go</span>
+  <span class="g">= note:</span> PRG bank switching is not supported yet, so all code lives
+          in the fixed bank
+
+<span class="e">error: could not compile huge.raster (1 error)</span></div>
+
+<h2>What was rejected, and why</h2>
+<p class="cost"><b>A continuation line under <code>fixed</code>, with no label.</b> It kept one fact in one
+place, but it would have been the only label-less row in the block, so it could not be found by scanning the
+label column and read as wrapped text.</p>
+<p class="cost"><b>A parenthetical on the <code>fixed</code> row</b> &mdash;
+<code>160 of 8186 bytes used (132 the reset runtime)</code>. The summary would not have grown at all, but the
+author&rsquo;s own number is never printed: they would subtract 132 from 160 themselves, every build, and it is
+their number this exists to give them.</p>
+<p class="cost"><b>A single row carrying both figures</b>, such as
+<code>yours&nbsp;&nbsp;28 bytes; the reset runtime is the other 132</code>. One line rather than two, but the
+value column then holds a sentence where every other row holds a value.</p>
+<p class="cost"><b>Counting the halt loop as the compiler&rsquo;s</b>, so an empty <code>main</code> reads
+<code>yours&nbsp;&nbsp;0 bytes</code>. Truer for that one program, but codegen would have to judge which of its
+own bytes were the author&rsquo;s &mdash; and the halt label doubles as the top of the frame loop once a program
+has a <code>frame</code> block, so the judgement would be wrong again the first time a construct is added.</p>
+<p class="cost"><b>Leaving the overflow error alone.</b> 132 bytes is a rounding error against a 445-byte
+overshoot, and every note is a line between the author and the next one &mdash; but the note that says how many
+bytes have to go is the one that ends the run-fix-run treadmill, and it is only correct once the runtime is
+subtracted.</p>
+<p class="cost"><b>A longer clause on the <code>runtime</code> row</b> &mdash;
+<code>the reset sequence rasterc wraps every program in</code>, at 71 columns the widest row in the block after
+the paths. The chosen clause says the same in 57.</p>
+</main>

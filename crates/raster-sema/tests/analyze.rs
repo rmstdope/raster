@@ -1,3 +1,4 @@
+use raster_diag::Refusal;
 use raster_sema::analyze;
 use raster_syntax::parse;
 
@@ -222,7 +223,7 @@ fn rejects_unprovable_timed_region() {
         "unbounded loop",
         "`while` loop",
         "branch arms",
-        "`helper` cannot be called inside a timed region yet",
+        "`helper` cannot be called inside a timed block yet",
         "multiplication, division and remainder",
         "`wait vblank`",
     ] {
@@ -312,7 +313,7 @@ fn rejects_every_construct_a_straight_line_region_cannot_charge() {
     let cases = [
         (
             "for i in 0..10 { total = total + 1 }",
-            "`for` loop inside a timed region",
+            "`for` loop inside a timed block",
         ),
         (
             "total = total * 3",
@@ -326,11 +327,11 @@ fn rejects_every_construct_a_straight_line_region_cannot_charge() {
             "total = total % 3",
             "multiplication, division and remainder",
         ),
-        ("total = total << 3", "shift inside a timed region"),
-        ("total = total >> 3", "shift inside a timed region"),
-        ("sync exact", "belongs before a timed region"),
+        ("total = total << 3", "shift inside a timed block"),
+        ("total = total >> 3", "shift inside a timed block"),
+        ("sync exact", "belongs before a timed block"),
         ("wait cycles(20)", "spends its cycles in a loop"),
-        ("helper()", "cannot be called inside a timed region yet"),
+        ("helper()", "cannot be called inside a timed block yet"),
     ];
 
     for (statement, expected) in cases {
@@ -488,9 +489,9 @@ fn a_frame_handler_is_a_timed_region_and_obeys_section_6_3() {
         "#,
     );
     for expected in [
-        "`wait cycles` inside a timed region",
-        "branch arms inside a timed region",
-        "a `while` loop's trip count cannot be proven inside a timed region",
+        "`wait cycles` inside a timed block",
+        "branch arms inside a timed block",
+        "a `while` loop's trip count cannot be proven inside a timed block",
     ] {
         assert!(
             diagnostics.iter().any(|message| message.contains(expected)),
@@ -511,4 +512,167 @@ fn return_inside_a_frame_handler_is_refused_like_any_other_timed_block() {
 
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0].message, RETURN_IN_A_TIMED_BLOCK);
+}
+
+/// Every refusal a timed region raises, and the kind it must carry.
+///
+/// A `TimedRegionCost` refusal is a cost-model gap: the construct is fine, and a region costed as
+/// straight-line code cannot price it, so `rasterc` says so beside the diagnostic. The three
+/// `Rejected` ones deliberately say nothing — two hardware waits have no cost to measure ever, so
+/// "once their cost can be measured" would promise what the compiler cannot deliver, and `sync
+/// exact` in the wrong place is a placement rule whose message already says where to put it.
+///
+/// This is a table rather than a sentence in the source because the kind is what `rasterc` asks:
+/// moving one of these back to an unclassified refusal takes the note away silently, which is the
+/// failure this bead exists to close.
+#[test]
+fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
+    use raster_diag::Refusal::{Rejected, TimedRegionCost};
+
+    let cases: &[(Refusal, &str, &str)] = &[
+        (
+            TimedRegionCost,
+            "an unbounded loop has no provable cycle cost inside a timed block",
+            "main {\n    cycles(20) pad {\n        loop {}\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "branch arms inside a timed block cannot yet be balanced",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        if level == 1 { level = 2 }\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "a `while` loop's trip count cannot be proven inside a timed block",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        while level != 0 { level = level - 1 }\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "a `for` loop inside a timed block compiles to a loop whose cost is not yet proven",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        for index in 0..3 { level = level + 1 }\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "`wait cycles` inside a timed block spends its cycles in a loop",
+            "main {\n    cycles(20) pad {\n        wait cycles(4)\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "multiplication, division and remainder inside a timed block compile to loops",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        level = level * 2\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "a shift inside a timed block compiles to a loop whose cost is not yet proven",
+            "var level: u8\nmain {\n    cycles(20) pad {\n        level = level >> 1\n    }\n}\n",
+        ),
+        (
+            TimedRegionCost,
+            "cannot be called inside a timed block yet",
+            "fn helper() {}\nmain {\n    cycles(20) pad {\n        helper()\n    }\n}\n",
+        ),
+        (
+            Rejected,
+            "`wait scanline` has no provable cost inside a timed block",
+            "main {\n    cycles(20) pad {\n        wait scanline 10\n    }\n}\n",
+        ),
+        (
+            Rejected,
+            "`wait vblank` has no provable cost inside a timed block",
+            "main {\n    cycles(20) pad {\n        wait vblank\n    }\n}\n",
+        ),
+        (
+            Rejected,
+            "`sync exact` waits an unpredictable number of cycles",
+            "main {\n    cycles(20) pad {\n        sync exact\n    }\n}\n",
+        ),
+    ];
+
+    for (refusal, expected, source) in cases {
+        let errors = errors_with_spans(source);
+        let refused = errors
+            .iter()
+            .find(|error| error.message.contains(expected))
+            .unwrap_or_else(|| panic!("expected `{expected}` in {errors:?}"));
+        assert_eq!(
+            refused.refusal, *refusal,
+            "`{expected}` decides its note by this kind"
+        );
+    }
+}
+
+/// One of every construct a straight-line block cannot charge, in a single `cycles` block, so
+/// that eleven of the twelve refusals fire from one program. The twelfth — `sync exact` is
+/// required before a PPU-writing block — cannot join them: it fires only when no `sync exact`
+/// precedes the block, and this fixture contains one inside it.
+///
+/// The guard below only sees the messages these two fixtures provoke, so **a refusal added to
+/// `raster-sema` on a construct that is not here is not guarded**: add the construct to this
+/// fixture at the same time, and raise the guard's expected count with it.
+const REFUSALS_INSIDE_A_BLOCK: &str = r#"
+    fn helper() { }
+    var count: u8
+    main {
+        cycles(100) {
+            loop { count = 1 }
+            while count < 3 { count = count + 1 }
+            if count == 1 { count = 2 }
+            for i in 0..10 { count = count + 1 }
+            helper()
+            count = count * count
+            count = count << 3
+            wait vblank
+            wait scanline 96
+            wait cycles(20)
+            sync exact
+        }
+    }
+"#;
+
+/// A PPU-writing block with no `sync exact` before it: the one message that a program carrying
+/// `sync exact` can never produce.
+const PPU_WRITE_WITHOUT_SYNC: &str = r#"
+    var count: u8
+    main {
+        cycles(100) pad {
+            ppu.mask = count
+        }
+    }
+"#;
+
+#[test]
+fn no_refusal_calls_a_timed_block_a_timed_region() {
+    let mut diagnostics = errors(REFUSALS_INSIDE_A_BLOCK);
+    diagnostics.extend(errors(PPU_WRITE_WITHOUT_SYNC));
+
+    // `errors` only panics when a fixture produces no errors at all, so a construct that stops
+    // being refused would drop out of the two filters below in silence and leave them passing
+    // over less than they were written to cover. Twelve is what the two fixtures provoke: eleven
+    // from the block, one from the PPU write.
+    assert_eq!(
+        diagnostics.len(),
+        12,
+        "the fixtures should provoke all twelve refusals; a lower count means this guard is \
+         covering less than it reads as covering: {diagnostics:?}"
+    );
+
+    let region: Vec<&String> = diagnostics
+        .iter()
+        .filter(|message| message.contains("timed region"))
+        .collect();
+    assert!(
+        region.is_empty(),
+        "`timed block` is the word that ships; these still say `timed region`: {region:?}"
+    );
+
+    // Deliberately the bare word rather than `the region`: no shipped diagnostic names the
+    // construct a region at all any more, so `a region`, `this region` and `the region's` are
+    // caught too — the shapes a future second reference is as likely to take.
+    let bare: Vec<&String> = diagnostics
+        .iter()
+        .filter(|message| message.contains(" region"))
+        .collect();
+    assert!(
+        bare.is_empty(),
+        "a message that opens with `timed block` must not call it a region later: {bare:?}"
+    );
 }

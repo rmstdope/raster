@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use raster_diag::Refusal;
 use raster_ir::{lower, PlaceKind, Statement};
 use raster_sema::analyze;
 use raster_syntax::parse;
@@ -13,7 +14,7 @@ fn lower_source(source: &str) -> raster_ir::Program {
 fn lower_errors(source: &str) -> Vec<raster_ir::LowerError> {
     let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
-    lower(&typed).expect_err("fixture should not lower")
+    lower(&typed).expect_err("fixture should not lower").errors
 }
 
 #[test]
@@ -56,10 +57,26 @@ fn lowers_scoped_control_flow_and_calls() {
         .any(|place| place.kind == PlaceKind::Counter));
 }
 
+/// The line each construct sits on, so an expectation names a place in the
+/// fixture rather than a word in a message. `LowerError.span` is a byte offset.
+fn line_of(source: &str, offset: u32) -> usize {
+    // Counted over bytes rather than `source[..offset]`, which panics when an offset lands inside a
+    // multi-byte character. A panic in a test helper reads as a compiler bug rather than as a moved
+    // expectation, and `\n` cannot occur inside a UTF-8 sequence, so the count is the same.
+    source.as_bytes()[..offset as usize]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1
+}
+
+/// Every construct here is one the specification defines and this release does
+/// not compile, so every one of them must be refused as `NotInThisRelease` —
+/// not because of how its message is worded, which is free to change, but
+/// because of what kind of refusal it is.
 #[test]
 fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
-    let syntax = parse(
-        r#"
+    let source = r#"
             group state { var line: u8 }
             var table: [2]u8
             var word: u16
@@ -73,32 +90,29 @@ fn rejects_all_accepted_forms_not_supported_by_initial_codegen() {
                 "text"
                 'x'
                 wait vblank
-                loop { break; continue }
+                loop {
+                    break
+                    continue
+                }
             }
-        "#,
-    )
-    .expect("fixture should parse");
+        "#;
+    let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
-    let errors = lower(&typed).expect_err("unsupported forms must be diagnosed");
+    let errors = lower(&typed)
+        .expect_err("unsupported forms must be diagnosed")
+        .errors;
 
-    for expected in [
-        "group",
-        "array",
-        "u16",
-        "bool",
-        "`asm`",
-        "`at vblank`",
-        "arrays",
-        "string",
-        "character",
-        "wait",
-        "loop",
-        "break",
-        "continue",
-    ] {
+    // group, array, u16, bool, `asm`, `at vblank`, the array assignment, the
+    // string, the character, `wait vblank`, `loop`, `break` and `continue` —
+    // one construct per line of the fixture above, which is why `break` and
+    // `continue` sit on lines of their own.
+    for line in [2, 3, 4, 5, 6, 7, 9, 12, 13, 14, 15, 16, 17] {
         assert!(
-            errors.iter().any(|error| error.message.contains(expected)),
-            "expected `{expected}` in {errors:?}"
+            errors
+                .iter()
+                .any(|error| line_of(source, error.span.start) == line
+                    && error.refusal == Refusal::NotInThisRelease),
+            "line {line} holds a construct this release does not have: {errors:?}"
         );
     }
     assert!(errors
@@ -327,5 +341,163 @@ fn a_frame_interval_wider_than_the_picture_is_one_occurrence_rather_than_a_wrap(
             .map(|event| event.scanline)
             .collect::<Vec<_>>(),
         vec![238],
+    );
+}
+
+#[test]
+fn a_construct_this_release_does_not_have_is_refused_as_such() {
+    let errors = lower_errors("var table: [2]u8\nmain {}\n");
+
+    assert!(!errors.is_empty(), "the array must be refused at all");
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.refusal == Refusal::NotInThisRelease),
+        "an array is a construct the release does not have: {errors:?}"
+    );
+}
+
+#[test]
+fn a_bank_select_that_inverts_the_chr_map_is_a_warning() {
+    let program = lower_source("main { mmc3.bank_select = $80 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 7 swaps the two pattern tables from here on"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose CHR A12 inversion off, so pattern table 0 is at\nPPU $0000; clearing bit 7 keeps that map",
+            "bits 6 and 7 take effect from whichever bank select was\nwritten last, not from the bank data that follows",
+        ]
+    );
+}
+
+#[test]
+fn a_bank_select_that_changes_prg_mode_is_a_warning() {
+    let program = lower_source("main { mmc3.bank_select = $46 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 6 moves the fixed PRG bank from $C000 to $8000"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose PRG mode 0, a linear 32 KiB map with this code\nin the fixed bank at $E000; clearing bit 6 keeps that map",
+            "bits 6 and 7 take effect from whichever bank select was\nwritten last, not from the bank data that follows",
+        ]
+    );
+}
+
+#[test]
+fn a_bank_select_that_sets_both_mode_bits_is_one_warning() {
+    let program = lower_source("main { mmc3.bank_select = $C0 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 6 moves the fixed PRG bank and bit 7 swaps the pattern tables"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose PRG mode 0 and CHR A12 inversion off: a linear\n32 KiB map, and pattern table 0 at PPU $0000",
+            "bits 6 and 7 take effect from whichever bank select was\nwritten last, not from the bank data that follows",
+        ]
+    );
+}
+
+#[test]
+fn a_bank_select_rasterc_cannot_fold_is_a_warning() {
+    for source in [
+        "main { var which: u8 = 3\n mmc3.bank_select = which }",
+        "main { mmc3.bank_select = $40 | $06 }",
+        "fn pick() -> u8 { return 3 }\nmain { mmc3.bank_select = pick() }",
+    ] {
+        let program = lower_source(source);
+
+        assert_eq!(program.warnings.len(), 1, "for {source:?}");
+        let warning = &program.warnings[0];
+        assert_eq!(
+            warning.message,
+            "rasterc cannot tell whether this bank select changes the mapping mode",
+            "for {source:?}"
+        );
+        assert_eq!(
+            warning.label, "rasterc cannot see this value here, so bits 6 and 7 are unknown",
+            "for {source:?}"
+        );
+        assert_eq!(
+            warning.notes,
+            ["bit 6 is PRG mode and bit 7 is CHR A12 inversion; keeping\nboth clear keeps the map reset chose"],
+            "for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn repointing_a_bank_window_is_silent() {
+    let program = lower_source("main { mmc3.bank_select = 0\n mmc3.bank_data = 3 }");
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_const_bank_select_is_folded_like_a_literal() {
+    let program = lower_source("const INVERT: u8 = $80\nmain { mmc3.bank_select = INVERT }");
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "bit 7 swaps the two pattern tables from here on"
+    );
+}
+
+#[test]
+fn warnings_survive_a_failed_lowering() {
+    let source = "main { mmc3.bank_select = $80\n loop {} }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("`loop` is not supported yet");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(failure.errors[0].message, "`loop` is not supported yet");
+    assert_eq!(failure.warnings.len(), 1);
+    assert_eq!(
+        failure.warnings[0].label,
+        "bit 7 swaps the two pattern tables from here on"
+    );
+}
+
+#[test]
+fn a_compound_bank_select_cannot_be_folded_and_warns() {
+    // `binary` builds a `Value::Binary` unconditionally, so a compound
+    // assignment is never a constant to rasterc however plain it reads.
+    let program = lower_source("main { mmc3.bank_select += $80 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "rasterc cannot see this value here, so bits 6 and 7 are unknown"
     );
 }

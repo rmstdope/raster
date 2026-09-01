@@ -21,12 +21,29 @@ fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
     )
 }
 
-fn summary(input: &Path, output: &Path) -> String {
+/// The eight rows every successful build prints, then whatever this build adds
+/// after them. `reset` is always `$E000`, and `nmi` and `irq` share an address
+/// for a program with no `frame`. `yours` is the author's own share of
+/// `code_len`; the runtime's is the rest, which is 132 for every program.
+fn summary_of(
+    input: &Path,
+    output: &Path,
+    code_len: usize,
+    yours: usize,
+    handler: u16,
+    trailing: &str,
+) -> String {
+    let runtime = code_len - yours;
     format!(
-        " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, 160 of 8186 bytes used\n    entry  reset $E000, nmi $E09F, irq $E09F\n",
+        " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, {code_len} of 8186 bytes used\n    yours  {yours} bytes\n  runtime  {runtime} bytes, the reset sequence around your program\n    entry  reset $E000, nmi ${handler:04X}, irq ${handler:04X}\n{trailing}",
         input.display(),
         output.display()
     )
+}
+
+/// The demo's summary, which three tests assert byte for byte.
+fn summary(input: &Path, output: &Path) -> String {
+    summary_of(input, output, 160, 28, 0xE09F, "")
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -343,7 +360,9 @@ fn reports_several_errors_separated_by_a_blank_line_and_a_count() {
                 "1 | frame display {{ at vblank {{}} }}\n",
                 "  |                    ^^^^^^ `at vblank` is not supported yet\n",
                 "  = note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
-                "          arithmetic and `ppu.*` / `mmc3.*` register writes\n",
+                "          arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks\n",
+                "          with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n",
+                "          `frame` of `every ... scanlines` events\n",
                 "\n",
                 "error: `loop` is not supported yet\n",
                 " --> {path}:3:5\n",
@@ -459,6 +478,142 @@ fn a_block_short_of_an_exact_budget_is_told_about_pad() {
     );
     assert!(
         stderr.contains("`pad` would fill the remaining 10 cycles"),
+        "got:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_bank_select_warning_prints_to_stderr_and_still_writes_a_rom() {
+    let directory = Scratch::new("bankwarning");
+    let input = directory.path().join("invert.raster");
+    let output = directory.path().join("invert.nes");
+    fs::write(
+        &input,
+        "main {\n    ppu.mask = 0\n    mmc3.bank_select = $80\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert!(output.exists());
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: this bank select changes the MMC3 mapping mode\n",
+                " --> {path}:3:5\n",
+                "  |\n",
+                "3 |     mmc3.bank_select = $80\n",
+                "  |     ^^^^^^^^^^^^^^^^^^^^^^ bit 7 swaps the two pattern tables from here on\n",
+                "  = note: reset chose CHR A12 inversion off, so pattern table 0 is at\n",
+                "          PPU $0000; clearing bit 7 keeps that map\n",
+                "  = note: bits 6 and 7 take effect from whichever bank select was\n",
+                "          written last, not from the bank data that follows\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+    assert_eq!(
+        stdout,
+        summary_of(&input, &output, 145, 13, 0xE090, " warnings  1\n")
+    );
+}
+
+#[test]
+fn a_build_that_fails_counts_its_errors_and_its_warnings() {
+    let directory = Scratch::new("warnandfail");
+    let input = directory.path().join("both.raster");
+    let output = directory.path().join("both.nes");
+    fs::write(
+        &input,
+        "main {\n    mmc3.bank_select = $80\n    loop {}\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(!output.exists());
+    assert!(
+        stderr.starts_with("warning: this bank select changes the MMC3 mapping mode\n"),
+        "the warning comes first, got:\n{stderr}"
+    );
+    assert!(
+        stderr.ends_with(&format!(
+            "error: could not compile {path} (1 error, 1 warning)\n",
+            path = input.display()
+        )),
+        "both severities are counted, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn two_warnings_and_an_error_are_counted_in_the_plural() {
+    let directory = Scratch::new("plural");
+    let input = directory.path().join("plural.raster");
+    fs::write(
+        &input,
+        "main {\n    mmc3.bank_select = $80\n    mmc3.bank_select = $40\n    loop {}\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert!(
+        stderr.ends_with(&format!(
+            "error: could not compile {path} (1 error, 2 warnings)\n",
+            path = input.display()
+        )),
+        "each severity is pluralised on its own count, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn an_empty_main_is_three_bytes_of_the_author_s_own() {
+    let directory = Scratch::new("emptymain");
+    let input = directory.path().join("empty.raster");
+    let output = directory.path().join("empty.nes");
+    fs::write(&input, "main {\n}\n").unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(stderr, "");
+    // The three bytes are the halt loop rasterc puts at the end of every `main`.
+    // They are the author's: the line is drawn at the linker, so `yours` is
+    // never 0 and never 1, and neither row needs a plural.
+    assert_eq!(stdout, summary_of(&input, &output, 135, 3, 0xE086, ""));
+}
+
+#[test]
+fn a_program_too_big_for_the_bank_is_told_how_much_of_its_own_has_to_go() {
+    let directory = Scratch::new("overflow");
+    let input = directory.path().join("huge.raster");
+    let mut source = String::from("main {\n");
+    for _ in 0..1700 {
+        source.push_str("    ppu.mask = 1\n");
+    }
+    source.push_str("}\n");
+    fs::write(&input, source).unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.contains("error: the program does not fit the MMC3 fixed bank"),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("132 of those are the reset runtime, so "),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("bytes of your own\n          have to go"),
         "got:\n{stderr}"
     );
 }

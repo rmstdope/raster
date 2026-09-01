@@ -1,7 +1,8 @@
 // The whole of milestone 4: a backdrop colour, from source.
 //
-// rasterc emits the reset sequence, the two-vblank wait and the
-// MMC3 bank layout around this. What is below is only your part.
+// rasterc wraps this in a reset sequence, a two-vblank wait and
+// the MMC3 bank layout. The summary's `yours' row is the part
+// below.
 
 const BACKDROP: u8 = $12        // NES colour $12, a mid blue
 

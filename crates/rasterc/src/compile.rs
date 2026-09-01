@@ -4,18 +4,24 @@
 //! source is testable from a string.
 
 use raster_codegen::{generate_with_isa, CodegenError};
-use raster_diag::{Diagnostic, Span};
+use raster_diag::{Diagnostic, Refusal, Span};
 use raster_ir::{lower, FrameStrategy};
-use raster_link::{link_mmc3_program, InterruptVectors, LinkError};
+use raster_link::{link_mmc3_program, mmc3_reset_runtime_bytes, InterruptVectors, LinkError};
 use raster_sema::analyze;
 use raster_syntax::parse;
 use raster_timing::TimingError;
 
 /// What this release of the compiler can build, listed once per run beside the
-/// first construct it had to refuse.
+/// first construct it had to refuse for not being in it.
 const SUPPORTED_SUBSET: &str = "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n\
-                                arithmetic and `ppu.*` / `mmc3.*` register writes";
-const UNSUPPORTED_SUFFIX: &str = "not supported yet";
+                                arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks\n\
+                                with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n\
+                                `frame` of `every ... scanlines` events";
+
+/// Why a timed region refuses a construct that is fine everywhere else, said
+/// once per run beside the first of them.
+const TIMED_REGION_COST: &str = "a timed block is costed as straight-line code; loops, branches\n\
+                                 and calls will be admitted once their cost can be measured";
 
 /// Whether this release restricts itself to official opcodes.
 ///
@@ -33,9 +39,16 @@ const ZERO_PAGE_VARIABLES: usize = 0x100 - 0x10;
 pub struct Rom {
     pub image: Vec<u8>,
     pub code_len: usize,
+    /// How many of `code_len` the reset runtime contributed. `code_len` minus
+    /// this is what the author's source compiled to, which is the number the
+    /// summary leads with.
+    pub runtime_len: usize,
     pub vectors: InterruptVectors,
     /// The measured cost of each `cycles(?)` region, which the summary prints.
     pub reports: Vec<(String, u32)>,
+    /// The hazards the compiler saw and did not refuse. A ROM with warnings is
+    /// still a ROM: these are printed, and counted, and the build succeeds.
+    pub warnings: Vec<Diagnostic>,
 }
 
 /// Compile `source` into a ROM, or into every diagnostic the first failing stage
@@ -45,29 +58,55 @@ pub struct Rom {
 /// a file with both a parse error and an unsupported construct reports only the
 /// parse errors: the later stages were never given a program worth judging.
 pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
-    let syntax = parse(source)
-        .map_err(|errors| spanned(errors.into_iter().map(|e| (e.message, e.span)), source))?;
-    let typed = analyze(&syntax)
-        .map_err(|errors| spanned(errors.into_iter().map(|e| (e.message, e.span)), source))?;
-    let ir = lower(&typed)
-        .map_err(|errors| spanned(errors.into_iter().map(|e| (e.message, e.span)), source))?;
+    let syntax = parse(source).map_err(|errors| {
+        spanned(
+            errors
+                .into_iter()
+                .map(|e| (e.message, e.span, Refusal::Rejected)),
+            source,
+        )
+    })?;
+    let typed = analyze(&syntax).map_err(|errors| {
+        spanned(
+            errors.into_iter().map(|e| (e.message, e.span, e.refusal)),
+            source,
+        )
+    })?;
+    // Warnings first, then errors: a warning is about what the author wrote
+    // before the stage gave up, and the errors are why it did.
+    let mut ir = lower(&typed).map_err(|failure| {
+        let mut diagnostics = warned(failure.warnings, source);
+        diagnostics.extend(spanned(
+            failure
+                .errors
+                .into_iter()
+                .map(|e| (e.message, e.span, e.refusal)),
+            source,
+        ));
+        diagnostics
+    })?;
+    // Every failing stage after lowering reports the warnings lowering found,
+    // for the reason the whole run does: the author who fixes the error is the
+    // author who needed the warning, and they only get one look at it.
+    let warnings = warned(std::mem::take(&mut ir.warnings), source);
     let output = generate_with_isa(&ir, LEGAL_ISA)
-        .map_err(|error| noted(vec![codegen_diagnostic(error, source)]))?;
-    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA).map_err(
-        |error| {
-            let timed_frame = ir
-                .frame
-                .as_ref()
-                .is_some_and(|frame| frame.strategy == FrameStrategy::Timed);
-            noted(vec![link_diagnostic(error, timed_frame)])
-        },
-    )?;
+        .map_err(|error| beside(&warnings, codegen_diagnostic(error, source)))?;
+    // Only `using timed` pays the three-frame pass the fixed-bank note describes; an `irq`
+    // frame emits its handlers once.
+    let timed_frame = ir
+        .frame
+        .as_ref()
+        .is_some_and(|frame| frame.strategy == FrameStrategy::Timed);
+    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA)
+        .map_err(|error| beside(&warnings, link_diagnostic(error, timed_frame)))?;
 
     Ok(Rom {
         image: rom.image,
         code_len: rom.code_len,
+        runtime_len: rom.runtime_len,
         vectors: rom.vectors,
         reports: output.reports,
+        warnings,
     })
 }
 
@@ -76,29 +115,79 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
 /// crates, one of which has a default span for a declaration with no name, and a
 /// panic in the renderer would show the author a backtrace instead of a mistake.
 fn spanned(
-    errors: impl Iterator<Item = (String, raster_syntax::Span)>,
+    errors: impl Iterator<Item = (String, raster_syntax::Span, Refusal)>,
     source: &str,
 ) -> Vec<Diagnostic> {
     noted(
         errors
-            .map(|(message, span)| {
+            .map(|(message, span, refusal)| {
                 let span = Span::clamped(span.start as usize, span.end as usize, source);
-                Diagnostic::error(message.clone(), span, message)
+                (Diagnostic::error(message.clone(), span, message), refusal)
             })
             .collect(),
     )
 }
 
-/// Say once, beside the first construct this release had to refuse, what it can
-/// build instead. Twice would be noise, and never would leave "yet" unexplained.
-fn noted(mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
-    if let Some(first) = diagnostics
-        .iter_mut()
-        .find(|diagnostic| diagnostic.message.ends_with(UNSUPPORTED_SUFFIX))
-    {
-        first.notes.push(SUPPORTED_SUBSET.to_owned());
-    }
+/// One stage's error, behind the warnings found before it. Warnings first and
+/// errors after, the same order `compile_source` gives a failed lowering.
+fn beside(warnings: &[Diagnostic], error: Diagnostic) -> Vec<Diagnostic> {
+    let mut diagnostics = warnings.to_vec();
+    diagnostics.push(error);
     diagnostics
+}
+
+/// Lowering's warnings, as diagnostics. `Span::clamped` for the same reason
+/// `spanned` uses it: offsets arrive as `u32` from another crate, and a panic in
+/// the renderer would show the author a backtrace instead of a hazard.
+///
+/// Warnings never pass through `noted`: a note there belongs to a `Refusal`, and
+/// a warning refuses nothing.
+fn warned(warnings: Vec<raster_ir::LowerWarning>, source: &str) -> Vec<Diagnostic> {
+    warnings
+        .into_iter()
+        .map(|warning| {
+            let span = Span::clamped(
+                warning.span.start as usize,
+                warning.span.end as usize,
+                source,
+            );
+            let mut diagnostic = Diagnostic::warning(warning.message, span, warning.label);
+            diagnostic.notes = warning.notes;
+            diagnostic
+        })
+        .collect()
+}
+
+/// The note a refusal of this kind carries, if it carries one.
+fn note_for(refusal: Refusal) -> Option<&'static str> {
+    match refusal {
+        Refusal::NotInThisRelease => Some(SUPPORTED_SUBSET),
+        Refusal::TimedRegionCost => Some(TIMED_REGION_COST),
+        Refusal::Rejected => None,
+    }
+}
+
+/// Say once, beside the first refusal of its kind, why the compiler said no.
+/// Twice would be noise, and never would leave "yet" unexplained.
+///
+/// Stages run in order and the first failing stage is the last to run, so a run
+/// cannot today contain both a semantic refusal and a lowering one. This does
+/// not rely on that: each kind is said once, in the order the diagnostics
+/// arrive, so a refusal moved between stages keeps its note.
+fn noted(diagnostics: Vec<(Diagnostic, Refusal)>) -> Vec<Diagnostic> {
+    let mut said: Vec<Refusal> = Vec::new();
+    diagnostics
+        .into_iter()
+        .map(|(mut diagnostic, refusal)| {
+            if let Some(note) = note_for(refusal) {
+                if !said.contains(&refusal) {
+                    said.push(refusal);
+                    diagnostic.notes.push(note.to_owned());
+                }
+            }
+            diagnostic
+        })
+        .collect()
 }
 
 fn codegen_diagnostic(error: CodegenError, source: &str) -> Diagnostic {
@@ -187,10 +276,19 @@ with a clearer message; please report this file",
 fn link_diagnostic(error: LinkError, has_timed_frame: bool) -> Diagnostic {
     match error {
         LinkError::FixedBankTooLarge { actual, maximum } => {
+            let runtime = mmc3_reset_runtime_bytes();
+            // Only ever constructed when `actual > maximum`; saturating rather
+            // than a subtraction that would panic in debug on a path nothing
+            // can reach.
+            let over = actual.saturating_sub(maximum);
             let diagnostic =
                 Diagnostic::without_span("the program does not fit the MMC3 fixed bank")
                     .with_note(format!(
                         "{actual} bytes of code, and $E000-$FFFF holds {maximum}"
+                    ))
+                    .with_note(format!(
+                        "{runtime} of those are the reset runtime, so {over} bytes of your own\n\
+                         have to go"
                     ))
                     .with_note(
                         "PRG bank switching is not supported yet, so all code lives\n\
@@ -223,6 +321,34 @@ fn internal_compiler_error(error: &impl std::fmt::Debug) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The figures are a real overflow: 1700 `ppu.mask = 1` statements compile
+    /// to 8635 bytes, of which 449 are over the bank. Pinned here rather than
+    /// through `compile_source` so the strings are asserted without a 1700-line
+    /// fixture, and so a codegen change elsewhere cannot silently move them.
+    #[test]
+    fn the_overflow_refusal_says_how_many_of_the_author_s_own_bytes_have_to_go() {
+        let diagnostic = link_diagnostic(
+            LinkError::FixedBankTooLarge {
+                actual: 8635,
+                maximum: 8186,
+            },
+            false,
+        );
+
+        assert_eq!(
+            diagnostic.message,
+            "the program does not fit the MMC3 fixed bank"
+        );
+        assert_eq!(
+            diagnostic.notes,
+            [
+                "8635 bytes of code, and $E000-$FFFF holds 8186",
+                "132 of those are the reset runtime, so 449 bytes of your own\nhave to go",
+                "PRG bank switching is not supported yet, so all code lives\nin the fixed bank",
+            ]
+        );
+    }
 
     /// The backstop is by design unreachable from any source `raster-sema` already refuses, so its
     /// rendering is pinned here rather than through `compile_source`. Asserting `message` exactly

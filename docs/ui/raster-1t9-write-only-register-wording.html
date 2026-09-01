@@ -1,0 +1,109 @@
+<!doctype html>
+<title>raster-1t9 — Write-only register wording</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 66rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:58em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:58em; }
+  table { border-collapse:collapse; font-size:.88rem; margin:.6rem 0 0; }
+  th,td { text-align:left; padding:.28rem .9rem .28rem 0; border-bottom:1px solid #e0e2ea; }
+  th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:.74rem;}
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background:#e9ebf1; padding:.1em .35em; border-radius:3px;}
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost, th { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    th,td { border-color:#242733; }
+    code { background:#1e2029; color:#c9cddb; }
+  }
+
+</style>
+<main>
+
+<span class="tag">AGREED &middot; THE WORDING</span>
+<h1>Every message, label and note as it ships</h1>
+<p class="sub">One message for every read, wherever it is. The register's own name is in the message, the port's
+address is under the carets, and the notes say where the read came from, what a real read of that address
+returns, and what to do instead. <code>{name}</code> and <code>{addr}</code> below are the register's source
+name and its address as four uppercase hex digits.</p>
+
+<h2>The message &mdash; the same in every position</h2>
+<div class="src">`{name}` cannot be read</div>
+<p class="note">e.g. <code>`mmc3.bank_select` cannot be read</code>, <code>`ppu.mask` cannot be read</code>.</p>
+
+<h2>The label &mdash; under the carets</h2>
+<div class="src">${addr} is a write-only port</div>
+<p class="note">e.g. <code>$8000 is a write-only port</code>, <code>$2001 is a write-only port</code>.</p>
+
+<h2>Note 1 &mdash; only on a compound assignment</h2>
+<div class="src">`{op}` reads its destination before it writes, so this reads ${addr}</div>
+<p class="note"><code>{op}</code> is the operator as written: <code>+=</code>, <code>-=</code>,
+<code>*=</code> or <code>/=</code>. This note is absent on a read the author wrote out, because there the read
+is on the line in front of them. One rendered line; it does not wrap.</p>
+
+<h2>Note 2 &mdash; what a read of that address really returns</h2>
+<p class="note">Two forms. An MMC3 port ($8000 and above):</p>
+<div class="src">reading ${addr} returns a byte of your own program from the PRG
+bank mapped there, not the last value written</div>
+<p class="note">A PPU port ($2000-$2007):</p>
+<div class="src">reading ${addr} returns whatever was last on the PPU's data bus,
+not the last value written</div>
+
+<h2>Note 3 &mdash; what to do instead</h2>
+<div class="src">keep what you wrote in a variable of your own
+and write the whole value</div>
+<p class="note">One constant string, the same for all thirteen registers. No worked example and no invented
+variable name: an example would interpolate a name the author may already be using, and the sentence is the
+whole of the fix.</p>
+
+<h2>Assembled &mdash; the compound assignment, all three notes</h2>
+<div class="term"><span class="e">error: `mmc3.bank_select` cannot be read</span>
+ <span class="g">--&gt; demo.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     mmc3.bank_select += $80
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^^^^^^^</span> $8000 is a write-only port
+  <span class="g">= note:</span> `+=` reads its destination before it writes, so this reads $8000
+  <span class="g">= note:</span> reading $8000 returns a byte of your own program from the PRG
+          bank mapped there, not the last value written
+  <span class="g">= note:</span> keep what you wrote in a variable of your own
+          and write the whole value</div>
+
+<h2>Assembled &mdash; a read the author wrote, two notes</h2>
+<div class="term"><span class="e">error: `ppu.scroll` cannot be read</span>
+ <span class="g">--&gt; demo.raster:2:21</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     var saved: u8 = ppu.scroll
+  <span class="g">|</span>                     <span class="e">^^^^^^^^^^</span> $2005 is a write-only port
+  <span class="g">= note:</span> reading $2005 returns whatever was last on the PPU's data bus,
+          not the last value written
+  <span class="g">= note:</span> keep what you wrote in a variable of your own
+          and write the whole value</div>
+
+<h2>What the refusal does not carry</h2>
+<p class="note">No &ldquo;this release compiles ...&rdquo; note. That list belongs to a construct the
+specification defines and this release has not built yet; a read of a write-only port is not coming later, so
+the refusal carries only its own three notes.</p>
+
+</main>

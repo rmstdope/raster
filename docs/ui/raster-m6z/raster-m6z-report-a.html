@@ -1,0 +1,53 @@
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --cyan:#6fd3e8; --line:#2a2d3a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 62rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 2rem; font-size:.95rem; }
+  h2 { font-size: 1rem; margin: 2.4rem 0 .5rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.4rem 0 1rem; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(28rem,1fr)); gap:1rem; }
+  .w60 { max-width: 44ch; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+  }
+</style>
+<title>cycles(?) blocks — refuse</title>
+<main>
+<h1>Q5 Option A — refuse a <code>cycles(?)</code> block that jumps, like any other</h1>
+<p class="sub">A <code>cycles(?)</code> block has no budget; it measures and prints. Today <code>cycles(?) hblank { return }</code> compiles and prints a number the block never spends.</p>
+
+<h2>What ships today — measured and verified just now</h2>
+<div class="term"><span class="g">$ rasterc r.raster -o r.nes</span>
+ <span class="c">Compiled</span>  r.raster -&gt; r.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 81 of 8186 bytes used
+    entry  reset $E000, nmi $E050, irq $E050
+   cycles  <span class="e">hblank: 12 cycles</span>   <span class="g">&lt;- the block spends 8 and then leaves</span></div>
+
+<h2>What Option A ships</h2>
+<div class="term"><span class="e">error</span>: `return` inside a timed block jumps out before the block has spent its budget and before the interrupt flag is restored, so it belongs after the block rather than inside one
+ <span class="g">--&gt;</span> r.raster:3:5
+  <span class="g">|</span>
+<span class="c">3</span> <span class="g">|</span>     return
+  <span class="g">|</span>     <span class="e">^^^^^^</span> `return` inside a timed block jumps out before the block has spent its budget and before the interrupt flag is restored, so it belongs after the block rather than inside one</div>
+<p class="cost">Consistent: every timed block is straight-line or it is refused. Says "budget" about a block that has none — arguably fine, since <code>cycles(?)</code> is still a measurement the block fails to spend. No ROM is produced.</p>
+</main>

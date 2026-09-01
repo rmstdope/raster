@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
+use raster_diag::Refusal;
 use raster_syntax::{
     Block, CycleBound, Declaration, Expression, FrameEvent, FramePosition, Function, Item, Keyword,
     Operator, Program, Span, Spanned, Statement, Type, Wait,
@@ -9,6 +10,7 @@ use raster_syntax::{
 pub struct SemanticError {
     pub message: String,
     pub span: Span,
+    pub refusal: Refusal,
 }
 
 #[derive(Clone, Debug)]
@@ -108,10 +110,26 @@ impl Analyzer {
         }
     }
 
+    /// Refuse the program. The default kind is `Rejected`: a mistake, or
+    /// something Raster does not intend to do.
     fn error(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::Rejected);
+    }
+
+    /// Refuse a construct a timed region cannot charge, because the region is
+    /// costed as straight-line code. Not every refusal that mentions a timed
+    /// region belongs here: a hardware wait has no cost to measure at all, and
+    /// where `sync exact` may stand is a placement rule. Both of those are
+    /// ordinary rejections.
+    fn cannot_be_costed(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::TimedRegionCost);
+    }
+
+    fn refuse(&mut self, span: Span, message: impl Into<String>, refusal: Refusal) {
         self.errors.push(SemanticError {
             message: message.into(),
             span,
+            refusal,
         });
     }
 
@@ -341,7 +359,7 @@ impl Analyzer {
             {
                 self.error(
                     spec.span,
-                    "`sync exact` is required before a timed region that writes a PPU register, \
+                    "`sync exact` is required before a timed block that writes a PPU register, \
                      because NMI entry is not cycle-exact",
                 );
             }
@@ -364,7 +382,7 @@ impl Analyzer {
     /// Refuse something whose cost a straight-line region cannot charge.
     fn reject_in_timed_region(&mut self, span: Span, message: &str) {
         if self.in_timed_region() {
-            self.error(span, message.to_owned());
+            self.cannot_be_costed(span, message.to_owned());
         }
     }
 
@@ -377,9 +395,9 @@ impl Analyzer {
             Statement::Block(block) => self.check_block(block),
             Statement::Loop(block) => {
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
-                        "an unbounded loop has no provable cycle cost inside a timed region",
+                        "an unbounded loop has no provable cycle cost inside a timed block",
                     );
                 }
                 self.check_block(block);
@@ -390,9 +408,9 @@ impl Analyzer {
                 else_body,
             } => {
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
-                        "branch arms inside a timed region cannot yet be balanced, because each \
+                        "branch arms inside a timed block cannot yet be balanced, because each \
                          path through them costs a different number of cycles",
                     );
                 }
@@ -404,9 +422,9 @@ impl Analyzer {
             }
             Statement::While { condition, body } => {
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
-                        "a `while` loop's trip count cannot be proven inside a timed region",
+                        "a `while` loop's trip count cannot be proven inside a timed block",
                     );
                 }
                 self.require_type(condition, ValueType::Bool, "condition must have type bool");
@@ -419,10 +437,10 @@ impl Analyzer {
                 body,
             } => {
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
-                        "a `for` loop inside a timed region compiles to a loop whose cost is not \
-                         yet proven, because the region is costed as straight-line code",
+                        "a `for` loop inside a timed block compiles to a loop whose cost is not \
+                         yet proven, because the block is costed as straight-line code",
                     );
                 }
                 self.require_range(range, "for range");
@@ -463,17 +481,17 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.error(
                         statement_span,
-                        "`wait scanline` has no provable cost inside a timed region",
+                        "`wait scanline` has no provable cost inside a timed block",
                     );
                 }
             }
             Statement::Wait(Wait::Cycles(value)) => {
                 self.require_static(value, "wait bound");
                 if self.in_timed_region() {
-                    self.error(
+                    self.cannot_be_costed(
                         statement_span,
-                        "`wait cycles` inside a timed region spends its cycles in a loop, which \
-                         the region's straight-line cost model cannot yet charge; widen the \
+                        "`wait cycles` inside a timed block spends its cycles in a loop, which \
+                         the block's straight-line cost model cannot yet charge; widen the \
                          budget and let `pad` fill it instead",
                     );
                 }
@@ -515,7 +533,7 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.error(
                         statement_span,
-                        "`wait vblank` has no provable cost inside a timed region",
+                        "`wait vblank` has no provable cost inside a timed block",
                     );
                 }
             }
@@ -524,7 +542,7 @@ impl Analyzer {
                     self.error(
                         statement_span,
                         "`sync exact` waits an unpredictable number of cycles, so it belongs \
-                         before a timed region rather than inside one",
+                         before a timed block rather than inside one",
                     );
                 }
                 if strategy.value != "exact" {
@@ -758,12 +776,12 @@ impl Analyzer {
             // charge a single pass: `v * 3` was predicted at 38 cycles and spends 69.
             Operator::Star | Operator::Slash | Operator::Percent => self.reject_in_timed_region(
                 operator.span,
-                "multiplication, division and remainder inside a timed region compile to loops \
+                "multiplication, division and remainder inside a timed block compile to loops \
                  whose cost is not yet proven",
             ),
             Operator::ShiftLeft | Operator::ShiftRight => self.reject_in_timed_region(
                 operator.span,
-                "a shift inside a timed region compiles to a loop whose cost is not yet proven",
+                "a shift inside a timed block compiles to a loop whose cost is not yet proven",
             ),
             _ => {}
         }
@@ -840,10 +858,10 @@ impl Analyzer {
         // ask for the very thing the compiler then rejects. A call's cost is the callee's, and
         // nothing measures a callee yet.
         if self.in_timed_region() {
-            self.error(
+            self.cannot_be_costed(
                 name.span,
                 format!(
-                    "`{}` cannot be called inside a timed region yet: a call's cost is the \
+                    "`{}` cannot be called inside a timed block yet: a call's cost is the \
                      callee's, and no function's cost is measured yet",
                     name.value
                 ),
