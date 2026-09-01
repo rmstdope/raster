@@ -1418,3 +1418,63 @@ fn a_ppu_data_read_inside_an_assignment_destination_is_still_a_read() {
 
     assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
 }
+
+#[test]
+fn a_ppu_status_read_inside_an_address_pair_warns() {
+    let source = "main {\n    ppu.addr = $3f\n    var s: u8 = ppu.status\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this `ppu.status` read leaves your `ppu.addr` pair half written"
+    );
+    assert_eq!(
+        warning.label,
+        "the `ppu.addr` write below this becomes a second high byte"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2005 and $2006 share one write latch, and reading $2002 puts\nit back to expecting a high byte",
+            "the PPU never sees the low byte, so it reads and writes at an\naddress you did not ask for",
+            "read `ppu.status` above the pair or below it, not inside it",
+        ]
+    );
+    assert_eq!(line_of(source, warning.span.start), 3);
+}
+
+#[test]
+fn a_ppu_status_read_before_a_complete_pair_is_silent() {
+    let program = lower_source(
+        "main {\n    var s: u8 = ppu.status\n    ppu.addr = $3f\n    ppu.addr = $00\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_ppu_status_read_with_no_pair_open_is_silent() {
+    let program = lower_source("main {\n    ppu.mask = $1e\n    var s: u8 = ppu.status\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+/// What pins the ordering inside one statement: the read is applied to the
+/// latch before the write is, because codegen emits the value and then the
+/// store.
+///
+/// The trailing read is what makes this a pin rather than a description. With
+/// the write applied first, the pair opened on line 2 is still open when line 4
+/// reads $2002, and this correct program warns; with the read applied first,
+/// line 3 closes the pair the first line opened and line 4 is silent. The
+/// two-line fixture the plan named warns under neither order.
+#[test]
+fn a_read_feeding_the_write_that_opens_a_pair_is_silent() {
+    let program = lower_source(
+        "main {\n    ppu.addr = ppu.status\n    ppu.addr = $00\n    var s: u8 = ppu.status\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}

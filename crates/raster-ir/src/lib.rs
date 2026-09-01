@@ -679,6 +679,217 @@ enum WriteSite {
     CompoundAssignment(&'static str),
 }
 
+/// Which of the two registers that share the $2005/$2006 write latch left a
+/// pair half written.
+///
+/// Not `Register`: only these two can open a pair, and a match over all
+/// sixteen would carry fourteen arms nobody can reach.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LatchPair {
+    Address,
+}
+
+impl LatchPair {
+    /// The register as the author spells it: `ppu.addr`.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Address => "ppu.addr",
+        }
+    }
+
+    /// What the carets say under a `ppu.status` read.
+    const fn read_label(self) -> &'static str {
+        match self {
+            Self::Address => "the `ppu.addr` write below this becomes a second high byte",
+        }
+    }
+
+    /// The note explaining the shared latch, in this register's own words.
+    const fn shared_latch_note(self) -> &'static str {
+        match self {
+            Self::Address => "$2005 and $2006 share one write latch, and reading $2002 puts\n\
+                              it back to expecting a high byte",
+        }
+    }
+
+    /// The note saying what the PPU never sees, in this register's own words.
+    const fn lost_half_note(self) -> &'static str {
+        match self {
+            Self::Address => "the PPU never sees the low byte, so it reads and writes at an\n\
+                              address you did not ask for",
+        }
+    }
+}
+
+/// What to do instead, when the author wrote the read.
+const MOVE_THE_READ: &str = "read `ppu.status` above the pair or below it, not inside it";
+
+/// What one statement does to the shared $2005/$2006 write latch, in its own
+/// right — not counting anything inside a nested block.
+#[derive(Clone, Copy)]
+struct LatchEffect {
+    /// The span of the **first** $2002 read this statement makes. `None` for a
+    /// statement that reads no port.
+    read: Option<Span>,
+    /// The `ppu.addr` or `ppu.scroll` write this statement makes, if it makes
+    /// one. A statement makes at most one, because `lower_expression_statement`
+    /// recognises an assignment only as the whole statement.
+    write: Option<LatchPair>,
+}
+
+/// Classify one statement. Purely syntactic and side-effect free: it runs
+/// before the statement is lowered, so it must report no error and touch no
+/// state. Mirrors `ppu_data_reads` arm for arm.
+fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
+    match &statement.value {
+        SyntaxStatement::Declaration(declaration) => LatchEffect {
+            read: declaration
+                .initializer
+                .as_ref()
+                .and_then(ppu_status_read_in),
+            write: None,
+        },
+        SyntaxStatement::Expression(expression) => LatchEffect {
+            read: ppu_status_read_in(expression),
+            write: latch_write_in(expression),
+        },
+        SyntaxStatement::Return(Some(expression)) => LatchEffect {
+            read: ppu_status_read_in(expression),
+            write: None,
+        },
+        SyntaxStatement::If { condition, .. } => LatchEffect {
+            read: ppu_status_read_in(condition),
+            write: None,
+        },
+        SyntaxStatement::While { condition, .. } => LatchEffect {
+            read: ppu_status_read_in(condition),
+            write: None,
+        },
+        // Classified for completeness rather than for reach, exactly as
+        // `ppu_data_reads` does: `raster-sema` refuses a `for` range or step
+        // that is not a compile-time constant, so neither can hold a read.
+        SyntaxStatement::For { range, step, .. } => LatchEffect {
+            read: ppu_status_read_in(range)
+                .or_else(|| step.as_ref().and_then(ppu_status_read_in)),
+            write: None,
+        },
+        SyntaxStatement::Block(_)
+        | SyntaxStatement::Loop(_)
+        | SyntaxStatement::Cycles { .. }
+        | SyntaxStatement::Wait(_)
+        | SyntaxStatement::Sync(_)
+        | SyntaxStatement::Break
+        | SyntaxStatement::Continue
+        | SyntaxStatement::Return(None) => LatchEffect {
+            read: None,
+            write: None,
+        },
+    }
+}
+
+/// The span of the first `ppu.status` read in this expression, in source order.
+///
+/// Leftmost wins, so the recursion goes left before right, callee before
+/// arguments, and base before index.
+fn ppu_status_read_in(expression: &Spanned<SyntaxExpression>) -> Option<Span> {
+    match &expression.value {
+        SyntaxExpression::Member { base, member } => {
+            is_ppu_status(&base.value, &member.value).then_some(expression.span)
+        }
+        SyntaxExpression::Prefix { operand, .. } => ppu_status_read_in(operand),
+        SyntaxExpression::Infix {
+            left,
+            operator,
+            right,
+        } => {
+            // A plain `ppu.status = 0` is a write the PPU throws away, which is
+            // raster-xeo's bead and not a read. The four compound assignments
+            // really do emit `LDA $2002` before their store, so the destination
+            // itself is a read there, with the carets on `ppu.status`.
+            let left_read = if assigns(operator.value) && is_ppu_status_member(&left.value) {
+                match operator.value {
+                    Operator::Assign => None,
+                    _ => Some(left.span),
+                }
+            } else {
+                ppu_status_read_in(left)
+            };
+            left_read.or_else(|| ppu_status_read_in(right))
+        }
+        SyntaxExpression::Call { callee, arguments } => ppu_status_read_in(callee)
+            .or_else(|| arguments.iter().find_map(ppu_status_read_in)),
+        SyntaxExpression::Index { base, index } => {
+            ppu_status_read_in(base).or_else(|| ppu_status_read_in(index))
+        }
+        SyntaxExpression::Range { start, end } => {
+            ppu_status_read_in(start).or_else(|| ppu_status_read_in(end))
+        }
+        SyntaxExpression::Name(_)
+        | SyntaxExpression::Number(_)
+        | SyntaxExpression::String(_)
+        | SyntaxExpression::Character(_)
+        | SyntaxExpression::Boolean(_) => None,
+    }
+}
+
+/// The `ppu.addr` write this expression is, if it is one.
+fn latch_write_in(expression: &Spanned<SyntaxExpression>) -> Option<LatchPair> {
+    let SyntaxExpression::Infix {
+        left, operator, ..
+    } = &expression.value
+    else {
+        return None;
+    };
+    if !assigns(operator.value) {
+        return None;
+    }
+    let SyntaxExpression::Member { base, member } = &left.value else {
+        return None;
+    };
+    latch_pair(&base.value, &member.value)
+}
+
+/// The pair this `Member` expression's base and member open, if any.
+fn latch_pair(base: &SyntaxExpression, member: &str) -> Option<LatchPair> {
+    if !matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") {
+        return None;
+    }
+    match member {
+        "addr" => Some(LatchPair::Address),
+        _ => None,
+    }
+}
+
+/// Whether this expression is the `ppu.status` member access itself, rather
+/// than something that merely contains one.
+fn is_ppu_status_member(expression: &SyntaxExpression) -> bool {
+    matches!(expression, SyntaxExpression::Member { base, member }
+        if is_ppu_status(&base.value, &member.value))
+}
+
+/// Whether this `Member` expression's base and member spell `ppu.status`.
+fn is_ppu_status(base: &SyntaxExpression, member: &str) -> bool {
+    matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") && member == "status"
+}
+
+/// The warning a $2002 read earns when a `ppu.addr` or `ppu.scroll` pair is
+/// half written.
+fn half_written_pair(opener: LatchPair, span: Span) -> LowerWarning {
+    LowerWarning {
+        message: format!(
+            "this `ppu.status` read leaves your `{}` pair half written",
+            opener.name()
+        ),
+        label: opener.read_label().to_owned(),
+        notes: vec![
+            opener.shared_latch_note().to_owned(),
+            opener.lost_half_note().to_owned(),
+            MOVE_THE_READ.to_owned(),
+        ],
+        span,
+    }
+}
+
 /// The warning a write to `mmc3.bank_select` earns, if it earns one.
 ///
 /// `None` for a constant with bits 6 and 7 clear. That selects a bank register
@@ -1362,8 +1573,31 @@ impl Lowerer {
         // right has not been lowered yet, so it cannot be observed while
         // lowering.
         let reads: Vec<usize> = block.statements.iter().map(ppu_data_reads).collect();
+        let effects: Vec<LatchEffect> = block.statements.iter().map(latch_effect).collect();
+        // A local, not a field on `Lowerer`: a nested block goes through its
+        // own `lower_statements` call and therefore starts with the latch
+        // closed for free, which is the agreed brace rule.
+        let mut latch: Option<LatchPair> = None;
         let outer = self.ppu_data_read_has_neighbour;
         for (index, statement) in block.statements.iter().enumerate() {
+            let effect = effects[index];
+            // Pushed before the statement is lowered, so the warnings vector
+            // stays in source order: a warning from inside a nested block would
+            // otherwise print ahead of one about the statement containing it.
+            if let Some(opener) = latch {
+                if let Some(span) = effect.read {
+                    self.warnings.push(half_written_pair(opener, span));
+                }
+            }
+            // Then the state, in the order the hardware sees it: a statement's
+            // reads happen before its write, because codegen emits the value
+            // and then the store.
+            if effect.read.is_some() {
+                latch = None;
+            }
+            if let Some(pair) = effect.write {
+                latch = if latch.is_some() { None } else { Some(pair) };
+            }
             let before = index > 0 && reads[index - 1] > 0;
             let after = reads.get(index + 1).is_some_and(|count| *count > 0);
             self.ppu_data_read_has_neighbour = before || after || reads[index] >= 2;
