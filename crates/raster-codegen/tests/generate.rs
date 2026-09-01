@@ -714,3 +714,102 @@ fn a_handler_that_does_not_fit_its_scanline_names_its_cost_and_its_budget() {
         "expected an over-budget scanline body, found {error:?}"
     );
 }
+
+#[test]
+fn nothing_unmasks_irqs_before_main_has_run() {
+    // `CLI` is the only instruction codegen emits that can clear the I flag. `PLP` was
+    // considered and excluded: `timed_region` emits `PHP`/`SEI` and the closing `PLP` only
+    // for a non-interruptible region, so every `PLP` restores the flags its own `PHP`
+    // pushed and none can clear I. `RTI` likewise only returns from a handler that the
+    // flag already let in. An unmask path that is none of these would pass this test
+    // silently — add it here rather than assuming `CLI` stays the only one.
+    const CLI: u8 = 0x58;
+
+    let irq_source = r#"
+        main {
+            ppu.ctrl = $10
+            ppu.mask = $18
+        }
+        frame bars using irq {
+            at scanline 32 { ppu.mask = $1e }
+            at scanline 64 { ppu.mask = $18 }
+        }
+    "#;
+    let timed_source = r#"
+        main {
+            ppu.mask = 0
+        }
+        frame bars using timed {
+            every 8 scanlines from 0 to 239 { ppu.mask = 0 }
+        }
+    "#;
+
+    let mut irq_frame_had_a_cli = false;
+
+    for (strategy, source) in [("using irq", irq_source), ("using timed", timed_source)] {
+        let syntax = parse(source).expect("fixture should parse");
+        let typed = analyze(&syntax).expect("fixture should analyze");
+        let ir = lower(&typed).expect("fixture should lower");
+        let halt = ir
+            .main
+            .as_ref()
+            .expect("the fixture has a `main`")
+            .halt_label;
+        let output = generate(&ir).expect("fixture should generate");
+
+        let halt_index = output
+            .program
+            .items
+            .iter()
+            .position(|item| matches!(item, FixedBankItem::Label(label) if label.0 == halt.0))
+            .expect("codegen emits `main`'s halt label");
+
+        let mut clis_in_this_fixture = 0;
+
+        for (index, item) in output.program.items.iter().enumerate() {
+            let FixedBankItem::Instruction { instruction, .. } = item else {
+                continue;
+            };
+            if instruction.opcode != CLI {
+                continue;
+            }
+            clis_in_this_fixture += 1;
+            if strategy == "using irq" {
+                irq_frame_had_a_cli = true;
+            }
+            assert!(
+                index > halt_index,
+                "a `CLI` is emitted at item {index}, before `main`'s halt label at item \
+                 {halt_index}.\n\n\
+                 rasterc's MMC3 bank tracking assumes nothing runs between two of `main`'s\n\
+                 statements: it folds a `mmc3.bank_select` and judges the `mmc3.bank_data`\n\
+                 write that follows it against the register that select named. If interrupts\n\
+                 are unmasked while `main` is still running, a `frame` handler's own bank\n\
+                 select can land between the two and the write moves a window the author\n\
+                 never named — silently, because the tracking still believes the fold.\n\n\
+                 That needs a warning before this change ships. Spec section 9.4 says\n\
+                 `main` is uninterrupted; either that paragraph changes with this, or\n\
+                 this does not ship."
+            );
+        }
+
+        if strategy == "using timed" {
+            assert_eq!(
+                clis_in_this_fixture, 0,
+                "a `frame ... using timed` emitted {clis_in_this_fixture} `CLI`(s).\n\n\
+                 Spec section 9.4 says a `timed` frame arms no interrupt at all, and a\n\
+                 timed schedule is counted cycles from one synchronisation onwards — an\n\
+                 interrupt taken anywhere in the loop steals cycles the schedule already\n\
+                 spent. Either that sentence changes with this, or this does not ship."
+            );
+        }
+    }
+
+    assert!(
+        irq_frame_had_a_cli,
+        "the `frame ... using irq` fixture emitted no `CLI` at all, so this test\n\
+         checked nothing. Either the arming sequence stopped unmasking interrupts,\n\
+         or the fixture stopped lowering to an IRQ chain. Fix the fixture rather\n\
+         than deleting the assertion."
+    );
+}
