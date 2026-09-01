@@ -8,7 +8,10 @@ use raster_syntax::{
     Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement, Type, Wait,
 };
 pub use raster_timing::CycleConstraint;
-use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
+use raster_timing::{
+    timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState,
+    TimedFrameNmi, NMI_CYCLES, PPU_CTRL_NMI,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Place(pub u32);
@@ -1274,6 +1277,7 @@ pub fn lower(typed: &TypedProgram) -> Result<Program, LowerFailure> {
     lowerer.selects_bank = functions_that_select(&typed.program);
     lowerer.lower_program(&typed.program);
     lowerer.check_mmc3_irq_frame();
+    lowerer.check_timed_frame_nmi();
     if lowerer.errors.is_empty() {
         lowerer.program.warnings = lowerer.warnings;
         Ok(lowerer.program)
@@ -1324,6 +1328,27 @@ struct Lowerer {
     /// initializer reads at reset, before any `ppu.addr` write, and has no
     /// neighbouring statement to prime it.
     ppu_data_read_has_neighbour: bool,
+    /// Whether the statements being lowered are a `frame` handler's body. Set only by
+    /// `lower_frame_body`, which is the one place a handler's statements are lowered.
+    in_frame_handler: bool,
+    /// Every `ppu.ctrl` write inside a handler body, in schedule order. Judged after lowering,
+    /// because whether it matters depends on the frame's strategy — and collected here, because
+    /// `Statement::Assign` carries no span to point at afterwards.
+    handler_ctrl_writes: Vec<HandlerCtrlWrite>,
+}
+
+/// One `ppu.ctrl` write inside a `frame` handler, and what rasterc could fold it to.
+///
+/// `bits` is `None` where the value is not a constant. A handler is straight-line —
+/// `raster-sema` refuses `if`, `while`, `for` and calls inside a timed region — so those are the
+/// only two cases: there is no conditional write inside one.
+struct HandlerCtrlWrite {
+    span: Span,
+    bits: Option<u8>,
+    /// The scanline the handler that carries this write runs at, stamped once the write's own
+    /// event is built. Handler bodies are lowered in source order and the events sorted by
+    /// scanline afterwards, so this is what puts the warnings back into schedule order.
+    scanline: u32,
 }
 
 impl Lowerer {
@@ -1341,6 +1366,8 @@ impl Lowerer {
             selection: BankSelection::Unknown(Unseen::InThisBody),
             selects_bank: BTreeSet::new(),
             ppu_data_read_has_neighbour: false,
+            in_frame_handler: false,
+            handler_ctrl_writes: Vec::new(),
         }
     }
 
@@ -1543,7 +1570,9 @@ impl Lowerer {
                     }
                     FramePosition::Scanline(value) => {
                         if let Some(scanline) = self.visible_scanline(value) {
+                            let collected = self.handler_ctrl_writes.len();
                             let body = self.lower_frame_body(body);
+                            self.tag_handler_ctrl_writes(collected, scanline);
                             events.push(FrameEvent {
                                 scanline,
                                 body,
@@ -1575,7 +1604,11 @@ impl Lowerer {
                     // The body is lowered once and cloned per occurrence. Lowering it again for
                     // each would allocate a fresh temporary every time, and `every 1 scanlines
                     // from 0 to 239` would exhaust the zero page on a handler that needs one slot.
+                    let collected = self.handler_ctrl_writes.len();
                     let body = self.lower_frame_body(body);
+                    // The body is lowered once and cloned per occurrence, so its writes are
+                    // warned about once — at the first scanline the schedule reaches them.
+                    self.tag_handler_ctrl_writes(collected, from);
                     let mut scanline = Some(from);
                     while let Some(current) = scanline.filter(|&current| current <= to) {
                         events.push(FrameEvent {
@@ -1650,6 +1683,37 @@ impl Lowerer {
         }
     }
 
+    /// Warn where a `frame ... using timed` can be interrupted by an NMI.
+    ///
+    /// Nothing is checked on a program that already failed, for the reason `check_mmc3_irq_frame`
+    /// gives: the configuration is read by walking calls, and a program whose recursion was just
+    /// rejected has no walk that terminates.
+    fn check_timed_frame_nmi(&mut self) {
+        if !self.errors.is_empty() {
+            return;
+        }
+        let Some(frame) = &self.program.frame else {
+            return;
+        };
+        if frame.strategy != FrameStrategy::Timed {
+            return;
+        }
+        // Copied out before anything is pushed: `self.warnings` cannot be borrowed mutably while
+        // `self.program.frame` is borrowed.
+        let span = frame.strategy_span;
+        if let Some(verdict) = timed_frame_nmi(self.ppu_configuration().ctrl) {
+            self.warnings.push(timed_frame_nmi_warning(verdict, span));
+        }
+        let mut writes = std::mem::take(&mut self.handler_ctrl_writes);
+        // Stable, so several writes inside one handler keep the order the body has them in.
+        writes.sort_by_key(|write| write.scanline);
+        for write in writes {
+            if let Some(warning) = handler_nmi_warning(&write) {
+                self.warnings.push(warning);
+            }
+        }
+    }
+
     /// What the program leaves in `ppu.ctrl` and `ppu.mask` by the time its frame runs.
     ///
     /// The walk is the program's own order — the global initializers, then `main`, stepping into
@@ -1696,10 +1760,23 @@ impl Lowerer {
     /// A `return` never reaches here: `raster-sema` refuses one in a frame handler, which is what
     /// keeps an IRQ handler's `RTI` reachable — codegen compiles a `return` into a jump to the end
     /// of `main`, and an interrupt left that way keeps its three bytes of stack for ever.
+    /// Stamp the handler `ppu.ctrl` writes collected since `from` with the scanline they run at.
+    ///
+    /// A handler body is lowered in source order and the events are sorted by scanline afterwards,
+    /// so without this the warnings come out in the order the events were *written* — which is not
+    /// what the schedule does, and not what section 7 of this bead's agreed page says.
+    fn tag_handler_ctrl_writes(&mut self, from: usize, scanline: u32) {
+        for write in &mut self.handler_ctrl_writes[from..] {
+            write.scanline = scanline;
+        }
+    }
+
     fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
         self.enter_scope();
         self.selection = BankSelection::Unknown(Unseen::FrameEntry);
+        let outer = std::mem::replace(&mut self.in_frame_handler, true);
         let (statements, _) = self.lower_statements(body);
+        self.in_frame_handler = outer;
         self.leave_scope();
         statements
     }
@@ -2321,6 +2398,26 @@ impl Lowerer {
                     if let Some(warning) = bank_data_warning(self.selection, expression.span) {
                         self.warnings.push(warning);
                     }
+                }
+                // Collected here and judged after lowering: whether it matters depends on the
+                // frame's strategy, and `Statement::Assign` carries no span to point at later.
+                // `!refused` for the reason `bank_select_warning` gives — a refused value lowers
+                // to a `Constant(0)` placeholder, and a warning about a byte the author did not
+                // write is unactionable until the refusal is fixed.
+                if destination == Destination::Register(Register::PpuCtrl)
+                    && self.in_frame_handler
+                    && !refused
+                {
+                    self.handler_ctrl_writes.push(HandlerCtrlWrite {
+                        span: expression.span,
+                        bits: match &value {
+                            Value::Constant(bits) => Some(*bits),
+                            _ => None,
+                        },
+                        // Stamped by `tag_handler_ctrl_writes` once the event this body belongs
+                        // to is built; the scanline is not known from inside the body.
+                        scanline: 0,
+                    });
                 }
                 output.push(Statement::Assign { destination, value });
                 return;
@@ -3353,6 +3450,91 @@ fn enter_function(
         conditional,
     );
     visiting.pop();
+}
+
+/// The last note both NMI warnings end with, so the two cannot drift apart.
+const CLEAR_BIT_7_NOTE: &str = "clear bit 7 to keep the schedule, or use `using irq`, which\n\
+                                synchronizes on every scanline it fires";
+
+/// What the carets say under a `timed` frame's strategy, whichever verdict it is.
+const TIMED_SCHEDULE_LABEL: &str = "this schedule counts cycles from one synchronization onwards";
+
+/// The warning a `frame ... using timed` earns when NMI can reach it.
+fn timed_frame_nmi_warning(verdict: TimedFrameNmi, span: Span) -> LowerWarning {
+    let unknown = |first: String| LowerWarning {
+        message: "rasterc cannot tell whether this program enables NMI".to_owned(),
+        label: TIMED_SCHEDULE_LABEL.to_owned(),
+        notes: vec![
+            first,
+            format!(
+                "bit 7 is NMI, and each NMI costs the schedule {NMI_CYCLES} cycles it has\n\
+                 already spent; writing a constant with bit 7 clear keeps it"
+            ),
+        ],
+        span,
+        assumes_budget_met: false,
+    };
+    match verdict {
+        TimedFrameNmi::On { ctrl } => LowerWarning {
+            message: "this program enables NMI, and a `timed` frame cannot afford one".to_owned(),
+            label: TIMED_SCHEDULE_LABEL.to_owned(),
+            notes: vec![
+                format!(
+                    "`ppu.ctrl` holds ${ctrl:02X} when the frame starts, and bit 7 is NMI;\n\
+                     each NMI costs the schedule {NMI_CYCLES} cycles it has already spent"
+                ),
+                CLEAR_BIT_7_NOTE.to_owned(),
+            ],
+            span,
+            assumes_budget_met: false,
+        },
+        TimedFrameNmi::Unproven => unknown(
+            "the last write to `ppu.ctrl` before the frame is not a value\n\
+             rasterc can see, so bit 7 is unknown"
+                .to_owned(),
+        ),
+        TimedFrameNmi::Conditional => unknown(
+            "`ppu.ctrl` is written on some paths through this program and not\n\
+             others, so bit 7 is unknown"
+                .to_owned(),
+        ),
+    }
+}
+
+/// The warning a `ppu.ctrl` write inside a handler earns, if it earns one.
+///
+/// `None` for a constant with bit 7 clear: that is an ordinary handler adjusting the scroll
+/// nametable or the pattern half, and warning on it would fire on correct programs.
+fn handler_nmi_warning(write: &HandlerCtrlWrite) -> Option<LowerWarning> {
+    match write.bits {
+        Some(bits) if bits & PPU_CTRL_NMI == 0 => None,
+        Some(_) => Some(LowerWarning {
+            message: "this write enables NMI, and a `timed` frame cannot afford one".to_owned(),
+            label: "bit 7 is NMI, and this handler runs on every frame".to_owned(),
+            notes: vec![
+                format!(
+                    "the schedule is counted from one synchronization and never\n\
+                     re-checked; each NMI costs it {NMI_CYCLES} cycles it has already spent"
+                ),
+                CLEAR_BIT_7_NOTE.to_owned(),
+            ],
+            span: write.span,
+            assumes_budget_met: false,
+        }),
+        None => Some(LowerWarning {
+            message: "rasterc cannot tell whether this write enables NMI".to_owned(),
+            label: "this is not a value rasterc can see, so bit 7 is unknown".to_owned(),
+            notes: vec![
+                format!(
+                    "bit 7 is NMI, and this handler runs on every frame; each NMI\n\
+                     costs the schedule {NMI_CYCLES} cycles it has already spent"
+                ),
+                "writing a constant with bit 7 clear keeps the schedule".to_owned(),
+            ],
+            span: write.span,
+            assumes_budget_met: false,
+        }),
+    }
 }
 
 /// The diagnostic an MMC3 precondition failure reads as, naming the value that caused it.

@@ -1811,3 +1811,358 @@ fn sync_exact_inside_a_scroll_pair_warns_in_scroll_words() {
         ]
     );
 }
+
+/// A `timed` schedule synchronizes once and counts forward, so a cycle it did not spend itself is
+/// never recovered. NMI costs it thirteen every frame, out of cycles it had already allocated —
+/// the ROM still builds, because every other hazard rasterc can see but not prove is a warning.
+#[test]
+fn a_timed_frame_with_nmi_on_is_a_warning() {
+    let program = lower_source(
+        "main {\n\
+         ppu.ctrl = $88\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert_eq!(
+        warning.label,
+        "this schedule counts cycles from one synchronization onwards"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "`ppu.ctrl` holds $88 when the frame starts, and bit 7 is NMI;\neach NMI costs the schedule 13 cycles it has already spent",
+            "clear bit 7 to keep the schedule, or use `using irq`, which\nsynchronizes on every scanline it fires",
+        ]
+    );
+}
+
+/// A value rasterc could not fold is said so rather than passed over: the shape
+/// `mmc3.bank_select` already uses for a value it cannot see.
+#[test]
+fn a_timed_frame_whose_ppu_ctrl_cannot_be_folded_is_a_warning() {
+    let program = lower_source(
+        "var flags: u8\n\
+         main {\n\
+         ppu.ctrl = flags\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "rasterc cannot tell whether this program enables NMI"
+    );
+    assert_eq!(
+        warning.label,
+        "this schedule counts cycles from one synchronization onwards"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "the last write to `ppu.ctrl` before the frame is not a value\nrasterc can see, so bit 7 is unknown",
+            "bit 7 is NMI, and each NMI costs the schedule 13 cycles it has\nalready spent; writing a constant with bit 7 clear keeps it",
+        ]
+    );
+}
+
+/// Written on some paths and not others is its own first note, and not the unfoldable one: they
+/// are two different things for the author to go and fix.
+#[test]
+fn a_timed_frame_whose_ppu_ctrl_is_written_on_some_paths_is_a_warning() {
+    let program = lower_source(
+        "main {\n\
+         var x: u8 = 1\n\
+         if x != 0 { ppu.ctrl = $08 }\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "rasterc cannot tell whether this program enables NMI"
+    );
+    assert_eq!(
+        warning.notes[0],
+        "`ppu.ctrl` is written on some paths through this program and not\nothers, so bit 7 is unknown"
+    );
+    // The pin the plan asks for is that the two unknowns stay two sentences, so the comparison is
+    // against what the unfoldable fixture actually renders rather than against a copy of it.
+    let unfoldable = lower_source(
+        "var flags: u8\n\
+         main {\n\
+         ppu.ctrl = flags\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+    assert_eq!(warning.message, unfoldable.warnings[0].message);
+    assert_ne!(warning.notes[0], unfoldable.warnings[0].notes[0]);
+    assert_eq!(warning.notes[1], unfoldable.warnings[0].notes[1]);
+}
+
+/// A handler write is worse than a clean `main`: NMI goes on for every frame after the first, and
+/// the program-level check sees nothing at all, because it reads what holds *before* the frame.
+#[test]
+fn a_handler_that_enables_nmi_is_a_warning() {
+    let source = "main {\n\
+                  ppu.ctrl = $08\n\
+                  ppu.mask = $1e\n\
+                  }\n\
+                  frame bars using timed {\n\
+                  every 8 scanlines from 0 to 239 { ppu.ctrl = $88 }\n\
+                  }";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this write enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 7 is NMI, and this handler runs on every frame"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "the schedule is counted from one synchronization and never\nre-checked; each NMI costs it 13 cycles it has already spent",
+            "clear bit 7 to keep the schedule, or use `using irq`, which\nsynchronizes on every scanline it fires",
+        ]
+    );
+    // The carets are on the handler's own write, not on the frame's strategy.
+    assert_eq!(
+        &source[warning.span.start as usize..warning.span.end as usize],
+        "ppu.ctrl = $88"
+    );
+}
+
+/// A handler write rasterc cannot fold gets the same treatment as one in `main`.
+#[test]
+fn a_handler_ppu_ctrl_write_rasterc_cannot_fold_is_a_warning() {
+    let program = lower_source(
+        "var flags: u8\n\
+         main {\n\
+         ppu.ctrl = $08\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.ctrl = flags }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "rasterc cannot tell whether this write enables NMI"
+    );
+    assert_eq!(
+        warning.label,
+        "this is not a value rasterc can see, so bit 7 is unknown"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "bit 7 is NMI, and this handler runs on every frame; each NMI\ncosts the schedule 13 cycles it has already spent",
+            "writing a constant with bit 7 clear keeps the schedule",
+        ]
+    );
+}
+
+/// An IRQ chain re-synchronizes on every scanline it fires, so NMI costs it nothing it cannot
+/// recover — and §13's own flagship example turns NMI on. It has to keep compiling quietly.
+#[test]
+fn an_irq_frame_that_enables_nmi_is_silent() {
+    let program = lower_source(
+        "main {\n\
+         ppu.ctrl = $88\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using irq {\n\
+         at scanline 60 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+/// The check is about what `ppu.ctrl` holds when the frame starts, not about every value it ever
+/// held: a program that sets bit 7 and clears it again is correct.
+#[test]
+fn a_timed_frame_that_clears_bit_7_again_before_it_starts_is_silent() {
+    let program = lower_source(
+        "main {\n\
+         ppu.ctrl = $88\n\
+         ppu.ctrl = $08\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+/// The reset runtime stores zero into `ppu.ctrl` before the author's code runs, so a program that
+/// never writes it is provably NMI-off. There is no fourth "never written" verdict to give.
+#[test]
+fn a_timed_frame_with_no_ppu_ctrl_write_is_silent() {
+    let program = lower_source(
+        "main {\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+/// An ordinary handler adjusting the nametable or the pattern half is a correct program, and a
+/// warning that fired on it would be one an author learns to ignore.
+#[test]
+fn a_handler_write_with_bit_7_clear_is_silent() {
+    let program = lower_source(
+        "main {\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.ctrl = $08 }\n\
+         }",
+    );
+
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+/// An omitted `using` clause means `timed` (spec section 7.1), so the same program earns the same
+/// warning. There is no `timed` to underline, so the carets fall back to the frame item's own
+/// span, which begins at the `frame` keyword.
+#[test]
+fn a_frame_with_no_using_clause_earns_the_same_warning() {
+    let source = "frame bars {\n\
+                  every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+                  }\n\
+                  main {\n\
+                  ppu.ctrl = $88\n\
+                  ppu.mask = $1e\n\
+                  }";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert!(
+        source[warning.span.start as usize..warning.span.end as usize].starts_with("frame bars"),
+        "the carets take the frame's own span, not a strategy that is not written"
+    );
+}
+
+/// The NMI check runs after lowering, so its warnings are appended to whatever lowering already
+/// found — whatever the line numbers say. The frame is declared first here and the bank select
+/// last, so source order and emission order disagree and this pins the one that ships.
+#[test]
+fn an_nmi_warning_prints_after_a_bank_warning_whatever_the_line_numbers() {
+    let program = lower_source(
+        "frame bars {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }\n\
+         main {\n\
+         ppu.ctrl = $88\n\
+         mmc3.bank_select = $80\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        program.warnings[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        program.warnings[1].message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert!(
+        program.warnings[1].span.start < program.warnings[0].span.start,
+        "the fixture is only a test of ordering while the two disagree with source order"
+    );
+}
+
+/// Handler warnings follow schedule order, which is not the order the events were written: bodies
+/// are lowered in source order and the events sorted by scanline afterwards. Section 7 of this
+/// bead's agreed page says schedule order, and this is the fixture where the two disagree.
+#[test]
+fn two_handlers_that_touch_ppu_ctrl_warn_in_schedule_order() {
+    let program = lower_source(
+        "var flags: u8\n\
+         main {\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         at scanline 200 { ppu.ctrl = $88 }\n\
+         at scanline 20 { ppu.ctrl = flags }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        program.warnings[0].message, "rasterc cannot tell whether this write enables NMI",
+        "scanline 20 runs first, though it is written second"
+    );
+    assert_eq!(
+        program.warnings[1].message,
+        "this write enables NMI, and a `timed` frame cannot afford one"
+    );
+}
+
+/// Two writes inside one handler keep the order the body has them in: the sort that puts handlers
+/// into schedule order is stable, and within one handler there is only one order to have.
+#[test]
+fn two_ppu_ctrl_writes_in_one_handler_keep_the_order_the_body_has_them_in() {
+    let source = "var flags: u8\n\
+                  main {\n\
+                  ppu.mask = $1e\n\
+                  }\n\
+                  frame bars using timed {\n\
+                  at scanline 20 { ppu.ctrl = $88\n\
+                  ppu.ctrl = flags }\n\
+                  }";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        &source[program.warnings[0].span.start as usize..program.warnings[0].span.end as usize],
+        "ppu.ctrl = $88"
+    );
+    assert_eq!(
+        &source[program.warnings[1].span.start as usize..program.warnings[1].span.end as usize],
+        "ppu.ctrl = flags"
+    );
+}

@@ -631,6 +631,49 @@ const PPU_CTRL_TALL_SPRITES: u8 = 0b0010_0000;
 /// `ppu.mask` bits 3 and 4: show the background, and show the sprites. Either one is rendering.
 const PPU_MASK_RENDERING: u8 = 0b0001_1000;
 
+/// `ppu.ctrl` bit 7: the PPU asserts NMI at the start of vblank.
+///
+/// `pub` where the other `ppu.ctrl` bits above are not, because `raster-ir` judges a handler's
+/// write itself, against a folded constant, with no [`RegisterState`] to hand.
+pub const PPU_CTRL_NMI: u8 = 0b1000_0000;
+
+/// What one NMI costs the CPU: seven cycles to enter the handler and six for the `RTI`.
+///
+/// `$FFFA` is the runtime's bare `RTI` for every program this release builds, so none of the
+/// author's code runs — and the thirteen cycles are spent anyway.
+pub const NMI_CYCLES: u32 = 13;
+
+/// Why a `frame ... using timed` cannot be trusted to keep its schedule.
+///
+/// A timed schedule synchronizes once and counts forward, so a cycle it did not spend itself is
+/// never recovered; an NMI takes [`NMI_CYCLES`] out of every frame. The three variants are three
+/// things to tell an author, and mirror what `using irq` already distinguishes: a value that is
+/// set, a value that could not be folded, and a register written on only some paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TimedFrameNmi {
+    /// Bit 7 of `ppu.ctrl` is set when the frame starts.
+    On { ctrl: u8 },
+    /// The program's last store to `ppu.ctrl` before the frame was not a constant.
+    Unproven,
+    /// `ppu.ctrl` is written on some paths through the program and not others.
+    Conditional,
+}
+
+/// What a `timed` frame inherits from the program that set it up.
+///
+/// `None` where bit 7 is provably clear, which includes the program that never writes `ppu.ctrl`
+/// at all: the reset runtime stores zero into it before the author's code runs.
+pub fn timed_frame_nmi(ctrl: RegisterState) -> Option<TimedFrameNmi> {
+    match ctrl {
+        RegisterState::Known(value) if value & PPU_CTRL_NMI != 0 => {
+            Some(TimedFrameNmi::On { ctrl: value })
+        }
+        RegisterState::Known(_) => None,
+        RegisterState::Unproven => Some(TimedFrameNmi::Unproven),
+        RegisterState::Conditional => Some(TimedFrameNmi::Conditional),
+    }
+}
+
 /// What a PPU register holds where the compiler can prove it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegisterState {

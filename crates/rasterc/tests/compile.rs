@@ -1016,3 +1016,61 @@ fn a_refusal_elsewhere_leaves_this_block_its_warning() {
         "the first block's warning is still true: {diagnostics:?}"
     );
 }
+
+/// The decision this bead carries: warn, and still write the ROM. Every other hazard rasterc can
+/// see but not prove is a warning, and a refusal blocks an author who is mid-edit and knows.
+#[test]
+fn a_timed_frame_with_nmi_on_warns_and_still_builds() {
+    let rom = compile_source(
+        "main {\n\
+         ppu.ctrl = $88\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    )
+    .expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1);
+    let warning = &rom.warnings[0];
+    assert_eq!(warning.severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        warning.message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "`ppu.ctrl` holds $88 when the frame starts, and bit 7 is NMI;\neach NMI costs the schedule 13 cycles it has already spent",
+            "clear bit 7 to keep the schedule, or use `using irq`, which\nsynchronizes on every scanline it fires",
+        ]
+    );
+    assert!(warning.span.is_some());
+}
+
+/// Two warnings on one build must not read as one printed twice: the program-level one and the
+/// handler one say different first lines, and the frame-level one comes first.
+#[test]
+fn a_program_that_enables_nmi_twice_over_warns_about_each() {
+    let rom = compile_source(
+        "main {\n\
+         ppu.ctrl = $88\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.ctrl = $88 }\n\
+         }",
+    )
+    .expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 2);
+    assert_eq!(
+        rom.warnings[0].message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert_eq!(
+        rom.warnings[1].message,
+        "this write enables NMI, and a `timed` frame cannot afford one"
+    );
+}
