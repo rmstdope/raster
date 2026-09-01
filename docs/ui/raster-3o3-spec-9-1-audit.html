@@ -1,0 +1,152 @@
+<!doctype html>
+<title>raster-3o3 — §9.1 audited line by line</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 68rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:56em; }
+  h2 { font-size: 1.05rem; margin: 2.4rem 0 .3rem; letter-spacing:-.01em; }
+  h3 { font-size: .82rem; margin: 1.3rem 0 .35rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.3rem 0 .7rem; max-width:60em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:.9rem 1.1rem;
+          font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; margin:.4rem 0; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .src .del { color:#a33; text-decoration: line-through; }
+  .src .add { color:#1f7a3d; font-weight:600; }
+  .src .cmt { color:#7a8090; }
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:60em; }
+  .card { border:1px solid #dcdfe8; border-radius:10px; padding:1.1rem 1.3rem 1.4rem; margin:1rem 0 0; background:#fff; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.6rem;}
+  code { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  hr { border:0; border-top:1px solid #dfe2ea; margin:2.4rem 0 0; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h3, .note, .cost { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; } .cost { border-color:#2a2d3a; }
+    .card { background:#131521; border-color:#262a36; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    .src .del { color:#e08484; } .src .add { color:#7fce97; } .src .cmt { color:#767c8e; }
+  }
+</style>
+<main>
+<h1>raster-3o3 &mdash; the two lines nobody counted</h1>
+<p class="sub">I compiled &sect;9.1's block line by line. The bead says three lines are broken.
+<strong>Five of the ten are.</strong> The two extra ones are not about register names at all, and
+&ldquo;every line above compiles&rdquo; cannot be written until they are decided.</p>
+
+<div class="src">### 9.1 Named registers
+
+ppu.ctrl   = $80                <span class="cmt">// compiles</span>
+ppu.mask   = $1E                <span class="cmt">// compiles</span>
+<span class="del">ppu.status</span>                      <span class="cmt">// read      &lt;-- DOES NOT COMPILE</span>
+<span class="del">ppu.addr   = $3F00</span>              <span class="cmt">//           &lt;-- DOES NOT COMPILE</span>
+ppu.data   = $21                <span class="cmt">// compiles</span>
+ppu.scroll = x                  <span class="cmt">// compiles</span>
+<span class="del">oam.addr   = 0</span>                  <span class="cmt">//           &lt;-- known, decided</span>
+<span class="del">oam.dma    = $02</span>                <span class="cmt">//           &lt;-- known, decided</span>
+
+<span class="del">apu.pulse1.volume = $BF</span>         <span class="cmt">//           &lt;-- known, decided</span>
+mmc3.bank_select  = 6           <span class="cmt">// compiles</span>
+mmc3.bank_data    = 0           <span class="cmt">// compiles</span></div>
+
+<hr>
+
+<h2>Line 3 &mdash; <code>ppu.status</code> on a line of its own</h2>
+<div class="term"><span class="e">error: only direct calls and assignments are supported as statements</span>
+ <span class="g">--&gt; demo.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.status
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> only direct calls and assignments are supported as statements</div>
+<p class="note">The spec's <code>// read</code> comment says what it is for: reading <code>$2002</code>
+<em>for its side effect</em> &mdash; it clears the vblank flag and resets the <code>$2005</code>/<code>$2006</code>
+latch, which is the very thing the paragraph under the block is about. A read whose value you throw away is a real
+NES idiom. rasterc has no way to write it. <code>var s: u8 = ppu.status</code> <strong>does</strong> compile today.</p>
+<div class="card">
+<span class="tag">S-A</span><strong> Show the form that compiles</strong>
+<div class="src"><span class="add">var s: u8 = ppu.status          // read; clears vblank and the latch</span></div>
+<p class="cost">True today, and teaches the side effect in the same line. <strong>Cost:</strong> the author is made
+to name a variable they do not want, and the language loses a form it should probably have.</p>
+</div>
+<div class="card">
+<span class="tag">S-B</span><strong> Keep the bare form; file a bead for it</strong>
+<div class="src">ppu.status                      <span class="cmt">// read &mdash; not in this release</span></div>
+<p class="cost">Keeps the idiom on the page as intended language. <strong>Cost:</strong> a second line in the block
+that does not compile, against the whole point of choosing spec option 1, and a new bead.</p>
+</div>
+<div class="card">
+<span class="tag">S-C</span><strong> Drop the line</strong>
+<p class="note">&sect;9.2 already shows <code>var v: u8 = peek($2002)</code>, and &sect;9.5 (raster-1t9) will list
+which registers read.</p>
+<p class="cost">Smallest change. <strong>Cost:</strong> &sect;9.1 stops showing a read at all, and the prose right
+beneath it is about what reading <code>$2002</code> does.</p>
+</div>
+
+<hr>
+
+<h2>Line 4 &mdash; <code>ppu.addr = $3F00</code></h2>
+<div class="term"><span class="e">error: integer literal overflows u8</span>
+ <span class="g">--&gt; demo.raster:2:20</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.addr     = $3F00
+  <span class="g">|</span>                    <span class="e">^^^^^</span> integer literal overflows u8</div>
+<p class="note"><code>$2006</code> is a byte port. Hardware wants the high byte then the low byte, through the shared
+latch. The spec's single 16-bit write is a convenience the language does not have &mdash; <code>u16</code> is refused
+everywhere today (<code>annotation_is_u8</code>, <code>crates/raster-ir/src/lib.rs:1374</code>).</p>
+<div class="card">
+<span class="tag">P-A</span><strong> Show the two byte writes</strong>
+<div class="src"><span class="add">ppu.addr   = $3F                // high byte, then low</span>
+<span class="add">ppu.addr   = $00</span></div>
+<p class="cost">True today, and it is what the latch paragraph underneath is describing &mdash; the block finally
+demonstrates the thing the prose explains. <strong>Cost:</strong> two lines where the design wanted one, and the
+16-bit convenience disappears from the spec.</p>
+</div>
+<div class="card">
+<span class="tag">P-B</span><strong> Keep the 16-bit form, name it in the note</strong>
+<div class="src">ppu.addr   = $3F00              <span class="cmt">// not in this release</span></div>
+<p class="cost">Keeps the convenience as declared intent. <strong>Cost:</strong> a second non-compiling line in a
+block chosen to be copy-pasteable, and it silently commits the language to 16-bit stores to a byte port &mdash; a
+bigger promise than it looks.</p>
+</div>
+<div class="card">
+<span class="tag">P-C</span><strong> Both: two byte writes now, the convenience in the note</strong>
+<div class="src"><span class="add">ppu.addr   = $3F                // high byte, then low</span>
+<span class="add">ppu.addr   = $00</span>
+
+<span class="add">**rasterc today:** ... `ppu.addr = $3F00`, one 16-bit write to the
+address latch, is intended and not built: `u16` values are not
+supported anywhere yet.</span></div>
+<p class="cost">The block compiles and the intent survives. <strong>Cost:</strong> the longest note of the three.</p>
+</div>
+
+<hr>
+
+<h2>And the message for the bare read, if it stays refused</h2>
+<p class="note">Whatever &sect;9.1 shows, someone will write <code>ppu.status</code> on its own line, because the
+spec has shown it since draft 0.1. Today they get a message about statements in general.</p>
+<div class="card">
+<span class="tag">M-A</span><strong> Leave it</strong>
+<div class="term"><span class="e">error: only direct calls and assignments are supported as statements</span>
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> only direct calls and assignments are supported as statements</div>
+<p class="cost">No new code. The author is told the rule and not the fix.</p>
+</div>
+<div class="card">
+<span class="tag">M-B</span><strong> Name the fix when the statement is a register read</strong>
+<div class="term"><span class="e">error: a register read cannot stand on its own as a statement</span>
+ <span class="g">--&gt; demo.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.status
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> assign it to a variable: `var s: u8 = ppu.status`</div>
+<p class="cost">Every author who copies &sect;9.1 lands here, and is moved on in one step. <strong>Cost:</strong> a
+special case in the statement checker for one shape of expression.</p>
+</div>
+</main>
