@@ -656,7 +656,7 @@ fn an_irq_handler_body_gets_what_is_left_of_the_scanline_it_interrupts() {
 
     const _: () = assert!(
         IRQ_HANDLER_BODY_CYCLES > ONE_REGISTER_STORE,
-        "a handler that cannot make one register store is a strategy with no use"
+        "a handler with no room beyond one register store is a strategy with no use"
     );
     const _: () = assert!(
         IRQ_HANDLER_BODY_CYCLES < SCANLINE_BODY_CYCLES,

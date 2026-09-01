@@ -297,7 +297,7 @@ impl Generator<'_> {
                 event.span,
                 Some(halt_label),
             )
-            .map_err(as_irq_window_error)?;
+            .map_err(|error| as_irq_window_error(error, event.span))?;
             self.emit(LDA_IMMEDIATE, Immediate, Some(u16::from(latch)));
             // The order hardware requires: the latch, then the reload request, then the
             // acknowledgement — which also disables — and only then the re-arm. Enabling before
@@ -859,7 +859,14 @@ impl Generator<'_> {
 /// leaves it and its advice is different, so the error is retyped here — rather than by teaching
 /// `analyze` a second kind of region, which would put a fact about one lowering inside the analyser
 /// every lowering shares.
-fn as_irq_window_error(error: CodegenError) -> CodegenError {
+///
+/// **`handler` is what keeps the retype honest, and it is not a tidy-up.** `timed_region` emits the
+/// body before it analyses it, so an author's own `cycles(n) { }` nested inside the handler raises
+/// its overrun out through this same `Result`. Retyped indiscriminately, that block would be told
+/// the hblank leaves `n` — the author's own budget, not the window — under a caret on `cycles(n) {`
+/// rather than on the event. Only the failure carrying the handler's own span is this lowering's to
+/// rename; every other one is already saying something true and travels on untouched.
+fn as_irq_window_error(error: CodegenError, handler: Span) -> CodegenError {
     match error {
         CodegenError::Timing {
             error:
@@ -868,7 +875,7 @@ fn as_irq_window_error(error: CodegenError) -> CodegenError {
                     budget,
                 },
             span,
-        } => CodegenError::Timing {
+        } if span == handler => CodegenError::Timing {
             error: TimingError::IrqHandlerOverHblank {
                 measured_cycles,
                 budget,

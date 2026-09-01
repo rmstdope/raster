@@ -1,9 +1,14 @@
 // The widest handler body a `frame ... using irq` schedule can express, run on a console.
 //
-// `IRQ_HANDLER_BODY_CYCLES` is nine, and no statement in the language costs eight or nine: a
-// register store from a constant is six, a variable assignment five, and a register store from a
-// variable seven. Seven is therefore the widest body there is, and this fixture is made of them —
-// `LDA <zero page>` three cycles, `STA $2001` four.
+// `IRQ_HANDLER_BODY_CYCLES` is nine. Seven is the widest body this fixture can build — a register
+// store read from a variable, `LDA <zero page>` three cycles and `STA $2001` four — and it is what
+// every handler here is made of.
+//
+// Seven is not the widest body the compiler accepts. That is eight, `ppu.mask = ppu.status`, and it
+// cannot appear here: what `$2002` returns is not a mask, writing it would turn rendering off, and
+// the counter this schedule depends on clocks on A12 rises that only happen while the PPU fetches.
+// Nothing in the language costs nine, so the window's last cycle is unreachable whatever a fixture
+// does.
 //
 // Every store changes the mask, which is what makes the picture evidence: a handler storing the
 // value the mask already holds paints nothing, and a row would read as one band whether the store

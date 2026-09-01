@@ -815,3 +815,54 @@ fn an_irq_handler_wider_than_its_hblank_names_its_cost_and_its_window() {
         "the diagnostic is source-spanned"
     );
 }
+
+/// An author's own `cycles` block inside a handler keeps its own refusal.
+///
+/// The hblank refusal is made by retyping the overrun `timed_region` reports, and `timed_region`
+/// emits the body before it analyses it — so a nested block's overrun travels out through the same
+/// `Result`. Retyped indiscriminately it would claim the hblank leaves whatever the author wrote as
+/// their own budget, and point its caret at the wrong line.
+#[test]
+fn a_cycles_block_inside_an_irq_handler_keeps_its_own_refusal() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 {\n\
+                  \n        cycles(4) {\n            ppu.mask = $3e\n        }\n    }\n}\n";
+    let diagnostics = compile_source(source).expect_err("six cycles do not fit a budget of four");
+
+    assert_eq!(diagnostics[0].message, "timed block exceeds its budget");
+    assert_eq!(
+        diagnostics[0].label, "block costs 15 cycles, budget is 4",
+        "the author's budget is theirs, and the hblank leaves 9 rather than 4"
+    );
+}
+
+/// The rule, rather than the number: what the window admits and what it turns away, either side of
+/// the edge. `an_irq_handler_body_gets_what_is_left_of_the_scanline_it_interrupts` holds the
+/// constant at nine and this holds the comparison against it, so a `>` that should have been `>=`
+/// has somewhere to fail.
+#[test]
+fn the_hblank_admits_a_body_up_to_its_window_and_no_wider() {
+    let handler = |body: &str| {
+        format!(
+            "var v: u8 = $00\n\nmain {{\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}}\n\
+             \nframe bars using irq {{\n    at scanline 60 {{\n{body}    }}\n}}\n"
+        )
+    };
+
+    // Eight cycles: `LDA $2002` four and `STA $2001` four. This is the widest body the language can
+    // express, and it is one cycle under the window rather than at it — nothing costs nine.
+    compile_source(&handler("        ppu.mask = ppu.status\n"))
+        .expect("eight cycles fit a window of nine");
+
+    // Ten: two variable assignments, `LDA #imm` two and `STA <zero page>` three apiece.
+    let diagnostics = compile_source(&handler("        v = $01\n        v = $02\n"))
+        .expect_err("ten cycles do not fit a window of nine");
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler exceeds its hblank"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "handler costs 10 cycles, the hblank leaves 9"
+    );
+}

@@ -240,10 +240,18 @@ fn irq_frame_runs_events_at_the_requested_scanlines() {
 /// The window the compiler enforces is one the console honours.
 ///
 /// `IRQ_HANDLER_BODY_CYCLES` was measured rather than derived, so the number is only worth what an
-/// execution says it is. This runs the widest body the language can express inside that window —
-/// seven cycles, a register store read from a variable — and asserts the picture it paints has no
-/// row written part-way along. A body one statement wider does not compile at all, which
-/// `an_irq_handler_wider_than_its_hblank_names_its_cost_and_its_window` is what pins.
+/// execution says it is. This runs the widest body the fixture can build — seven cycles, a register
+/// store read from a variable — and asserts that not one pixel of any row carries the colour the
+/// handler was replacing.
+///
+/// **Seven is the widest body this fixture can build, not the widest the compiler accepts.** That is
+/// eight: `ppu.mask = ppu.status`, `LDA $2002` four cycles and `STA $2001` four. It cannot appear
+/// here, because what `$2002` returns is not a mask — writing it would turn rendering off, and the
+/// MMC3 counts filtered A12 rises, so the chain this fixture depends on would stop. Eight is
+/// therefore reasoned rather than run: by the model the constant's doc comment records, a store
+/// completing at body cycle eight lands at column `3 * 8 - 27 = -3`, still before dot 0. Nothing in
+/// the language costs nine, so the window's last cycle is unreachable by construction; what admits
+/// eight and turns away ten is pinned in `the_hblank_admits_a_body_up_to_its_window_and_no_wider`.
 ///
 /// Every handler stores a value the mask does not already hold, so each store shows. A fixture
 /// whose handlers rewrote the value already there would satisfy this assertion without the stores
@@ -271,17 +279,25 @@ fn irq_handler_body_fits_the_hblank_it_lands_in() {
         "each handler runs at the top of the scanline its `at` names"
     );
 
-    // The assertion this test exists for. Seven cycles of body is still inside the hblank the MMC3
-    // leaves, so no store reaches the picture after dot 0 and no row is two colours.
+    // The assertion this test exists for, and it is made pixel by pixel rather than through
+    // `row_bands`: that helper drops any run shorter than eight pixels, so a store landing in
+    // columns 1 to 7 would leave the row reading as a single band and a window of 11 would pass for
+    // one of 9. A handler's row is checked whole — every column of it already carries the value the
+    // handler stored, so the store finished before dot 0 rather than merely near it.
     //
     // Six consecutive frames, because a frame is 29780 CPU cycles and two dots: the phase between
-    // the interrupt and the picture walks through every value it has over that many, and a body
-    // that only just fits would tear in some of them and not others.
+    // the interrupt and the picture walks through every value it has over that many, and a body that
+    // only just fits would tear in some of them and not others.
     for frames in 8..14 {
         let entries = render(frames);
-        assert!(
-            row_bands(&entries).iter().all(|bands| bands.len() == 1),
-            "frame {frames}: a handler wrote part-way along a scanline"
-        );
+        for (scanline, entry) in [(40usize, 0x4fu16), (90, 0x8f), (140, 0x10f), (190, 0x0f)] {
+            let row = &entries[scanline * FRAME_WIDTH..(scanline + 1) * FRAME_WIDTH];
+            let intact = row.iter().position(|&pixel| pixel != entry);
+            assert_eq!(
+                intact, None,
+                "frame {frames}, scanline {scanline}: column {intact:?} does not carry the value \
+                 this handler stored, so the store reached the picture after dot 0"
+            );
+        }
     }
 }
