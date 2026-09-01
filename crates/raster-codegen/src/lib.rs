@@ -363,9 +363,11 @@ impl Generator<'_> {
     /// `ppu.ctrl` bit 7, an OAM DMA through `$4014`, and a DMC DMA all do exactly that, and the
     /// `SEI` around a handler cannot mask an NMI. The OAM DMA is refused: a handler is a
     /// [`CycleConstraint::Exact`] region whose budget is at most one scanline, and the 514 cycles
-    /// a DMA is charged are more than four times that, so `analyze` will not admit one. NMI and
-    /// the DMC DMA are still neither refused nor detected, so a program that declares a timed
-    /// frame must leave NMI off and start no DMC transfer.
+    /// a DMA is charged are more than four times that, so `analyze` will not admit one. NMI is
+    /// detected and not refused: `raster-ir`'s `check_timed_frame_nmi` warns where `ppu.ctrl`
+    /// bit 7 reaches the frame, and where a handler sets it, and the ROM is still written. The
+    /// DMC DMA is neither refused nor detected, so a program that declares a timed frame must
+    /// still leave NMI off and start no DMC transfer.
     fn timed_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
         self.statement(&Statement::SyncExact, Some(halt_label))?;
         let pass_top = self.internal_label();

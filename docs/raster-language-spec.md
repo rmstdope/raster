@@ -413,6 +413,19 @@ picks based on the target mapper and the schedule's shape, and reports its choic
 **rasterc today:** one `frame` per program, and events on the visible picture only —
 `at vblank` is not built.
 
+**A `timed` schedule is spent, not measured.** The loop synchronizes once, on
+the way in, and every position after it is a count of cycles forward from that
+one moment. Nothing polls the PPU again, so nothing recovers a cycle the
+schedule did not spend itself. An NMI costs thirteen — seven to enter, six for
+the `RTI` — once per frame, out of cycles the schedule had already allocated,
+so the picture drifts by that much every frame and never comes back. A program
+that declares a `timed` frame must leave NMI off. `using irq` carries no such
+restriction: an IRQ chain re-synchronizes on every scanline it fires.
+
+**rasterc today:** warned about, not refused. rasterc reads what `ppu.ctrl`
+holds when the frame starts and what its handlers write to it, and warns where
+bit 7 is set or where it cannot see the value. The ROM is still written.
+
 ### 7.2 What the compiler verifies
 
 For each event the compiler checks that the handler body fits its available window
@@ -582,8 +595,10 @@ before your program starts, and the `CLI` that arms an IRQ chain is emitted
 after `main`'s last statement — a `timed` frame arms no interrupt at all. NMI
 is the one interrupt the flag cannot mask, and `$FFFA` points at an `RTI` in
 the runtime for every program this release builds, so enabling NMI through
-`ppu.ctrl` runs none of your code. A `mmc3.bank_select` and the `mmc3.bank_data`
-write that follows it are therefore always consecutive.
+`ppu.ctrl` runs none of your code — though it still spends thirteen cycles of
+every frame, which a `frame ... using timed` cannot spare (section 7.1). A
+`mmc3.bank_select` and the `mmc3.bank_data` write that follows it are therefore
+always consecutive.
 
 Handlers are a different matter. They run in schedule order and each leaves its
 selection behind for the next, so rasterc treats every handler as starting with
