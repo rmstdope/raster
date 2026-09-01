@@ -1328,6 +1328,23 @@ struct Lowerer {
     /// initializer reads at reset, before any `ppu.addr` write, and has no
     /// neighbouring statement to prime it.
     ppu_data_read_has_neighbour: bool,
+    /// Whether the statements being lowered are a `frame` handler's body. Set only by
+    /// `lower_frame_body`, which is the one place a handler's statements are lowered.
+    in_frame_handler: bool,
+    /// Every `ppu.ctrl` write inside a handler body, in schedule order. Judged after lowering,
+    /// because whether it matters depends on the frame's strategy — and collected here, because
+    /// `Statement::Assign` carries no span to point at afterwards.
+    handler_ctrl_writes: Vec<HandlerCtrlWrite>,
+}
+
+/// One `ppu.ctrl` write inside a `frame` handler, and what rasterc could fold it to.
+///
+/// `bits` is `None` where the value is not a constant. A handler is straight-line —
+/// `raster-sema` refuses `if`, `while`, `for` and calls inside a timed region — so those are the
+/// only two cases: there is no conditional write inside one.
+struct HandlerCtrlWrite {
+    span: Span,
+    bits: Option<u8>,
 }
 
 impl Lowerer {
@@ -1345,6 +1362,8 @@ impl Lowerer {
             selection: BankSelection::Unknown(Unseen::InThisBody),
             selects_bank: BTreeSet::new(),
             ppu_data_read_has_neighbour: false,
+            in_frame_handler: false,
+            handler_ctrl_writes: Vec::new(),
         }
     }
 
@@ -1675,6 +1694,11 @@ impl Lowerer {
         if let Some(verdict) = timed_frame_nmi(self.ppu_configuration().ctrl) {
             self.warnings.push(timed_frame_nmi_warning(verdict, span));
         }
+        for write in std::mem::take(&mut self.handler_ctrl_writes) {
+            if let Some(warning) = handler_nmi_warning(&write) {
+                self.warnings.push(warning);
+            }
+        }
     }
 
     /// What the program leaves in `ppu.ctrl` and `ppu.mask` by the time its frame runs.
@@ -1726,7 +1750,9 @@ impl Lowerer {
     fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
         self.enter_scope();
         self.selection = BankSelection::Unknown(Unseen::FrameEntry);
+        let outer = std::mem::replace(&mut self.in_frame_handler, true);
         let (statements, _) = self.lower_statements(body);
+        self.in_frame_handler = outer;
         self.leave_scope();
         statements
     }
@@ -2348,6 +2374,23 @@ impl Lowerer {
                     if let Some(warning) = bank_data_warning(self.selection, expression.span) {
                         self.warnings.push(warning);
                     }
+                }
+                // Collected here and judged after lowering: whether it matters depends on the
+                // frame's strategy, and `Statement::Assign` carries no span to point at later.
+                // `!refused` for the reason `bank_select_warning` gives — a refused value lowers
+                // to a `Constant(0)` placeholder, and a warning about a byte the author did not
+                // write is unactionable until the refusal is fixed.
+                if destination == Destination::Register(Register::PpuCtrl)
+                    && self.in_frame_handler
+                    && !refused
+                {
+                    self.handler_ctrl_writes.push(HandlerCtrlWrite {
+                        span: expression.span,
+                        bits: match &value {
+                            Value::Constant(bits) => Some(*bits),
+                            _ => None,
+                        },
+                    });
                 }
                 output.push(Statement::Assign { destination, value });
                 return;
@@ -3428,6 +3471,42 @@ fn timed_frame_nmi_warning(verdict: TimedFrameNmi, span: Span) -> LowerWarning {
              others, so bit 7 is unknown"
                 .to_owned(),
         ),
+    }
+}
+
+/// The warning a `ppu.ctrl` write inside a handler earns, if it earns one.
+///
+/// `None` for a constant with bit 7 clear: that is an ordinary handler adjusting the scroll
+/// nametable or the pattern half, and warning on it would fire on correct programs.
+fn handler_nmi_warning(write: &HandlerCtrlWrite) -> Option<LowerWarning> {
+    match write.bits {
+        Some(bits) if bits & PPU_CTRL_NMI == 0 => None,
+        Some(_) => Some(LowerWarning {
+            message: "this write enables NMI, and a `timed` frame cannot afford one".to_owned(),
+            label: "bit 7 is NMI, and this handler runs on every frame".to_owned(),
+            notes: vec![
+                format!(
+                    "the schedule is counted from one synchronization and never\n\
+                     re-checked; each NMI costs it {NMI_CYCLES} cycles it has already spent"
+                ),
+                CLEAR_BIT_7_NOTE.to_owned(),
+            ],
+            span: write.span,
+            assumes_budget_met: false,
+        }),
+        None => Some(LowerWarning {
+            message: "rasterc cannot tell whether this write enables NMI".to_owned(),
+            label: "this is not a value rasterc can see, so bit 7 is unknown".to_owned(),
+            notes: vec![
+                format!(
+                    "bit 7 is NMI, and this handler runs on every frame; each NMI\n\
+                     costs the schedule {NMI_CYCLES} cycles it has already spent"
+                ),
+                "writing a constant with bit 7 clear keeps the schedule".to_owned(),
+            ],
+            span: write.span,
+            assumes_budget_met: false,
+        }),
     }
 }
 

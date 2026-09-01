@@ -1910,3 +1910,73 @@ fn a_timed_frame_whose_ppu_ctrl_is_written_on_some_paths_is_a_warning() {
         "the last write to `ppu.ctrl` before the frame is not a value\nrasterc can see, so bit 7 is unknown"
     );
 }
+
+/// A handler write is worse than a clean `main`: NMI goes on for every frame after the first, and
+/// the program-level check sees nothing at all, because it reads what holds *before* the frame.
+#[test]
+fn a_handler_that_enables_nmi_is_a_warning() {
+    let source = "main {\n\
+                  ppu.ctrl = $08\n\
+                  ppu.mask = $1e\n\
+                  }\n\
+                  frame bars using timed {\n\
+                  every 8 scanlines from 0 to 239 { ppu.ctrl = $88 }\n\
+                  }";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this write enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 7 is NMI, and this handler runs on every frame"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "the schedule is counted from one synchronization and never\nre-checked; each NMI costs it 13 cycles it has already spent",
+            "clear bit 7 to keep the schedule, or use `using irq`, which\nsynchronizes on every scanline it fires",
+        ]
+    );
+    // The carets are on the handler's own write, not on the frame's strategy.
+    assert_eq!(
+        &source[warning.span.start as usize..warning.span.end as usize],
+        "ppu.ctrl = $88"
+    );
+}
+
+/// A handler write rasterc cannot fold gets the same treatment as one in `main`.
+#[test]
+fn a_handler_ppu_ctrl_write_rasterc_cannot_fold_is_a_warning() {
+    let program = lower_source(
+        "var flags: u8\n\
+         main {\n\
+         ppu.ctrl = $08\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.ctrl = flags }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "rasterc cannot tell whether this write enables NMI"
+    );
+    assert_eq!(
+        warning.label,
+        "this is not a value rasterc can see, so bit 7 is unknown"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "bit 7 is NMI, and this handler runs on every frame; each NMI\ncosts the schedule 13 cycles it has already spent",
+            "writing a constant with bit 7 clear keeps the schedule",
+        ]
+    );
+}
