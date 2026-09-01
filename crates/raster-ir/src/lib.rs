@@ -523,6 +523,9 @@ fn ppu_data_reads(statement: &Spanned<SyntaxStatement>) -> usize {
         SyntaxStatement::Return(Some(expression)) => ppu_data_reads_in(expression),
         SyntaxStatement::If { condition, .. } => ppu_data_reads_in(condition),
         SyntaxStatement::While { condition, .. } => ppu_data_reads_in(condition),
+        // Counted for completeness rather than for reach: `raster-sema`
+        // refuses a `for` range or step that is not a compile-time constant,
+        // so neither can hold a `ppu.data` read today.
         SyntaxStatement::For { range, step, .. } => {
             ppu_data_reads_in(range) + step.as_ref().map_or(0, ppu_data_reads_in)
         }
@@ -544,10 +547,12 @@ fn ppu_data_reads(statement: &Spanned<SyntaxStatement>) -> usize {
 /// syntactic count and deliberately not `Lowerer::register` — it runs before
 /// lowering the statement, so it must not report errors or touch any state.
 ///
-/// The left-hand side of an assignment or a compound assignment is **not** a
-/// read: `ppu.data = $21` is a write, and `ppu.data += 1` reads $2007 only in a
-/// way this bead refuses outright. Counting either would make a write look like
-/// a priming read and silence the warning on the line beside it.
+/// A `ppu.data` that is *itself* the destination of an assignment or a compound
+/// assignment is **not** a read: `ppu.data = $21` is a write, and `ppu.data +=
+/// 1` reads $2007 only in a way this bead refuses outright. Counting either
+/// would make a write look like a priming read and silence the warning on the
+/// line beside it. Only the destination is excluded, not the whole left
+/// subtree — `table[ppu.data] = 5` reads $2007 to work out where to write.
 fn ppu_data_reads_in(expression: &Spanned<SyntaxExpression>) -> usize {
     match &expression.value {
         SyntaxExpression::Member { base, member } => {
@@ -559,7 +564,11 @@ fn ppu_data_reads_in(expression: &Spanned<SyntaxExpression>) -> usize {
             operator,
             right,
         } => {
-            let left_reads = if assigns(operator.value) {
+            // Only the destination *itself* is the write. A `ppu.data` read
+            // that is part of working out where to write — `table[ppu.data] =
+            // 5` — is an ordinary read, and counting it is the difference
+            // between a spurious warning on the line above and none.
+            let left_reads = if assigns(operator.value) && is_ppu_data_member(&left.value) {
                 0
             } else {
                 ppu_data_reads_in(left)
@@ -592,6 +601,13 @@ fn assigns(operator: Operator) -> bool {
             | Operator::StarEqual
             | Operator::SlashEqual
     )
+}
+
+/// Whether this expression is the `ppu.data` member access itself, rather than
+/// something that merely contains one.
+fn is_ppu_data_member(expression: &SyntaxExpression) -> bool {
+    matches!(expression, SyntaxExpression::Member { base, member }
+        if is_ppu_data(&base.value, &member.value))
 }
 
 /// Whether this `Member` expression's base and member spell `ppu.data`.
@@ -1289,9 +1305,13 @@ impl Lowerer {
             self.ppu_data_read_has_neighbour = before || after || reads[index] >= 2;
             always_returns |= self.lower_statement(statement, &mut statements);
         }
-        // Restored, not cleared: this block may itself be one statement of an
-        // outer block whose own answer is still being used by statements after
-        // it.
+        // Restored, not cleared, as the safe direction rather than an observed
+        // one: no `lower_statement` arm today lowers a nested block and *then*
+        // lowers an expression of its own — `lower_if`, `lower_while`,
+        // `lower_for` and the `Cycles` arm all lower their condition or spec
+        // first, and the loop above re-sets the field on its next iteration —
+        // so nothing can currently tell this apart from clearing it. It guards
+        // the arm that does it in the other order.
         self.ppu_data_read_has_neighbour = outer;
         (statements, always_returns)
     }

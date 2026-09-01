@@ -1199,3 +1199,56 @@ fn a_ppu_data_read_in_a_global_initializer_has_no_neighbour() {
 
     assert_eq!(program.warnings.len(), 2);
 }
+
+#[test]
+fn a_ppu_data_write_is_not_a_priming_neighbour() {
+    // The trap the plan names: a write to $2007 is not a read of it, so it
+    // primes nothing, and the read below it is still lone. Without this, the
+    // warning is silenced on the line after every `ppu.data = ...` and no other
+    // test in the workspace notices.
+    let program = lower_source("main {\n    ppu.data = $21\n    var a: u8 = ppu.data\n}\n");
+
+    assert_eq!(program.warnings.len(), 1);
+}
+
+#[test]
+fn an_if_condition_that_reads_ppu_data_is_a_neighbour() {
+    // A condition is evaluated where its statement sits, so it primes the read
+    // above it. The `if` body is a block and never a neighbour; that is
+    // `a_neighbour_never_crosses_a_block_boundary`.
+    let program = lower_source(
+        "main {\n    var flag: u8 = 0\n    var a: u8 = ppu.data\n    if ppu.data != 0 { flag = 2 }\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_while_condition_that_reads_ppu_data_is_a_neighbour() {
+    let program =
+        lower_source("main {\n    var a: u8 = ppu.data\n    while ppu.data != 0 { }\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_returned_ppu_data_read_is_a_neighbour() {
+    let program = lower_source(
+        "fn fetch() -> u8 {\n    var a: u8 = ppu.data\n    return ppu.data\n}\nmain { fetch() }\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_ppu_data_read_inside_an_assignment_destination_is_still_a_read() {
+    // Only the destination itself is a write. A `ppu.data` read that is part of
+    // working out *where* to write is an ordinary read, and primes the line
+    // above it. Arrays are refused by this release, so the program does not
+    // lower — but the warnings it found on the way still say what the rule is.
+    let failure = lower_failure(
+        "var table: [2]u8\nmain {\n    var a: u8 = ppu.data\n    table[ppu.data] = 5\n}\n",
+    );
+
+    assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
+}

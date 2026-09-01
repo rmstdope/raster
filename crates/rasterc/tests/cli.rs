@@ -758,17 +758,59 @@ fn a_ppu_data_compound_assignment_fails_the_build_and_writes_no_rom() {
     assert_eq!(result, Err(1));
     assert_eq!(stdout, "");
     assert!(!output.exists());
-    assert!(
-        stderr.contains("error: `ppu.data` cannot be the destination of a compound assignment"),
-        "got:\n{stderr}"
+    // Byte for byte, like the warning test beside it: the caret run under
+    // `ppu.data` at column 5 and the width each note wraps at are part of what
+    // the wording mockup fixes, and `contains` holds neither.
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "error: `ppu.data` cannot be the destination of a compound assignment\n",
+                " --> {path}:2:5\n",
+                "  |\n",
+                "2 |     ppu.data += 1\n",
+                "  |     ^^^^^^^^ `+=` reads $2007 before it writes, and that read is buffered\n",
+                "  = note: the byte it would add to is the one at the previous address,\n",
+                "          not the one at the address you are writing\n",
+                "  = note: read the byte you want into a variable of your own, add to\n",
+                "          that, and write the whole value\n",
+                "\n",
+                "error: could not compile {path} (1 error)\n",
+            ),
+            path = input.display()
+        )
     );
-    assert!(
-        stderr.contains("`+=` reads $2007 before it writes, and that read is buffered"),
-        "got:\n{stderr}"
-    );
+}
+
+#[test]
+fn a_warning_and_a_refusal_in_one_run_print_the_warning_first_and_count_both() {
+    // Shape 6 of `docs/ui/raster-hqh-ppu-data-read.html`: a lone read warns, a
+    // compound assignment refuses, and one build produces both. The warning
+    // comes first, and the failure line counts each.
+    let directory = Scratch::new("ppudataboth");
+    let input = directory.path().join("both.raster");
+    let output = directory.path().join("both.nes");
+    fs::write(
+        &input,
+        "main {\n    var tile: u8 = ppu.data\n    ppu.data += 1\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(!output.exists());
+    let warning = stderr
+        .find("warning: this `ppu.data` read")
+        .expect(&format!("a warning: {stderr}"));
+    let error = stderr
+        .find("error: `ppu.data` cannot be the destination")
+        .expect(&format!("a refusal: {stderr}"));
+    assert!(warning < error, "warning first, got:\n{stderr}");
     assert!(
         stderr.ends_with(&format!(
-            "error: could not compile {} (1 error)\n",
+            "error: could not compile {} (1 error, 1 warning)\n",
             input.display()
         )),
         "got:\n{stderr}"
