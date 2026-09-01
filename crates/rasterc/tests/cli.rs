@@ -816,3 +816,55 @@ fn a_warning_and_a_refusal_in_one_run_print_the_warning_first_and_count_both() {
         "got:\n{stderr}"
     );
 }
+
+#[test]
+fn a_read_only_register_write_fails_the_build_and_writes_no_rom() {
+    let directory = Scratch::new("readonly");
+    let input = directory.path().join("write.raster");
+    let output = directory.path().join("write.nes");
+    fs::write(&input, "main {\n    ppu.mask = 0\n    ppu.status += 1\n}\n").unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(!output.exists());
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "error: `ppu.status` cannot be written\n",
+                " --> {path}:3:5\n",
+                "  |\n",
+                "3 |     ppu.status += 1\n",
+                "  |     ^^^^^^^^^^ $2002 is a read-only port\n",
+                "  = note: `+=` writes its destination, so this writes $2002\n",
+                "  = note: writing $2002 changes nothing on the PPU: it is a status\n",
+                "          port, and the CPU can only read it\n",
+                "  = note: there is no value that makes this store do something;\n",
+                "          delete the line\n",
+                "\n",
+                "error: could not compile {path} (1 error)\n",
+            ),
+            path = input.display()
+        )
+    );
+}
+
+#[test]
+fn a_register_that_accepts_a_write_still_compiles() {
+    let directory = Scratch::new("writable");
+    let input = directory.path().join("ok.raster");
+    let output = directory.path().join("ok.nes");
+    fs::write(
+        &input,
+        "main {\n    var s: u8 = ppu.status\n    ppu.mask = $1E\n    ppu.oam_data = $20\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(stderr, "");
+    assert!(output.exists());
+}
