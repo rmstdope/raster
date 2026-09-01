@@ -1516,3 +1516,39 @@ fn an_address_write_then_a_scroll_write_closes_the_pair() {
 
     assert!(program.warnings.is_empty());
 }
+
+#[test]
+fn sync_exact_inside_an_address_pair_warns() {
+    let source = "main {\n    ppu.addr = $3f\n    sync exact\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "`sync exact` leaves your `ppu.addr` pair half written"
+    );
+    assert_eq!(
+        warning.label,
+        "`sync exact` polls $2002, and that resets the latch mid-pair"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2005 and $2006 share one write latch, and reading $2002 puts\nit back to expecting a high byte",
+            "the PPU never sees the low byte, so it reads and writes at an\naddress you did not ask for",
+            "put `sync exact` above the pair or below it, not inside it",
+        ]
+    );
+    // The carets cover `sync exact` itself, not the lines around it.
+    assert_eq!(line_of(source, warning.span.start), 3);
+    assert_eq!(line_of(source, warning.span.end), 3);
+}
+
+#[test]
+fn sync_exact_outside_a_pair_is_silent() {
+    let program =
+        lower_source("main {\n    ppu.addr = $3f\n    ppu.addr = $00\n    sync exact\n}\n");
+
+    assert!(program.warnings.is_empty());
+}

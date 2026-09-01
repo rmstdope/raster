@@ -731,6 +731,23 @@ impl LatchPair {
 /// What to do instead, when the author wrote the read.
 const MOVE_THE_READ: &str = "read `ppu.status` above the pair or below it, not inside it";
 
+/// What the carets say when the read is the one `sync exact` makes for you.
+/// There is no `$2002` in the source at all, so the label says where one came
+/// from.
+const SYNC_POLLS_STATUS: &str = "`sync exact` polls $2002, and that resets the latch mid-pair";
+
+/// What to do instead, when the read is the poll `sync exact` compiles to.
+const MOVE_THE_SYNC: &str = "put `sync exact` above the pair or below it, not inside it";
+
+/// Who did the reading, which decides the message, the label and the last note.
+#[derive(Clone, Copy)]
+enum LatchBreaker {
+    /// A `ppu.status` read the author wrote.
+    StatusRead,
+    /// The poll `sync exact` compiles to.
+    SyncExact,
+}
+
 /// What one statement does to the shared $2005/$2006 write latch, in its own
 /// right — not counting anything inside a nested block.
 #[derive(Clone, Copy)]
@@ -742,6 +759,9 @@ struct LatchEffect {
     /// one. A statement makes at most one, because `lower_expression_statement`
     /// recognises an assignment only as the whole statement.
     write: Option<LatchPair>,
+    /// Whether this statement is `sync exact`, whose poll reads $2002 without
+    /// any read appearing in the source.
+    sync: bool,
 }
 
 /// Classify one statement. Purely syntactic and side-effect free: it runs
@@ -755,22 +775,27 @@ fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
                 .as_ref()
                 .and_then(ppu_status_read_in),
             write: None,
+            sync: false,
         },
         SyntaxStatement::Expression(expression) => LatchEffect {
             read: ppu_status_read_in(expression),
             write: latch_write_in(expression),
+            sync: false,
         },
         SyntaxStatement::Return(Some(expression)) => LatchEffect {
             read: ppu_status_read_in(expression),
             write: None,
+            sync: false,
         },
         SyntaxStatement::If { condition, .. } => LatchEffect {
             read: ppu_status_read_in(condition),
             write: None,
+            sync: false,
         },
         SyntaxStatement::While { condition, .. } => LatchEffect {
             read: ppu_status_read_in(condition),
             write: None,
+            sync: false,
         },
         // Classified for completeness rather than for reach, exactly as
         // `ppu_data_reads` does: `raster-sema` refuses a `for` range or step
@@ -779,17 +804,25 @@ fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
             read: ppu_status_read_in(range)
                 .or_else(|| step.as_ref().and_then(ppu_status_read_in)),
             write: None,
+            sync: false,
+        },
+        // Matched on the statement rather than on the identifier:
+        // `raster-sema` already refuses any strategy but `exact`.
+        SyntaxStatement::Sync(_) => LatchEffect {
+            read: None,
+            write: None,
+            sync: true,
         },
         SyntaxStatement::Block(_)
         | SyntaxStatement::Loop(_)
         | SyntaxStatement::Cycles { .. }
         | SyntaxStatement::Wait(_)
-        | SyntaxStatement::Sync(_)
         | SyntaxStatement::Break
         | SyntaxStatement::Continue
         | SyntaxStatement::Return(None) => LatchEffect {
             read: None,
             write: None,
+            sync: false,
         },
     }
 }
@@ -882,17 +915,27 @@ fn is_ppu_status(base: &SyntaxExpression, member: &str) -> bool {
 
 /// The warning a $2002 read earns when a `ppu.addr` or `ppu.scroll` pair is
 /// half written.
-fn half_written_pair(opener: LatchPair, span: Span) -> LowerWarning {
-    LowerWarning {
-        message: format!(
-            "this `ppu.status` read leaves your `{}` pair half written",
-            opener.name()
+fn half_written_pair(opener: LatchPair, span: Span, by: LatchBreaker) -> LowerWarning {
+    let name = opener.name();
+    let (message, label, move_it) = match by {
+        LatchBreaker::StatusRead => (
+            format!("this `ppu.status` read leaves your `{name}` pair half written"),
+            opener.read_label().to_owned(),
+            MOVE_THE_READ,
         ),
-        label: opener.read_label().to_owned(),
+        LatchBreaker::SyncExact => (
+            format!("`sync exact` leaves your `{name}` pair half written"),
+            SYNC_POLLS_STATUS.to_owned(),
+            MOVE_THE_SYNC,
+        ),
+    };
+    LowerWarning {
+        message,
+        label,
         notes: vec![
             opener.shared_latch_note().to_owned(),
             opener.lost_half_note().to_owned(),
-            MOVE_THE_READ.to_owned(),
+            move_it.to_owned(),
         ],
         span,
     }
@@ -1594,13 +1637,20 @@ impl Lowerer {
             // otherwise print ahead of one about the statement containing it.
             if let Some(opener) = latch {
                 if let Some(span) = effect.read {
-                    self.warnings.push(half_written_pair(opener, span));
+                    self.warnings
+                        .push(half_written_pair(opener, span, LatchBreaker::StatusRead));
+                } else if effect.sync {
+                    self.warnings.push(half_written_pair(
+                        opener,
+                        statement.span,
+                        LatchBreaker::SyncExact,
+                    ));
                 }
             }
             // Then the state, in the order the hardware sees it: a statement's
             // reads happen before its write, because codegen emits the value
             // and then the store.
-            if effect.read.is_some() {
+            if effect.read.is_some() || effect.sync {
                 latch = None;
             }
             if let Some(pair) = effect.write {
