@@ -1064,6 +1064,56 @@ fn every_compound_operator_names_itself_in_the_write_refusal() {
 }
 
 #[test]
+fn a_bad_write_and_a_bad_read_on_one_line_are_two_errors_in_source_order() {
+    let errors = lower_errors("main {\n    ppu.status = ppu.mask\n}\n");
+
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].message, "`ppu.status` cannot be written");
+    assert_eq!(errors[1].message, "`ppu.mask` cannot be read");
+    // A refused write still lowers its right-hand side, so the author sees both
+    // mistakes in one build. Nothing sorts the errors; they come out in the
+    // order they were pushed, which is the order the line is read.
+    assert!(errors[0].span.start < errors[1].span.start);
+}
+
+#[test]
+fn every_register_but_the_read_only_one_accepts_a_write() {
+    for (register, name, _address, _write_only, read_only) in REGISTERS {
+        // `= 0` is silent for every one of the sixteen: in particular
+        // `mmc3.bank_select = 0` raises no warning, because bits 6 and 7 are
+        // clear. A different constant would fold to a warning and this test
+        // would pass for a reason it does not state.
+        let source = format!("main {{ {name} = 0 }}");
+        let syntax = parse(&source).expect("fixture should parse");
+        let typed = analyze(&syntax).expect("fixture should analyze");
+        let result = lower(&typed);
+        if read_only {
+            let failure = result.expect_err(name);
+            assert_eq!(failure.errors.len(), 1, "{name}");
+            assert_eq!(
+                failure.errors[0].message,
+                format!("`{name}` cannot be written")
+            );
+        } else {
+            assert!(result.is_ok(), "{name} is written");
+        }
+        assert_eq!(register.is_read_only(), read_only, "{name}");
+    }
+}
+
+#[test]
+fn reading_the_read_only_register_is_still_fine() {
+    // The mirror of `writing_a_write_only_register_is_still_fine`. $2002 reads
+    // perfectly well and this bead does not change that; its read side effects
+    // are raster-bm1. If this goes red, the check has been attached to
+    // `lower_value`'s `Member` arm instead of to the destination.
+    let program = lower_source(
+        "main {\n    var s: u8 = ppu.status\n    ppu.oam_data = $20\n    ppu.data = $0F\n}\n",
+    );
+    assert!(program.main.is_some());
+}
+
+#[test]
 fn writing_a_write_only_register_is_still_fine() {
     // The whole point of the rule is that it is about reads. Every one of the
     // thirteen may still be written, and this is the test that goes red if the
