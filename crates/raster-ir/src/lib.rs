@@ -1708,6 +1708,10 @@ impl Lowerer {
     /// the PPU configuration the program set up and turns the verdict into a spanned diagnostic.
     /// Nothing is checked on a program that already failed: the configuration is read by walking
     /// calls, and a program whose recursion was just rejected has no walk that terminates.
+    ///
+    /// What the handlers themselves store is judged too, by [`Self::check_irq_handler_masks`] - but
+    /// only once the opening configuration is proven good, because a frame whose configuration is
+    /// already refused has not yet established the thing its handlers would be judged against.
     fn check_mmc3_irq_frame(&mut self) {
         if !self.errors.is_empty() {
             return;
@@ -3416,7 +3420,6 @@ fn writes_an_unreadable_mask(statements: &[Statement]) -> bool {
 /// *textually* last store instead made `if c { mask = $1e } else { mask = $00 }` and the same two
 /// arms swapped disagree with each other, and let the second of them compile a ROM that turns
 /// rendering off on a path the check never looked at.
-
 fn collect_ppu_stores(
     statements: &[Statement],
     functions: &BTreeMap<Label, &Function>,
