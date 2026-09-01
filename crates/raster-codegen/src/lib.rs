@@ -876,6 +876,11 @@ fn as_irq_window_error(error: CodegenError, handler: Span) -> CodegenError {
                 TimingError::OverBudget {
                     measured_cycles,
                     budget,
+                    // Dropped rather than carried across: `IrqHandlerOverHblank`
+                    // is a different error with its own advice, and the OAM DMA
+                    // ratio note belongs to the over-budget message this one
+                    // replaces. A handler holding a DMA is refused either way.
+                    oam_dma_cycles: _,
                 },
             span,
         } if span == handler => CodegenError::Timing {
