@@ -44,6 +44,12 @@ pub enum TimingError {
     /// A region contains an instruction that leaves the straight line, so summing its instructions
     /// is not its cost.
     ControlFlowInRegion { index: usize, opcode: u8 },
+    /// An `irq` handler's body outruns the hblank the MMC3 leaves it.
+    ///
+    /// Distinct from [`TimingError::OverBudget`] because the window is not a budget the author
+    /// wrote, the advice is different, and the numbers mean different things: a handler is over
+    /// when its *body* is, and its prologue and epilogue are not charged.
+    IrqHandlerOverHblank { measured_cycles: u32, budget: u32 },
 }
 
 /// `NOP`: two cycles in one byte, and the only official instruction with no effect at all.

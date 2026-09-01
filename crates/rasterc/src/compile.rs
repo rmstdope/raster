@@ -292,6 +292,23 @@ that jumps has no single cost",
             "rasterc should have refused the construct that produced this
 with a clearer message; please report this file",
         ),
+        TimingError::IrqHandlerOverHblank {
+            measured_cycles,
+            budget,
+        } => at(
+            "an `irq` handler exceeds its hblank",
+            format!("handler costs {measured_cycles} cycles, the hblank leaves {budget}"),
+        )
+        .with_note(
+            "the MMC3 asserts its interrupt near the end of the scanline before
+the one this handler runs on, so a store made once the window has
+closed lands part-way along a visible row",
+        )
+        .with_note(
+            "split the work across two events on consecutive scanlines to give
+each a window of its own, or use `using timed`, which gives a
+handler the whole scanline at the cost of the frame's entire CPU time",
+        ),
     }
 }
 

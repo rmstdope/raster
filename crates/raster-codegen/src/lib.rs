@@ -13,6 +13,7 @@ use raster_syntax::Span;
 use raster_timing::{
     analyze, mmc3_latch_for_delta, mmc3_latch_for_first_event, mmc3_latch_for_next_frame,
     plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError, FRAMES_PER_PASS,
+    IRQ_HANDLER_BODY_CYCLES,
 };
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
@@ -277,7 +278,16 @@ impl Generator<'_> {
             // Only the accumulator is saved. The loop these interrupt holds nothing in X or Y, and
             // `RTI` restores the flags the interrupt itself pushed.
             self.emit(PHA, Implied, None);
-            self.statements(&event.body, Some(halt_label))?;
+            self.timed_region(
+                &CycleConstraint::AtMost(IRQ_HANDLER_BODY_CYCLES),
+                false, // pad: a short handler spends nothing filling the window
+                true,  // interruptible: the 6502 set I on entry, so PHP/SEI/PLP would be nine
+                // cycles of a window this small, spent masking what is already masked
+                &event.body,
+                event.span,
+                Some(halt_label),
+            )
+            .map_err(as_irq_window_error)?;
             self.emit(LDA_IMMEDIATE, Immediate, Some(u16::from(latch)));
             // The order hardware requires: the latch, then the reload request, then the
             // acknowledgement — which also disables — and only then the re-arm. Enabling before
@@ -829,6 +839,33 @@ impl Generator<'_> {
         let label = IrLabel(self.next_internal_label);
         self.next_internal_label += 1;
         label
+    }
+}
+
+/// The budget refusal an `irq` handler earns, which is not the one a `cycles` block earns.
+///
+/// [`Generator::timed_region`] reports an overrun as [`TimingError::OverBudget`], whose diagnostic
+/// talks about a block and the budget its author wrote. A handler's window is the hblank the MMC3
+/// leaves it and its advice is different, so the error is retyped here — rather than by teaching
+/// `analyze` a second kind of region, which would put a fact about one lowering inside the analyser
+/// every lowering shares.
+fn as_irq_window_error(error: CodegenError) -> CodegenError {
+    match error {
+        CodegenError::Timing {
+            error:
+                TimingError::OverBudget {
+                    measured_cycles,
+                    budget,
+                },
+            span,
+        } => CodegenError::Timing {
+            error: TimingError::IrqHandlerOverHblank {
+                measured_cycles,
+                budget,
+            },
+            span,
+        },
+        other => other,
     }
 }
 
