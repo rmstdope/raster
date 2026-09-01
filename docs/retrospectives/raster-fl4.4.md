@@ -72,3 +72,51 @@ it survives zsh — two separate expansions, or an array, or simply telling the 
 the provider as its own word. This is at least its third sighting.
 
 **Seen before.** `raster-fl4.3` — whose section title already says *"again"*.
+
+---
+
+*The bead was handed back after the sections above, and came back to a second implementer when main
+had moved 14 commits past the branch. What follows is that second run.*
+
+- **Implementer:** Wolverine
+- **Date:** 2026-09-01
+- **PR:** #25 (heads `ef24b45`, `26a6ed2`, `eeac3c3`)
+
+## There is no documented way to get a worktree onto a branch that already exists
+
+**What happened.** This bead arrived with its branch already pushed and its PR already open, so the
+tree it needed was one on `raster-fl4.4-mmc3-irq-frames`, not a new branch. `implement-bead`'s
+*Workspace* section documents exactly one call — `prepare-worktree --path <p> --branch <name>` — and
+that mode runs `git worktree add -b`, which fails outright on a branch that exists. The other mode,
+with no `--branch`, is documented as "the one detached, resettable tree (Psylocke's)" and resets to
+`origin/main`. Neither is the case in hand. I read the script to find that the no-`--branch` path on
+a *fresh* directory only creates it detached at `origin/main` — it does not reset anything, because
+there is nothing there yet — and does still run the submodule init and the project's `install`. So
+the working recipe is the detached mode followed by a checkout:
+
+    .claude/cerebro/scripts/prepare-worktree --path .cerebro/worktrees/<id>
+    cd <repo>/.cerebro/worktrees/<id>
+    git fetch origin <branch> && git checkout -B <branch> origin/<branch>
+
+**Why.** `prepare-worktree`'s two modes are "a fresh branch for a new bead" and "the verifier's
+resettable tree". A handed-back or reopened bead with a live branch is a third case, and it is the
+case the skill's own *A reopened bead* section says to expect. Nothing refused me and nothing was
+lost — the gap is that the safe recipe is only discoverable by reading 220 lines of the script,
+which is the step the script exists to save.
+
+**Cost.** About ten minutes reading `prepare-worktree` before touching the bead, and the risk that
+the obvious wrong move — `--branch` with a new name, or `git worktree add` by hand without the
+submodule init — is the one an implementer in a hurry makes. The five retrospectives that bought the
+submodule-init step are the evidence for how that goes.
+
+**Prevent by.** Either give `prepare-worktree` an explicit third mode (`--existing-branch <name>`, or
+`--branch` accepting a branch that already exists and checking it out instead of creating it), or add
+the three-line recipe above to `implement-bead`'s *A reopened bead* section, which is where an
+implementer in this position is already reading. The script is the better home: it already owns the
+submodule and install steps that make the difference between a tree that works and one that fails
+for a reason unrelated to the bead.
+
+**Seen before.** None found for this. Eight files mention `prepare-worktree`
+(`raster-6sl.3`, `raster-6sl.4`, `raster-6sl.6`, `raster-20i.3`, `raster-20i.4`, `raster-tf5.2`,
+`raster-tf5.3`, `raster-fl4.2`) and all eight are about the declared install command reaching
+`rustup` with a shell operator in it, which is fixed and did not recur — a different thing.
