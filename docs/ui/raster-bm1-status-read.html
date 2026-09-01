@@ -1,0 +1,213 @@
+<!doctype html>
+<title>raster-bm1 — the agreed rule for a $2002 read</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:54em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .rule { background:#e8f0fb; border:1px solid #c5d8f2; border-radius:8px; padding:.9rem 1.1rem;
+          margin:.4rem 0 1.2rem; max-width:56em; font-size:.95rem; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .silent { color:#2f7a45; font-size:.9rem; font-weight:600; margin:.5rem 0 0; }
+  .loud { color:#a8571b; font-size:.9rem; font-weight:600; margin:.5rem 0 0; }
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:1rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+  table { border-collapse:collapse; margin:.6rem 0 0; font-size:.9rem; }
+  th,td { border:1px solid #d9dce6; padding:.35rem .7rem; text-align:left; }
+  th { background:#eceef4; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost { color:#8b90a2; }
+    .rule { background:#161c28; border-color:#26324a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    .silent { color:#7cc493; } .loud { color:#e0a35f; }
+    th { background:#171922; } th,td { border-color:#262a36; }
+  }
+</style>
+<main>
+<h1>The agreed rule &mdash; a <code>$2002</code> read and the PPU write latch</h1>
+<p class="sub">What rasterc does about reading <code>ppu.status</code>. Agreed with the navigator over four rounds,
+from eight mockups. Every program on this page compiles clean and exits&nbsp;0 on <code>main</code> today; the ones
+marked <em>warns</em> are diagnostics being added on purpose.</p>
+
+<div class="rule"><strong>Two rules, both about a sequence, both warnings.</strong>
+<p style="margin:.6rem 0 0"><strong>1 &mdash; the latch.</strong> Walking the statements of one block in order,
+rasterc tracks whether a <code>ppu.addr</code> or <code>ppu.scroll</code> pair is half written: those two registers
+share one write latch, so an odd number of writes to either leaves the PPU expecting a second half. If a
+<code>$2002</code> read happens there &mdash; a <code>ppu.status</code> read in the source, or the poll that
+<code>sync exact</code> compiles to &mdash; the latch goes back to its first write and the rest of the pair is taken
+as another first half. That warns.</p>
+<p style="margin:.6rem 0 0"><strong>2 &mdash; the flag.</strong> A <code>ppu.status</code> read whose
+<em>very next statement</em> in the same block is <code>sync exact</code> warns: the read has taken the vblank flag
+the poll spins on, so the sync waits for the next frame instead of this one.</p>
+<p style="margin:.6rem 0 0"><strong>Neither rule crosses a <code>{ }</code></strong>, and neither crosses a call.
+The tracking restarts closed inside every nested block, and goes back to closed after one &mdash; so rasterc can
+miss a real break and can never invent one.</p></div>
+
+<h2>1 &middot; A read inside an address pair &mdash; warns</h2>
+<div class="src">main {
+    ppu.addr = $3f
+    var s: u8 = ppu.status
+    ppu.addr = $00
+    ppu.data = $21
+}</div>
+<p class="loud">Warns (rule&nbsp;1). The ROM is still written and the summary counts the warning.</p>
+
+<h2>2 &middot; <code>sync exact</code> inside an address pair &mdash; warns</h2>
+<div class="src">main {
+    ppu.addr = $3f
+    sync exact
+    ppu.addr = $00
+}</div>
+<p class="loud">Warns (rule&nbsp;1), with its own message naming <code>sync exact</code>. <strong>There is no
+<code>$2002</code> anywhere in this source</strong> &mdash; <code>sync exact</code> compiles to
+<code>BIT $2002</code> / <code>BPL</code> &mdash; and the program is broken. This is the case the bead was filed
+for.</p>
+
+<h2>3 &middot; A read before a complete pair &mdash; silent</h2>
+<div class="src">main {
+    var s: u8 = ppu.status
+    ppu.addr = $3f
+    ppu.addr = $00
+}</div>
+<p class="silent">Silent. This is the idiom: put the latch in a known state, then write both halves.</p>
+
+<h2>4 &middot; A flag read nowhere near a pair &mdash; silent</h2>
+<div class="src">main {
+    ppu.mask = $1e
+    var hit: u8 = ppu.status
+    if hit &gt;= $40 { ppu.mask = 0 }
+}</div>
+<p class="silent">Silent. Reading <code>$2002</code> for sprite&nbsp;0 or the overflow flag is what the register is
+for.</p>
+
+<h2>5 &middot; A read directly before <code>sync exact</code> &mdash; warns</h2>
+<div class="src">main {
+    var s: u8 = ppu.status
+    sync exact
+    cycles(20) pad { ppu.mask = $1e }
+}</div>
+<p class="loud">Warns (rule&nbsp;2). The ROM runs; it is a frame late, every time.</p>
+
+<h2>6 &middot; A pair broken across a <code>{ }</code> &mdash; silent</h2>
+<div class="src">main {
+    ppu.addr = $3f
+    if flag &gt; 0 { var s: u8 = ppu.status }
+    ppu.addr = $00
+}</div>
+<p class="silent">Silent, deliberately. Warning here would mean claiming something about a branch that may not
+run, which is not something anything in this compiler does.</p>
+
+<h2>7 &middot; A scroll pair, broken the same way &mdash; warns</h2>
+<div class="src">main {
+    ppu.scroll = x
+    var s: u8 = ppu.status
+    ppu.scroll = y
+}</div>
+<p class="loud">Warns (rule&nbsp;1), in <code>ppu.scroll</code>'s own words &mdash; an X scroll and a Y scroll, not a
+high byte and a low byte. See the wording page.</p>
+
+<h2>8 &middot; The poll loop</h2>
+<div class="src">main {
+    while ppu.status &lt; $80 { }      <span class="silent">// silent: no pair open</span>
+    ppu.mask = $1e
+}
+
+main {
+    ppu.addr = $3f
+    while ppu.status &lt; $80 { }      <span class="loud">// warns: rule 1, carets on ppu.status</span>
+    ppu.addr = $00
+}
+
+main {
+    while ppu.status &lt; $80 { }      <span class="loud">// warns: rule 2, the sync below waits a frame</span>
+    sync exact
+}</div>
+<p class="note">A condition is evaluated where its statement sits, so a read in one counts like any other. This
+matters because <code>wait vblank</code> is refused in this release &mdash; <code>only `wait cycles` is supported
+yet</code> &mdash; so a hand-written poll loop is the only vblank wait an author has besides
+<code>sync exact</code>.</p>
+
+<h2>9 &middot; Two reads in one statement &mdash; one warning</h2>
+<div class="src">main {
+    ppu.addr = $3f
+    var s: u8 = ppu.status + ppu.status
+    ppu.addr = $00
+}</div>
+<p class="loud">One warning, carets on the <strong>first</strong> read. The first read is what breaks the pair; the
+second finds the latch already back at its first write.</p>
+
+<h2>10 &middot; Both rules on one read &mdash; two warnings, latch first</h2>
+<div class="src">main {
+    ppu.addr = $3f
+    var s: u8 = ppu.status
+    sync exact
+}</div>
+<p class="loud">Two warnings on the same line. They are two faults with fixes that point in opposite directions
+&mdash; move the read <em>down</em> past the pair, move it <em>up</em> past the sync &mdash; so the author has to
+see both.</p>
+
+<h2>11 &middot; A read feeding the write that opens the pair &mdash; silent</h2>
+<div class="src">main {
+    ppu.addr = ppu.status
+    ppu.addr = $00
+}</div>
+<p class="silent">Silent. Codegen emits the value before the store &mdash; <code>LDA $2002</code> then
+<code>STA $2006</code> &mdash; so the read happens while the latch is closed, and the write then opens a pair the
+next line closes. Correct, if peculiar.</p>
+
+<h2>12 &middot; A compound assignment &mdash; warns</h2>
+<div class="src">main {
+    ppu.addr = $3f
+    ppu.status += 1
+    ppu.addr = $00
+}</div>
+<p class="loud">Warns. <code>ppu.status += 1</code> emits <code>LDA $2002</code> before the store, so it really does
+reset the latch. Carets cover <code>ppu.status</code>, the destination &mdash; the width raster-1t9 chose for a
+compound assignment. (raster-xeo will refuse the write itself; until it does, this read is real.)</p>
+
+<h2>13 &middot; A read in a global initializer &mdash; silent</h2>
+<div class="src">var g: u8 = ppu.status
+
+main {
+    ppu.mask = $1e
+}</div>
+<p class="silent">Silent by construction: no pair is open and no <code>sync exact</code> follows. Unlike
+raster-hqh, where a <code>ppu.data</code> read in an initializer always warns, there is nothing to say here.</p>
+
+<h2>What was rejected</h2>
+<table>
+<tr><th>Rejected</th><th>Why not</th></tr>
+<tr><td>Warn on <strong>every</strong> <code>ppu.status</code> read</td><td>Loud on correct code &mdash; the
+latch-reset idiom (3) and a sprite-0 read (4) both warn, on every build, with nothing in this release able to
+silence a warning. And it misses case&nbsp;2 entirely, because there is no <code>ppu.status</code> in that
+source.</td></tr>
+<tr><td>The latch rule <strong>only</strong>, no flag rule</td><td>Leaves case&nbsp;5 a silent lost frame in a
+language whose point is that you can count cycles. &sect;9.1 names both side effects in one sentence.</td></tr>
+<tr><td>Make the broken pair an <strong>error</strong></td><td>Detection depends on rasterc recognising a pair, so
+a case nobody foresaw would break a build rather than nag. raster-6jr and raster-hqh both warn on a hazard of this
+shape.</td></tr>
+<tr><td>Stay silent about <code>sync exact</code>'s own read</td><td>It is the harder half of the hazard precisely
+because the compiler is the one reading <code>$2002</code>.</td></tr>
+<tr><td>Warn across a <code>{ }</code> (case&nbsp;6)</td><td>It would be the first thing in this compiler to warn
+about a path rather than a sequence.</td></tr>
+<tr><td>Look further than the next statement for the flag rule</td><td>Scanning the rest of the block fires on a
+read and a sync twenty statements apart, where the flag was going to be stale anyway.</td></tr>
+<tr><td>Drop the scroll case, or use one neutral set of words</td><td>A scroll pair breaks through the same latch,
+and &ldquo;the second half&rdquo; is vaguer than the <code>ppu.addr</code> wording already agreed.</td></tr>
+</table>
+</main>
