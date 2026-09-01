@@ -526,10 +526,12 @@ fn warnings_survive_a_failed_lowering() {
 }
 
 #[test]
-fn a_compound_bank_select_cannot_be_folded_and_warns() {
-    // `binary` builds a `Value::Binary` unconditionally, so a compound
-    // assignment is never a constant to rasterc however plain it reads.
-    let program = lower_source("main { mmc3.bank_select += $80 }");
+fn a_bank_select_rasterc_cannot_fold_still_warns() {
+    // `binary` builds a `Value::Binary` unconditionally, so a value rasterc
+    // could fold by eye is not a constant to it. This used to be shown with
+    // `mmc3.bank_select += $80`, which is now refused outright for reading
+    // $8000; a plain assignment of a binary expression makes the same point.
+    let program = lower_source("main { mmc3.bank_select = $40 | $06 }");
 
     assert_eq!(program.warnings.len(), 1);
     assert_eq!(
@@ -884,4 +886,54 @@ fn reading_a_write_only_register_is_refused() {
     // sixteen characters further along.
     assert_eq!(errors[0].span.start, 23);
     assert_eq!(errors[0].span.end, 31);
+}
+
+#[test]
+fn a_compound_assignment_to_a_write_only_register_is_refused() {
+    let source = "main {\n    mmc3.bank_select += $80\n}\n";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("$8000 does not read back");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(failure.errors[0].message, "`mmc3.bank_select` cannot be read");
+    assert_eq!(
+        failure.errors[0].label.as_deref(),
+        Some("$8000 is a write-only port")
+    );
+    assert_eq!(
+        failure.errors[0].notes,
+        [
+            "`+=` reads its destination before it writes, so this reads $8000",
+            "reading $8000 returns a byte of your own program from the PRG\nbank mapped there, not the last value written",
+            "keep what you wrote in a variable of your own\nand write the whole value",
+        ]
+    );
+    // The carets cover the destination only: `mmc3.bank_select` is sixteen
+    // characters, starting eleven into line 2, which itself starts at byte 7.
+    assert_eq!(failure.errors[0].span.start, 11);
+    assert_eq!(failure.errors[0].span.end, 27);
+    // The mapping-mode warning does not also fire: the statement is being
+    // rewritten, so what its value would have been is moot, and one fault gets
+    // one message.
+    assert!(failure.warnings.is_empty());
+}
+
+#[test]
+fn every_compound_operator_names_itself_in_the_refusal() {
+    for (source, spelling) in [
+        ("main { ppu.mask += 1 }", "+="),
+        ("main { ppu.mask -= 1 }", "-="),
+        ("main { ppu.mask *= 1 }", "*="),
+        ("main { ppu.mask /= 1 }", "/="),
+    ] {
+        let errors = lower_errors(source);
+        assert_eq!(errors.len(), 1, "{source}");
+        assert_eq!(
+            errors[0].notes[0],
+            format!("`{spelling}` reads its destination before it writes, so this reads $2001"),
+            "{source}"
+        );
+    }
 }
