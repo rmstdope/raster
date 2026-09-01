@@ -65,7 +65,7 @@ is charged 514 &mdash; the worst case, which is the direction that never overrun
 indexed read that may cross a page is charged its extra cycle today.</p>
 <div class="src">sync exact
 cycles(600) pad {
-    ppu.oam_dma = $02        <span class="cmt">// 514 stall + 4 store + 9 masking, padded to 600</span>
+    ppu.oam_dma = $02        <span class="cmt">// 514 stall + 6 for the write + 9 masking, padded to 600</span>
 }</div>
 
 <h3>The warning, on an exact budget only</h3>
@@ -84,19 +84,19 @@ silent: a ceiling is still a true ceiling, and a report is explicitly a measurem
 
 <h3>When the stall is what blew the budget</h3>
 <p class="note">A second note, printed only when the block holds a DMA. It names the ratio, so the
-arithmetic is done: &ldquo;514 of 527&rdquo; says at a glance that the stall <em>is</em> the
+arithmetic is done: &ldquo;514 of 529&rdquo; says at a glance that the stall <em>is</em> the
 block.</p>
 <div class="term"><span class="e">error:</span> timed block exceeds its budget
  <span class="g">--&gt; demo.raster:3:5</span>
   <span class="g">|</span>
 <span class="g">3 |</span>     cycles(114) pad {
-  <span class="g">|</span>     <span class="e">^^^^^^^^^^^</span> block costs 527 cycles, budget is 114
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^^</span> block costs 529 cycles, budget is 114
   <span class="g">= note:</span> an indexed read that may cross a page and a branch that may be
           taken are both charged their worst case
-  <span class="g">= note:</span> 514 of this block's 527 cycles are one OAM DMA, charged the
+  <span class="g">= note:</span> 514 of this block's 529 cycles are one OAM DMA, charged the
           worst of the 513 or 514 it may stall</div>
 <p class="note">With more than one:</p>
-<div class="term">  <span class="g">= note:</span> 1028 of this block's 1240 cycles are 2 OAM DMAs, charged the
+<div class="term">  <span class="g">= note:</span> 1028 of this block's 1049 cycles are 2 OAM DMAs, charged the
           worst of the 513 or 514 each may stall</div>
 <p class="note">A <code>frame</code> handler gets this error and no other: a handler's budget is
 one scanline &mdash; 114 cycles &mdash; and the stall is more than four times that, so a DMA in a
