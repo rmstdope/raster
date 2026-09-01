@@ -1620,34 +1620,45 @@ fn two_ppu_status_reads_in_one_statement_warn_once_on_the_first() {
     assert_eq!(span.start as usize, source.find("ppu.status").unwrap());
 }
 
-/// `ppu.status += 1` emits `LDA $2002` before its store, so it really does
-/// break a pair. The carets cover the destination, which is the width
-/// raster-1t9 chose for a compound assignment.
+/// A compound assignment reads its own destination, so it really does break a
+/// pair. The carets cover the destination, which is the width raster-1t9 chose
+/// for a compound assignment.
+///
+/// Read off the failure rather than off a `Program`: `raster-xeo` merged while
+/// this bead was in review and now refuses a write to `ppu.status` outright, so
+/// this fixture no longer lowers. The classification is still this bead's to
+/// get right — a warning survives a failed lowering, and which statements read
+/// $2002 is not a fact about whether the program compiles.
 #[test]
 fn a_compound_assignment_to_ppu_status_is_a_read() {
     let source = "main {\n    ppu.addr = $3f\n    ppu.status += 1\n    ppu.addr = $00\n}\n";
-    let program = lower_source(source);
+    let failure = lower_failure(source);
 
-    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(failure.warnings.len(), 1);
     assert_eq!(
-        program.warnings[0].message,
+        failure.warnings[0].message,
         "this `ppu.status` read leaves your `ppu.addr` pair half written"
     );
-    let span = program.warnings[0].span;
+    let span = failure.warnings[0].span;
     assert_eq!(
         &source[span.start as usize..span.end as usize],
         "ppu.status"
     );
 }
 
-/// A plain write is a store the PPU throws away, which is `raster-xeo`'s bead
-/// and not a read. This bead must not turn it into one.
+/// A plain write is not a read, and this bead must not turn it into one.
+///
+/// `raster-xeo` merged while this bead was in review and now refuses the write
+/// itself, so the fixture fails to lower and the assertion is on the failure's
+/// warnings. That is still exactly the property this bead owns: whatever
+/// `raster-xeo` decides about the store, the latch rule must not add a second
+/// diagnostic claiming a read that never happened.
 #[test]
 fn a_plain_write_to_ppu_status_is_not_a_read() {
-    let program =
-        lower_source("main {\n    ppu.addr = $3f\n    ppu.status = 0\n    ppu.addr = $00\n}\n");
+    let failure =
+        lower_failure("main {\n    ppu.addr = $3f\n    ppu.status = 0\n    ppu.addr = $00\n}\n");
 
-    assert!(program.warnings.is_empty());
+    assert!(failure.warnings.is_empty());
 }
 
 #[test]
