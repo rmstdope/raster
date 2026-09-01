@@ -717,6 +717,12 @@ fn a_handler_that_does_not_fit_its_scanline_names_its_cost_and_its_budget() {
 
 #[test]
 fn nothing_unmasks_irqs_before_main_has_run() {
+    // `CLI` is the only instruction codegen emits that can clear the I flag. `PLP` was
+    // considered and excluded: `timed_region` emits `PHP`/`SEI` and the closing `PLP` only
+    // for a non-interruptible region, so every `PLP` restores the flags its own `PHP`
+    // pushed and none can clear I. `RTI` likewise only returns from a handler that the
+    // flag already let in. An unmask path that is none of these would pass this test
+    // silently — add it here rather than assuming `CLI` stays the only one.
     const CLI: u8 = 0x58;
 
     let irq_source = r#"
@@ -758,6 +764,8 @@ fn nothing_unmasks_irqs_before_main_has_run() {
             .position(|item| matches!(item, FixedBankItem::Label(label) if label.0 == halt.0))
             .expect("codegen emits `main`'s halt label");
 
+        let mut clis_in_this_fixture = 0;
+
         for (index, item) in output.program.items.iter().enumerate() {
             let FixedBankItem::Instruction { instruction, .. } = item else {
                 continue;
@@ -765,6 +773,7 @@ fn nothing_unmasks_irqs_before_main_has_run() {
             if instruction.opcode != CLI {
                 continue;
             }
+            clis_in_this_fixture += 1;
             if strategy == "using irq" {
                 irq_frame_had_a_cli = true;
             }
@@ -781,6 +790,17 @@ fn nothing_unmasks_irqs_before_main_has_run() {
                  That needs a warning before this change ships. Spec section 9.4 says\n\
                  `main` is uninterrupted; either that paragraph changes with this, or\n\
                  this does not ship."
+            );
+        }
+
+        if strategy == "using timed" {
+            assert_eq!(
+                clis_in_this_fixture, 0,
+                "a `frame ... using timed` emitted {clis_in_this_fixture} `CLI`(s).\n\n\
+                 Spec section 9.4 says a `timed` frame arms no interrupt at all, and a\n\
+                 timed schedule is counted cycles from one synchronisation onwards — an\n\
+                 interrupt taken anywhere in the loop steals cycles the schedule already\n\
+                 spent. Either that sentence changes with this, or this does not ship."
             );
         }
     }
