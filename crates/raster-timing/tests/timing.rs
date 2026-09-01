@@ -645,7 +645,8 @@ fn mmc3_irq_refuses_a_ppu_configuration_it_cannot_prove() {
 ///
 /// The bounds are asserted alongside the equality on purpose: a later edit that inflates the
 /// constant to make some other test pass fails here rather than quietly widening the window a
-/// running console does not actually offer.
+/// running console does not actually offer. They are `const` assertions rather than runtime ones
+/// because both sides are constants — which is also why they fail the build rather than the test.
 #[test]
 fn an_irq_handler_body_gets_what_is_left_of_the_scanline_it_interrupts() {
     use raster_timing::{IRQ_HANDLER_BODY_CYCLES, SCANLINE_BODY_CYCLES};
@@ -653,13 +654,14 @@ fn an_irq_handler_body_gets_what_is_left_of_the_scanline_it_interrupts() {
     /// `LDA #imm` (2) plus `STA $2001` (4): the cheapest thing a handler can usefully do.
     const ONE_REGISTER_STORE: u32 = 6;
 
-    assert_eq!(IRQ_HANDLER_BODY_CYCLES, 9);
-    assert!(
+    const _: () = assert!(
         IRQ_HANDLER_BODY_CYCLES > ONE_REGISTER_STORE,
         "a handler that cannot make one register store is a strategy with no use"
     );
-    assert!(
+    const _: () = assert!(
         IRQ_HANDLER_BODY_CYCLES < SCANLINE_BODY_CYCLES,
         "the hblank is a fraction of the scanline a `using timed` handler gets"
     );
+
+    assert_eq!(IRQ_HANDLER_BODY_CYCLES, 9);
 }

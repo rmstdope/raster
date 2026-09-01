@@ -235,6 +235,16 @@ impl Generator<'_> {
     /// The preconditions this depends on — rendering on, and the two pattern tables in opposite
     /// halves so A12 moves at all — are `raster-timing`'s, checked in `raster-ir` before anything
     /// reaches here.
+    ///
+    /// **A handler's body is held to [`IRQ_HANDLER_BODY_CYCLES`] and refused when it does not
+    /// fit.** The interrupt lands in the hblank at the end of the scanline before the one the
+    /// author named, and a store made once that window has closed lands part-way along a visible
+    /// row — which is the one thing the schedule promises does not happen. Only the body is
+    /// charged: the ten cycles of prologue before it and the thirty-eight of latch, acknowledgement
+    /// and dispatch after it run once the picture has already started, where they harm nothing that
+    /// can be seen. The region is `interruptible`, so no `PHP`/`SEI`/`PLP` is emitted around it —
+    /// the 6502 set I on interrupt entry, and nine cycles of a window this small spent masking what
+    /// is already masked would be most of it.
     fn irq_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
         let Some(first) = frame.events.first() else {
             // A schedule with no events arms nothing; the program still ends in its own loop.

@@ -236,3 +236,52 @@ fn irq_frame_runs_events_at_the_requested_scanlines() {
         assert_eq!(row_bands(&later), row_bands(&first));
     }
 }
+
+/// The window the compiler enforces is one the console honours.
+///
+/// `IRQ_HANDLER_BODY_CYCLES` was measured rather than derived, so the number is only worth what an
+/// execution says it is. This runs the widest body the language can express inside that window —
+/// seven cycles, a register store read from a variable — and asserts the picture it paints has no
+/// row written part-way along. A body one statement wider does not compile at all, which
+/// `an_irq_handler_wider_than_its_hblank_names_its_cost_and_its_window` is what pins.
+///
+/// Every handler stores a value the mask does not already hold, so each store shows. A fixture
+/// whose handlers rewrote the value already there would satisfy this assertion without the stores
+/// having landed anywhere in particular.
+#[test]
+fn irq_handler_body_fits_the_hblank_it_lands_in() {
+    let rom =
+        compile_source(&cycles_fixture("irq-hblank-window.raster")).expect("the fixture compiles");
+    let render = |frames: u32| {
+        let frame = render_after_frames(
+            "irq-hblank-window.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs");
+        *frame.as_indices()
+    };
+
+    let first = render(8);
+    assert_eq!(
+        bands(&first),
+        // Black throughout, and the emphasis each handler's variable holds from the scanline its
+        // `at` names: the stores land, and they land where the source asked.
+        vec![(0, 0x0f), (40, 0x4f), (90, 0x8f), (140, 0x10f), (190, 0x0f)],
+        "each handler runs at the top of the scanline its `at` names"
+    );
+
+    // The assertion this test exists for. Seven cycles of body is still inside the hblank the MMC3
+    // leaves, so no store reaches the picture after dot 0 and no row is two colours.
+    //
+    // Six consecutive frames, because a frame is 29780 CPU cycles and two dots: the phase between
+    // the interrupt and the picture walks through every value it has over that many, and a body
+    // that only just fits would tear in some of them and not others.
+    for frames in 8..14 {
+        let entries = render(frames);
+        assert!(
+            row_bands(&entries).iter().all(|bands| bands.len() == 1),
+            "frame {frames}: a handler wrote part-way along a scanline"
+        );
+    }
+}

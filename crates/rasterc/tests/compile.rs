@@ -788,7 +788,10 @@ fn an_irq_handler_wider_than_its_hblank_names_its_cost_and_its_window() {
     let diagnostics = compile_source(source).expect_err("thirty cycles do not fit an hblank");
 
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].message, "an `irq` handler exceeds its hblank");
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler exceeds its hblank"
+    );
     assert_eq!(
         diagnostics[0].label,
         "handler costs 30 cycles, the hblank leaves 9"
