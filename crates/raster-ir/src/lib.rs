@@ -334,6 +334,14 @@ enum Unseen {
 }
 
 impl BankSelection {
+    /// A folded bank select. The mask is here rather than at each call site so
+    /// that `Known` cannot hold 8 or above by construction - which is what lets
+    /// `bank_data_warning` read its last arm as R7 rather than as a fallback
+    /// standing in for values it has no sentence for.
+    fn known(bits: u8) -> Self {
+        Self::Known(bits & MMC3_BANK_REGISTER)
+    }
+
     /// The selection true of both paths reaching a join. Equal selections
     /// survive; anything else is unknown from here on.
     ///
@@ -345,7 +353,7 @@ impl BankSelection {
     /// at all, and the author would be told rasterc cannot tell when it can.
     fn join(self, other: Self) -> Self {
         let named = |selection| match selection {
-            Self::ResetLeftR7 => Self::Known(RESET_SELECTED_REGISTER),
+            Self::ResetLeftR7 => Self::known(RESET_SELECTED_REGISTER),
             other => other,
         };
         if self == other {
@@ -419,7 +427,7 @@ fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarnin
                                   bytes at ";
     const NOT_SUPPORTED_NOTE: &str =
         "PRG bank switching is not supported yet: banks 0 to 2 hold $FF,\n\
-                                      and bank 3 is a second view of the fixed bank at $E000";
+         and bank 3 is a second view of the fixed bank at $E000";
     let repoints = |window: &str, label: &str, second_note: &str| LowerWarning {
         message: format!("this write repoints the PRG window at {window}"),
         label: label.to_owned(),
@@ -436,8 +444,8 @@ fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarnin
             "R6 is selected, so this replaces $8000-$9FFF",
             NOT_SUPPORTED_NOTE,
         )),
-        // R7, and nothing else: every `Known` is masked with
-        // `MMC3_BANK_REGISTER`, so 8 and above cannot occur.
+        // R7, and nothing else: `BankSelection::known` masks with
+        // `MMC3_BANK_REGISTER`, so 8 and above cannot be constructed.
         BankSelection::Known(_) => Some(repoints(
             "$A000",
             "R7 is selected, so this replaces $A000-$BFFF",
@@ -480,6 +488,7 @@ fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarnin
         }),
     }
 }
+
 pub fn lower(typed: &TypedProgram) -> Result<Program, LowerFailure> {
     let mut lowerer = Lowerer::new();
     lowerer.predeclare_labels(&typed.program);
@@ -1215,7 +1224,10 @@ impl Lowerer {
             self.selection = BankSelection::Unknown(Unseen::InThisBody);
         }
         // No join afterwards: `lower_for` has already refused an empty range,
-        // so the body always runs and the exit is the body's exit.
+        // so the body always runs, and `break` and `continue` are refused too,
+        // so it always finishes - the exit is the body's exit. Whoever lands
+        // `break` inherits this: a body that selects and then breaks past a
+        // later select would exit here with the later select's answer.
         let (body_statements, body_always_returns) = self.lower_statements(body);
         output.extend(body_statements);
         output.push(Statement::Assign {
@@ -1280,7 +1292,7 @@ impl Lowerer {
                         self.warnings.push(warning);
                     }
                     self.selection = match value {
-                        Value::Constant(bits) => BankSelection::Known(bits & MMC3_BANK_REGISTER),
+                        Value::Constant(bits) => BankSelection::known(bits),
                         _ => BankSelection::Unknown(Unseen::InThisBody),
                     };
                 }
@@ -1780,6 +1792,12 @@ fn block_selects_bank(block: &Block, via: &BTreeSet<String>) -> bool {
 }
 
 /// Whether any statement in this block assigns to `mmc3.bank_select`.
+///
+/// It mirrors the statement shape of `collect_calls_in_statement` and is
+/// deliberately narrower than it: an assignment is a statement, so this does
+/// not descend into conditions, ranges, initializers or returned values, where
+/// a call can hide but an assignment cannot. `raster-zbh` is the bead for
+/// merging the two walkers - the shapes are not interchangeable as they stand.
 fn block_assigns_bank_select(block: &Block) -> bool {
     block
         .statements

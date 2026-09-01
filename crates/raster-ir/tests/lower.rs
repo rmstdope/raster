@@ -804,3 +804,22 @@ fn a_bank_data_write_in_a_frame_handler_says_a_handler_runs_with_any_register_se
         "selecting with a literal 0 to 5 in the handler, before the\nwrite, keeps the map reset chose"
     );
 }
+
+#[test]
+fn a_loop_body_that_selects_judges_a_bank_data_write_after_it_as_unknown() {
+    // `loop` is refused, so this goes through `parse`/`analyze`/`lower` by
+    // hand: the warning still has to reach the author, and the `Loop` arm's
+    // pre-scan is what makes it the soft one rather than `Known(0)`.
+    let source =
+        "main { mmc3.bank_select = 0\n loop { mmc3.bank_select = 6 }\n mmc3.bank_data = 2 }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("`loop` is not supported yet");
+
+    assert_eq!(failure.warnings.len(), 1);
+    assert_eq!(
+        failure.warnings[0].label,
+        "the last bank select before this is not one rasterc can see"
+    );
+}
