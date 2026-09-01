@@ -744,7 +744,11 @@ fn nothing_unmasks_irqs_before_main_has_run() {
         let syntax = parse(source).expect("fixture should parse");
         let typed = analyze(&syntax).expect("fixture should analyze");
         let ir = lower(&typed).expect("fixture should lower");
-        let halt = ir.main.as_ref().expect("the fixture has a `main`").halt_label;
+        let halt = ir
+            .main
+            .as_ref()
+            .expect("the fixture has a `main`")
+            .halt_label;
         let output = generate(&ir).expect("fixture should generate");
 
         let halt_index = output

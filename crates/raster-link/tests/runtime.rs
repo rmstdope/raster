@@ -185,8 +185,8 @@ fn the_nmi_vector_is_always_the_runtimes_own_handler() {
     // then. `points_nmi_and_irq_at_an_rti_after_the_program` covers only `None`,
     // where the two vectors are trivially the same address.
     for irq in [None, Some(Label(0))] {
-        let rom =
-            link_mmc3_program(&one_instruction_body(), Label(0), irq, true).expect("the body links");
+        let rom = link_mmc3_program(&one_instruction_body(), Label(0), irq, true)
+            .expect("the body links");
         let offset = usize::from(rom.vectors.nmi - MMC3_FIXED_BANK_START);
         assert_eq!(
             fixed_bank(&rom.image)[offset],

@@ -577,6 +577,18 @@ one retires the linear map — rasterc warns there too, and says so more quietly
 when it cannot tell which register a write lands on. A bank data write with no
 select before it lands on R7, because R7 is what reset selected last.
 
+Nothing runs between two of `main`'s statements. Reset masks IRQs with `SEI`
+before your program starts, and the `CLI` that arms an IRQ chain is emitted
+after `main`'s last statement — a `timed` frame arms no interrupt at all. NMI
+is the one interrupt the flag cannot mask, and `$FFFA` points at an `RTI` in
+the runtime for every program this release builds, so enabling NMI through
+`ppu.ctrl` runs none of your code. A `mmc3.bank_select` and the `mmc3.bank_data`
+write that follows it are therefore always consecutive.
+
+Handlers are a different matter. They run in schedule order and each leaves its
+selection behind for the next, so rasterc treats every handler as starting with
+no register it can name.
+
 **rasterc today:** as designed.
 
 ### 9.5 Which registers read back
