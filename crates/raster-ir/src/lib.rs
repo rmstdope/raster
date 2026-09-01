@@ -2118,7 +2118,12 @@ impl Lowerer {
             return true;
         }
         let mut notes = Vec::new();
-        let _ = site;
+        if let WriteSite::CompoundAssignment(spelling) = site {
+            notes.push(format!(
+                "`{spelling}` writes its destination, so this writes ${:04X}",
+                register.address()
+            ));
+        }
         notes.push(dead_write_note(register));
         notes.push(DELETE_THE_LINE.to_owned());
         self.refuse_with(

@@ -1031,6 +1031,39 @@ fn writing_the_read_only_register_is_refused() {
 }
 
 #[test]
+fn a_compound_assignment_to_the_read_only_register_is_refused() {
+    let errors = lower_errors("main {\n    ppu.status += 1\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "`ppu.status` cannot be written");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$2002 is a read-only port")
+    );
+    // Three notes, the operator first. The read of $2002 is legal and is not
+    // mentioned: raster-bm1 owns that question, not this bead.
+    assert_eq!(errors[0].notes.len(), 3);
+    assert_eq!(
+        errors[0].notes[0],
+        "`+=` writes its destination, so this writes $2002"
+    );
+}
+
+#[test]
+fn every_compound_operator_names_itself_in_the_write_refusal() {
+    for spelling in ["+=", "-=", "*=", "/="] {
+        let source = format!("main {{\n    ppu.status {spelling} 1\n}}\n");
+        let errors = lower_errors(&source);
+
+        assert_eq!(errors.len(), 1, "{spelling}");
+        assert_eq!(
+            errors[0].notes[0],
+            format!("`{spelling}` writes its destination, so this writes $2002"),
+        );
+    }
+}
+
+#[test]
 fn writing_a_write_only_register_is_still_fine() {
     // The whole point of the rule is that it is about reads. Every one of the
     // thirteen may still be written, and this is the test that goes red if the
