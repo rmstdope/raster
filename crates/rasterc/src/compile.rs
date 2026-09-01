@@ -7,7 +7,7 @@ use raster_codegen::{generate_with_isa, CodegenError};
 use raster_diag::{Diagnostic, Refusal, Span};
 use raster_ir::{lower, FrameStrategy};
 use raster_link::{link_mmc3_program, mmc3_reset_runtime_bytes, InterruptVectors, LinkError};
-use raster_sema::analyze;
+use raster_sema::{analyze, SemanticError};
 use raster_syntax::parse;
 use raster_timing::TimingError;
 
@@ -66,12 +66,7 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
             source,
         )
     })?;
-    let typed = analyze(&syntax).map_err(|errors| {
-        spanned(
-            errors.into_iter().map(|e| (e.message, e.span, e.refusal)),
-            source,
-        )
-    })?;
+    let typed = analyze(&syntax).map_err(|errors| analyzed(errors, source))?;
     // Warnings first, then errors: a warning is about what the author wrote
     // before the stage gave up, and the errors are why it did.
     let mut ir = lower(&typed).map_err(|failure| {
@@ -178,6 +173,34 @@ fn lowered(errors: Vec<raster_ir::LowerError>, source: &str) -> Vec<Diagnostic> 
                 let mut diagnostic = Diagnostic::error(message, span, label);
                 diagnostic.notes = notes;
                 (diagnostic, refusal)
+            })
+            .collect(),
+    )
+}
+
+/// Semantic errors, as diagnostics. Unlike a parse error, one of these may
+/// carry a label of its own — a register namespace refusal names the spelling
+/// that reaches the port under the carets — so it cannot go through `spanned`,
+/// whose label mirrors the message. It still goes through `noted`, because it
+/// still carries a `Refusal`.
+///
+/// `Span::clamped` for the same reason `spanned` uses it: offsets arrive as
+/// `u32` from another crate, and a panic in the renderer would show the author a
+/// backtrace instead of a mistake.
+fn analyzed(errors: Vec<SemanticError>, source: &str) -> Vec<Diagnostic> {
+    noted(
+        errors
+            .into_iter()
+            .map(|error| {
+                let SemanticError {
+                    message,
+                    label,
+                    span,
+                    refusal,
+                } = error;
+                let span = Span::clamped(span.start as usize, span.end as usize, source);
+                let label = label.unwrap_or_else(|| message.clone());
+                (Diagnostic::error(message, span, label), refusal)
             })
             .collect(),
     )

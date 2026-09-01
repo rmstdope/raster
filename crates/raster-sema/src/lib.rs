@@ -9,6 +9,10 @@ use raster_syntax::{
 #[derive(Debug)]
 pub struct SemanticError {
     pub message: String,
+    /// What is drawn under the carets, when it differs from the message.
+    /// `None` means the label mirrors the message, which is what every
+    /// diagnostic in this compiler did before raster-3o3 and what most still do.
+    pub label: Option<String>,
     pub span: Span,
     pub refusal: Refusal,
 }
@@ -90,7 +94,7 @@ pub fn analyze(program: &Program) -> Result<TypedProgram, Vec<SemanticError>> {
 impl Analyzer {
     fn new() -> Self {
         let mut root = HashMap::new();
-        for name in ["ppu", "mmc3"] {
+        for name in NAMESPACES {
             root.insert(
                 name.into(),
                 Symbol {
@@ -128,9 +132,43 @@ impl Analyzer {
     fn refuse(&mut self, span: Span, message: impl Into<String>, refusal: Refusal) {
         self.errors.push(SemanticError {
             message: message.into(),
+            label: None,
             span,
             refusal,
         });
+    }
+
+    /// Refuse with a label of its own: the message says what is wrong, and the
+    /// label under the carets says what to write instead.
+    fn refuse_with(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        label: impl Into<String>,
+        refusal: Refusal,
+    ) {
+        self.errors.push(SemanticError {
+            message: message.into(),
+            label: Some(label.into()),
+            span,
+            refusal,
+        });
+    }
+
+    fn error_with(&mut self, span: Span, message: impl Into<String>, label: impl Into<String>) {
+        self.refuse_with(span, message, label, Refusal::Rejected);
+    }
+
+    /// Refuse a construct the specification names and this release does not
+    /// build. `rasterc` attaches the "this release compiles ..." note from the
+    /// `Refusal`, so nothing here carries it.
+    fn not_in_this_release_with(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        label: impl Into<String>,
+    ) {
+        self.refuse_with(span, message, label, Refusal::NotInThisRelease);
     }
 
     fn enter_scope(&mut self) {
@@ -166,6 +204,34 @@ impl Analyzer {
 
     fn lookup(&self, name: &str) -> Option<&Symbol> {
         self.scopes.iter().rev().find_map(|scope| scope.get(name))
+    }
+
+    /// Whether this name is a register namespace, reporting nothing.
+    ///
+    /// The erroring `expression_type` was used to answer this — once from the
+    /// `Member` arm and once again from `ensure_assignable` — and that second
+    /// call is the duplicate `unknown name` in the middle of every cascade
+    /// raster-3o3 removes.
+    fn is_namespace(&self, name: &str) -> bool {
+        matches!(
+            self.lookup(name),
+            Some(symbol) if matches!(symbol.kind, SymbolKind::Namespace)
+        )
+    }
+
+    /// What a bound name is, in the words a label uses: "`x` is **a variable**,
+    /// not a register namespace".
+    ///
+    /// `None` when the name is not bound at all — that is the "there is no `x`
+    /// namespace" case, which says something different.
+    fn root_kind(&self, name: &str) -> Option<&'static str> {
+        match &self.lookup(name)?.kind {
+            SymbolKind::Namespace => None,
+            SymbolKind::Variable => Some("a variable"),
+            SymbolKind::Constant(_) => Some("a constant"),
+            SymbolKind::Function(_, _) => Some("a function"),
+            SymbolKind::Group => Some("a group"),
+        }
     }
 
     fn collect_top_level(&mut self, program: &Program) {
@@ -527,7 +593,29 @@ impl Analyzer {
                 }
             }
             Statement::Expression(expression) => {
-                self.expression_type(expression);
+                let value_type = self.expression_type(expression);
+                // A bare register read — `ppu.status` on a line of its own,
+                // which §9.1 showed until raster-3o3. It reads $2002 for its
+                // side effect and throws the byte away, and this release has no
+                // such statement. `raster-ir` refuses it too, with a message
+                // about statements in general; said here, where the shape is
+                // known, it can name the fix.
+                //
+                // A non-`Unknown` type means `member_type` found a real
+                // register, so the base is the namespace name.
+                if value_type != ValueType::Unknown
+                    && let Expression::Member { base, member } = &expression.value
+                    && let Expression::Name(root) = &base.value
+                {
+                    self.error_with(
+                        expression.span,
+                        "a register read cannot stand on its own as a statement",
+                        format!(
+                            "assign it to a variable: `var s: u8 = {}.{}`",
+                            root.value, member.value
+                        ),
+                    );
+                }
             }
             Statement::Wait(Wait::Vblank(_)) => {
                 if self.in_timed_region() {
@@ -710,25 +798,7 @@ impl Analyzer {
                     }
                 }
             }
-            Expression::Member { base, member } => {
-                let base_type = self.expression_type(base);
-                if base_type != ValueType::Namespace {
-                    self.error(base.span, "member access requires a register namespace");
-                    return ValueType::Unknown;
-                }
-                let Expression::Name(root) = &base.value else {
-                    return ValueType::Unknown;
-                };
-                if !register_member(&root.value, &member.value) {
-                    self.error(
-                        member.span,
-                        format!("unknown {} register `{}`", root.value, member.value),
-                    );
-                    ValueType::Unknown
-                } else {
-                    ValueType::U8
-                }
-            }
+            Expression::Member { base, member } => self.member_type(expression, base, member),
             Expression::Range { start, end } => {
                 let start_type = self.expression_type(start);
                 let end_type = self.expression_type(end);
@@ -890,6 +960,121 @@ impl Analyzer {
         return_type
     }
 
+    /// The type of a member expression, and the single error it raises when
+    /// there is not one.
+    ///
+    /// This never calls `expression_type` on the base. That call is what
+    /// produced the cascade it replaces: `oam.addr = 0` reported ``unknown name
+    /// `oam` `` from the base, `member access requires a register namespace`
+    /// from here, and then both again from `ensure_assignable` — four errors
+    /// for one line, two of them byte for byte identical.
+    fn member_type(
+        &mut self,
+        whole: &Spanned<Expression>,
+        base: &Spanned<Expression>,
+        member: &Spanned<String>,
+    ) -> ValueType {
+        let Some(root) = member_root(whole) else {
+            // `f().x`, `a[0].y`: the chain does not root at a name at all.
+            self.error(base.span, "member access requires a register namespace");
+            return ValueType::Unknown;
+        };
+        if !self.is_namespace(&root.value) {
+            return self.unknown_namespace(whole, root);
+        }
+        match &base.value {
+            // One level on a real namespace: the check this release has always
+            // made, with the message it has always used.
+            Expression::Name(_) => {
+                if register_member(&root.value, &member.value) {
+                    ValueType::U8
+                } else {
+                    self.error(
+                        member.span,
+                        format!("unknown {} register `{}`", root.value, member.value),
+                    );
+                    ValueType::Unknown
+                }
+            }
+            // `ppu.oam.addr`: report the deepest wrong step and nothing here.
+            Expression::Member {
+                base: inner,
+                member: inner_member,
+            } => {
+                if self.member_type(base, inner, inner_member) != ValueType::Unknown {
+                    // `ppu.ctrl.x`: the inner level is a real register, and a
+                    // register has no members. Same message and same span as
+                    // before raster-3o3.
+                    self.error(base.span, "member access requires a register namespace");
+                }
+                ValueType::Unknown
+            }
+            // `member_root` found a name, so nothing else can be here. No error:
+            // the arm above has already said whatever there is to say.
+            _ => ValueType::Unknown,
+        }
+    }
+
+    /// The one error a member chain rooted at something that is not a namespace
+    /// raises. Exactly one, whatever the chain's depth.
+    ///
+    /// The carets sit under `whole` for three of the four cases, because the
+    /// label is a substitution the author can perform — "$2003 is spelled
+    /// `ppu.oam_addr`" does not read as one if the carets cover `oam` alone.
+    /// The exception is a root bound to something ordinary, where the label is
+    /// about that name and the carets stay on it, as they do today.
+    fn unknown_namespace(
+        &mut self,
+        whole: &Spanned<Expression>,
+        root: &Spanned<String>,
+    ) -> ValueType {
+        let member = root_member(whole).map(|member| member.value.as_str());
+
+        // The specification's own name for a port this release has.
+        if let Some((_, _, port, spelling)) = RENAMED
+            .iter()
+            .find(|(namespace, name, _, _)| *namespace == root.value && Some(*name) == member)
+        {
+            self.error_with(
+                whole.span,
+                format!("there is no `{}` namespace", root.value),
+                format!("{port} is spelled `{spelling}`"),
+            );
+            return ValueType::Unknown;
+        }
+
+        // Hardware the specification names and this release cannot reach.
+        if let Some((_, _, message, label)) = NOT_YET.iter().find(|(namespace, name, _, _)| {
+            *namespace == root.value
+                && match name {
+                    None => true,
+                    Some(name) => Some(*name) == member,
+                }
+        }) {
+            self.not_in_this_release_with(whole.span, *message, *label);
+            return ValueType::Unknown;
+        }
+
+        // The root is bound, to something that is not a namespace. The carets
+        // stay on that name, as they do today, because the label is about it.
+        if let Some(kind) = self.root_kind(&root.value) {
+            self.error_with(
+                root.span,
+                "member access requires a register namespace",
+                format!("`{}` is {kind}, not a register namespace", root.value),
+            );
+            return ValueType::Unknown;
+        }
+
+        // Nothing of that name at all.
+        self.error_with(
+            whole.span,
+            format!("there is no `{}` namespace", root.value),
+            NAMESPACE_LIST,
+        );
+        ValueType::Unknown
+    }
+
     fn ensure_assignable(&mut self, expression: &Spanned<Expression>) {
         match &expression.value {
             Expression::Name(name) => {
@@ -905,8 +1090,13 @@ impl Analyzer {
                 }
             }
             Expression::Index { .. } => {}
-            Expression::Member { base, .. }
-                if self.expression_type(base) == ValueType::Namespace => {}
+            // A member expression has already been judged: `expression_type` is
+            // called on an assignment's left side before this, and it either
+            // returned a register or raised its one error. Adding "assignment
+            // target must be ..." on top was the second half of every cascade,
+            // and re-evaluating the base to decide was the duplicate `unknown
+            // name` in the middle of it.
+            Expression::Member { .. } => {}
             _ => self.error(
                 expression.span,
                 "assignment target must be a mutable variable, array element, or register member",
@@ -1078,6 +1268,84 @@ fn parse_number(value: &str) -> Option<u32> {
         u32::from_str_radix(hexadecimal, 16).ok()
     } else {
         value.parse().ok()
+    }
+}
+
+/// The register namespaces this release has. Seeds the root scope in
+/// `Analyzer::new` and is what `NAMESPACE_LIST` promises, so a namespace cannot
+/// be added to one and missed by the other.
+const NAMESPACES: [&str; 2] = ["ppu", "mmc3"];
+
+/// The label under the carets when a namespace does not exist and rasterc has
+/// nothing more specific to say.
+///
+/// Written out rather than joined from `NAMESPACES`: two names read as "`ppu`
+/// and `mmc3`" and three would not, and
+/// `the_namespace_list_names_every_namespace` goes red the moment a third
+/// arrives, which is when somebody has to write the prose anyway.
+const NAMESPACE_LIST: &str = "rasterc has `ppu` and `mmc3`";
+
+/// Register names §9.1 of the specification used until raster-3o3, and the
+/// spelling that reaches the port today. An author reading an older draft types
+/// `oam.addr`, and so does one who knows $2003 as OAMADDR.
+///
+/// Each row is (namespace, member, the port, the name that works).
+const RENAMED: [(&str, &str, &str, &str); 2] = [
+    ("oam", "addr", "$2003", "ppu.oam_addr"),
+    ("oam", "data", "$2004", "ppu.oam_data"),
+];
+
+/// Hardware the specification names as intended and this release cannot reach.
+///
+/// The message names the *feature*, never a spelling. §9.1 no longer shows
+/// `oam.dma`, and nothing in this project has chosen between `oam.dma` and
+/// `ppu.oam_dma` — naming one here would settle a language question in a
+/// terminal message. Decided with the navigator; see the bead's plan.
+///
+/// Each row is (namespace, the member it is about or `None` for the whole
+/// namespace, the message, the label).
+const NOT_YET: [(&str, Option<&str>, &str, &str); 2] = [
+    (
+        "oam",
+        Some("dma"),
+        "OAM DMA is not supported yet",
+        "$4014 stalls the CPU for 513 or 514 cycles",
+    ),
+    (
+        "apu",
+        None,
+        "the `apu` registers are not supported yet",
+        "the sound driver owns the APU today (§8.3)",
+    ),
+];
+
+/// The leftmost `Name` of a member chain: `apu.pulse1.volume` and `apu.pulse1`
+/// both root at `apu`.
+///
+/// `None` when the chain roots at something that is not a name — `f().x`,
+/// `a[0].y` — which no register access can be.
+fn member_root(expression: &Spanned<Expression>) -> Option<&Spanned<String>> {
+    match &expression.value {
+        Expression::Name(name) => Some(name),
+        Expression::Member { base, .. } => member_root(base),
+        _ => None,
+    }
+}
+
+/// The member immediately after the root of a chain: `oam.addr` gives `addr`
+/// and `apu.pulse1.volume` gives `pulse1`.
+///
+/// This, and not the outermost member, is what `RENAMED` and `NOT_YET` are
+/// keyed on: `oam.addr` is the name the specification used, and `apu.pulse1` is
+/// where an `apu` namespace would begin.
+fn root_member(expression: &Spanned<Expression>) -> Option<&Spanned<String>> {
+    let Expression::Member { base, member } = &expression.value else {
+        return None;
+    };
+    match &base.value {
+        Expression::Name(_) => Some(member),
+        Expression::Member { .. } => root_member(base),
+        _ => None,
     }
 }
 

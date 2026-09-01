@@ -694,3 +694,202 @@ fn no_refusal_calls_a_timed_block_a_timed_region() {
         "a message that opens with `timed block` must not call it a region later: {bare:?}"
     );
 }
+
+/// The cascade raster-3o3 exists to remove. `oam.addr = 0` reported four errors
+/// — ``unknown name `oam` ``, `member access requires a register namespace`,
+/// ``unknown name `oam` `` a second time, and `assignment target must be ...` —
+/// for one line, and not one of them named the register the author wanted.
+#[test]
+fn an_unknown_register_namespace_is_one_error_not_four() {
+    let errors = errors_with_spans("main {\n    zzz.thing = 0\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "there is no `zzz` namespace");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("rasterc has `ppu` and `mmc3`")
+    );
+}
+
+/// `apu.pulse1.volume` ran the cascade once per member level, for six errors.
+#[test]
+fn a_two_level_member_on_an_unknown_namespace_is_still_one_error() {
+    let errors = errors_with_spans("main {\n    zzz.one.two = $BF\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "there is no `zzz` namespace");
+}
+
+/// `ppu.oam.addr` produced four errors: the inner level twice and the outer
+/// twice. Only the deepest wrong step is worth reporting.
+#[test]
+fn a_two_level_member_on_a_real_namespace_reports_the_inner_level_once() {
+    let errors = errors_with_spans("main {\n    ppu.oam.addr = 0\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "unknown ppu register `oam`");
+}
+
+/// A member on an ordinary variable produced two errors, the second of which
+/// said nothing the first had not. The label names what `x` actually is.
+#[test]
+fn a_member_on_a_variable_names_what_the_variable_is() {
+    let errors = errors_with_spans("main {\n    var x: u8 = 0\n    x.y = 1\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "member access requires a register namespace"
+    );
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("`x` is a variable, not a register namespace")
+    );
+}
+
+/// A member on a real register: `ppu.ctrl.x`. The inner level is fine and the
+/// outer one is not, and the message is the one this release always used.
+#[test]
+fn a_member_on_a_register_is_refused_with_the_message_it_always_had() {
+    let errors = errors_with_spans("main {\n    ppu.ctrl.x = 1\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "member access requires a register namespace"
+    );
+}
+
+/// §9.1 named $2003 and $2004 `oam.addr` and `oam.data` until raster-3o3, and
+/// an author who knows the hardware as OAMADDR types them anyway. rasterc has
+/// both ports and says which name reaches them.
+///
+/// The span is the whole member expression, not the namespace: the label is a
+/// substitution the author performs, and it does not read as one if the carets
+/// cover `oam` alone. Agreed with the navigator; see the bead's plan.
+#[test]
+fn the_specifications_oam_names_say_which_spelling_reaches_the_port() {
+    for (source, port, spelling) in [
+        ("main {\n    oam.addr = 0\n}\n", "$2003", "ppu.oam_addr"),
+        ("main {\n    oam.data = $18\n}\n", "$2004", "ppu.oam_data"),
+    ] {
+        let errors = errors_with_spans(source);
+        assert_eq!(errors.len(), 1, "{source}");
+        assert_eq!(errors[0].message, "there is no `oam` namespace");
+        assert_eq!(
+            errors[0].label.as_deref(),
+            Some(format!("{port} is spelled `{spelling}`").as_str())
+        );
+        assert_eq!(errors[0].refusal, Refusal::Rejected);
+        // The whole member expression, `oam.addr`, from column 5 of line 2.
+        assert_eq!(errors[0].span.end - errors[0].span.start, 8);
+    }
+}
+
+/// A read is the same expression somewhere else, and says the same thing.
+#[test]
+fn reading_a_renamed_register_says_the_same_thing_as_writing_one() {
+    let errors = errors_with_spans("main {\n    var y: u8 = oam.addr\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "there is no `oam` namespace");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$2003 is spelled `ppu.oam_addr`")
+    );
+}
+
+/// §9.1's note names three things it once implied and rasterc cannot do. Two of
+/// them are reachable by name, and both promise later — so both are
+/// `NotInThisRelease` and carry the "this release compiles ..." note, which is
+/// the rule `crates/rasterc/src/compile.rs` states: never leave "yet"
+/// unexplained.
+///
+/// The OAM DMA message names the *feature*, not a spelling. §9.1 no longer
+/// shows `oam.dma`, and nothing has chosen between `oam.dma` and
+/// `ppu.oam_dma`; naming one here would settle that in a terminal message.
+#[test]
+fn hardware_the_specification_names_and_this_release_lacks_promises_later() {
+    for (source, message, label) in [
+        (
+            "main {\n    oam.dma = $02\n}\n",
+            "OAM DMA is not supported yet",
+            "$4014 stalls the CPU for 513 or 514 cycles",
+        ),
+        (
+            "main {\n    apu.pulse1.volume = $BF\n}\n",
+            "the `apu` registers are not supported yet",
+            "the sound driver owns the APU today (§8.3)",
+        ),
+    ] {
+        let errors = errors_with_spans(source);
+        assert_eq!(errors.len(), 1, "{source}");
+        assert_eq!(errors[0].message, message);
+        assert_eq!(errors[0].label.as_deref(), Some(label));
+        assert_eq!(errors[0].refusal, Refusal::NotInThisRelease);
+    }
+}
+
+/// `apu` is a whole namespace this release does not have, so every member of it
+/// answers the same way — `NOT_YET`'s `None` member.
+#[test]
+fn every_apu_register_answers_the_same_way() {
+    for source in [
+        "main {\n    apu.pulse1.volume = $BF\n}\n",
+        "main {\n    apu.status = 0\n}\n",
+        "main {\n    apu.triangle.linear = 1\n}\n",
+    ] {
+        let errors = errors_with_spans(source);
+        assert_eq!(errors.len(), 1, "{source}");
+        assert_eq!(
+            errors[0].message,
+            "the `apu` registers are not supported yet"
+        );
+    }
+}
+
+/// The list is what the diagnostic promises, so a namespace added to one and
+/// missed by the other is caught here rather than by an author.
+#[test]
+fn the_namespace_list_names_every_namespace() {
+    for namespace in ["ppu", "mmc3"] {
+        assert!(
+            errors_with_spans("main {\n    zzz.thing = 0\n}\n")[0]
+                .label
+                .as_deref()
+                .expect("the label is set")
+                .contains(&format!("`{namespace}`")),
+            "the namespace list should name `{namespace}`"
+        );
+    }
+}
+
+/// §9.1 showed `ppu.status` on a line of its own, commented `// read`, since
+/// draft 0.1, and this release has no such statement. Authors will keep writing
+/// it, so the message names the form that does compile.
+#[test]
+fn a_bare_register_read_names_the_assignment_that_works() {
+    let errors = errors_with_spans("main {\n    ppu.status\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "a register read cannot stand on its own as a statement"
+    );
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("assign it to a variable: `var s: u8 = ppu.status`")
+    );
+}
+
+/// The label names the register that was written, not a fixed example.
+#[test]
+fn the_bare_read_label_names_the_register_that_was_read() {
+    let errors = errors_with_spans("main {\n    mmc3.irq_disable\n}\n");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("assign it to a variable: `var s: u8 = mmc3.irq_disable`")
+    );
+}
+
+/// Assignments and calls are `Infix` and `Call`, not `Member`, so neither is
+/// caught by the new check.
+#[test]
+fn a_register_write_and_a_call_are_still_statements() {
+    let program = parse("fn f() -> void { }\nmain {\n    ppu.ctrl = $80\n    f()\n}\n")
+        .expect("fixture should parse");
+    analyze(&program).expect("a write and a call are valid statements");
+}

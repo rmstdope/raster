@@ -772,3 +772,40 @@ fn a_write_only_register_read_renders_its_own_label_and_notes() {
         .iter()
         .any(|n| n.contains("this release compiles")));
 }
+
+/// §9.1's block is the first thing an author reads before writing a hardware
+/// write, and it is the block they paste. Before raster-3o3, five of its ten
+/// lines did not build — three register names the compiler does not have, a
+/// bare `ppu.status` statement, and a 16-bit write to `$2006`.
+///
+/// Reading the block out of the specification rather than copying it here is
+/// what makes the note under it ("every line above compiles") a fact instead of
+/// a claim. `x` is declared by the wrapper because the block uses it; nothing
+/// else is added.
+#[test]
+fn the_specifications_named_register_block_compiles() {
+    let spec = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/raster-language-spec.md"
+    ));
+    let block = spec
+        .split("### 9.1 Named registers")
+        .nth(1)
+        .expect("§9.1 is in the specification")
+        .split("```")
+        .nth(1)
+        .expect("§9.1 opens with a fenced block");
+
+    let rom = compile_source(&format!("main {{\n    var x: u8 = 0\n{block}}}\n"))
+        .expect("every line of §9.1's block compiles");
+
+    // And silently. raster-rid warns when a bank data write repoints a PRG
+    // window, which §9.1's `mmc3.bank_select = 6` used to do — a warning is
+    // invisible to a test that only checks the build succeeded, and it is
+    // exactly what the reader pasting this block sees. Decision Q12.
+    assert!(
+        rom.warnings.is_empty(),
+        "§9.1's block should compile without warnings, got: {:?}",
+        rom.warnings
+    );
+}

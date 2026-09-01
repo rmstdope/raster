@@ -522,23 +522,30 @@ charmap ascii { 'A'..'Z' => 0, '0'..'9' => 26, ' ' => 36 }
 ### 9.1 Named registers
 
 ```
-ppu.ctrl   = $80
-ppu.mask   = $1E
-ppu.status                      // read
-ppu.addr   = $3F00
-ppu.data   = $21
-ppu.scroll = x
-oam.addr   = 0
-oam.dma    = $02
+ppu.ctrl     = $80
+ppu.mask     = $1E
+var s: u8    = ppu.status       // read; clears vblank and the latch
+ppu.addr     = $3F              // high byte, then low
+ppu.addr     = $00
+ppu.data     = $21
+ppu.scroll   = x
+ppu.oam_addr = 0
+ppu.oam_data = $18
 
-apu.pulse1.volume = $BF
-mmc3.bank_select  = 6
+mmc3.bank_select  = 0           // CHR window at PPU $0000
 mmc3.bank_data    = 0
 ```
 
 Named access exists so the compiler understands hardware side effects — write
 ordering, the `$2005`/`$2006` shared latch, `$2002` clearing that latch on read. The
 compiler warns when a sequence violates a known hardware requirement.
+
+**rasterc today:** every line above compiles. Three things this section once
+showed are intended and not built: `ppu.addr = $3F00`, one 16-bit write to the
+address latch, because `u16` values are not supported anywhere yet; OAM DMA
+through `$4014`, which stalls the CPU for 513 or 514 cycles and cannot be
+admitted until a timed block can charge it; and the APU registers, which today
+belong to the linked sound driver (§8.3).
 
 ### 9.2 Raw access
 

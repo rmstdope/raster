@@ -708,3 +708,33 @@ fn a_register_that_reads_still_compiles() {
     assert_eq!(stderr, "");
     assert!(output.exists());
 }
+
+/// The whole stderr stream for the three §9.1 names rasterc does not have: three
+/// errors in source order, one note said once beside the first refusal that
+/// promises later, and no ROM.
+#[test]
+fn the_register_names_the_specification_used_are_refused_with_one_error_each() {
+    let scratch = Scratch::new("register-names");
+    let input = scratch.path().join("names.raster");
+    fs::write(
+        &input,
+        "main {\n    oam.addr = 0\n    oam.dma = $02\n    apu.pulse1.volume = $BF\n}\n",
+    )
+    .expect("the fixture is writable");
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("there is no `oam` namespace"));
+    assert!(stderr.contains("$2003 is spelled `ppu.oam_addr`"));
+    assert!(stderr.contains("OAM DMA is not supported yet"));
+    assert!(stderr.contains("the `apu` registers are not supported yet"));
+    // Said once, beside the first refusal that promises later, and not again.
+    assert_eq!(stderr.matches("this release compiles").count(), 1);
+    assert!(stderr.ends_with(&format!(
+        "error: could not compile {} (3 errors)\n",
+        input.display()
+    )));
+    assert!(!scratch.path().join("names.nes").exists());
+}
