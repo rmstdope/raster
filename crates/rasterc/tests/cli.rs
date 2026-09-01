@@ -652,3 +652,59 @@ fn a_prg_window_warning_prints_to_stderr_and_still_writes_a_rom() {
         )
     );
 }
+
+#[test]
+fn a_write_only_register_read_fails_the_build_and_writes_no_rom() {
+    let directory = Scratch::new("writeonly");
+    let input = directory.path().join("read.raster");
+    let output = directory.path().join("read.nes");
+    fs::write(
+        &input,
+        "main {\n    ppu.mask = 0\n    mmc3.bank_select += $80\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(!output.exists());
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "error: `mmc3.bank_select` cannot be read\n",
+                " --> {path}:3:5\n",
+                "  |\n",
+                "3 |     mmc3.bank_select += $80\n",
+                "  |     ^^^^^^^^^^^^^^^^ $8000 is a write-only port\n",
+                "  = note: `+=` reads its destination before it writes, so this reads $8000\n",
+                "  = note: reading $8000 returns a byte of your own program from the PRG\n",
+                "          bank mapped there, not the last value written\n",
+                "  = note: keep what you wrote in a variable of your own\n",
+                "          and write the whole value\n",
+                "\n",
+                "error: could not compile {path} (1 error)\n",
+            ),
+            path = input.display()
+        )
+    );
+}
+
+#[test]
+fn a_register_that_reads_still_compiles() {
+    let directory = Scratch::new("readable");
+    let input = directory.path().join("ok.raster");
+    let output = directory.path().join("ok.nes");
+    fs::write(
+        &input,
+        "main {\n    ppu.addr = $3f\n    ppu.addr = $00\n    var entry: u8 = ppu.data\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(stderr, "");
+    assert!(output.exists());
+}
