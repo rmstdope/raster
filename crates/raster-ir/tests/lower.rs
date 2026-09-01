@@ -1811,3 +1811,102 @@ fn sync_exact_inside_a_scroll_pair_warns_in_scroll_words() {
         ]
     );
 }
+
+/// A `timed` schedule synchronizes once and counts forward, so a cycle it did not spend itself is
+/// never recovered. NMI costs it thirteen every frame, out of cycles it had already allocated —
+/// the ROM still builds, because every other hazard rasterc can see but not prove is a warning.
+#[test]
+fn a_timed_frame_with_nmi_on_is_a_warning() {
+    let program = lower_source(
+        "main {\n\
+         ppu.ctrl = $88\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert_eq!(
+        warning.label,
+        "this schedule counts cycles from one synchronization onwards"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "`ppu.ctrl` holds $88 when the frame starts, and bit 7 is NMI;\neach NMI costs the schedule 13 cycles it has already spent",
+            "clear bit 7 to keep the schedule, or use `using irq`, which\nsynchronizes on every scanline it fires",
+        ]
+    );
+}
+
+/// A value rasterc could not fold is said so rather than passed over: the shape
+/// `mmc3.bank_select` already uses for a value it cannot see.
+#[test]
+fn a_timed_frame_whose_ppu_ctrl_cannot_be_folded_is_a_warning() {
+    let program = lower_source(
+        "var flags: u8\n\
+         main {\n\
+         ppu.ctrl = flags\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "rasterc cannot tell whether this program enables NMI"
+    );
+    assert_eq!(
+        warning.label,
+        "this schedule counts cycles from one synchronization onwards"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "the last write to `ppu.ctrl` before the frame is not a value\nrasterc can see, so bit 7 is unknown",
+            "bit 7 is NMI, and each NMI costs the schedule 13 cycles it has\nalready spent; writing a constant with bit 7 clear keeps it",
+        ]
+    );
+}
+
+/// Written on some paths and not others is its own first note, and not the unfoldable one: they
+/// are two different things for the author to go and fix.
+#[test]
+fn a_timed_frame_whose_ppu_ctrl_is_written_on_some_paths_is_a_warning() {
+    let program = lower_source(
+        "main {\n\
+         var x: u8 = 1\n\
+         if x != 0 { ppu.ctrl = $08 }\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "rasterc cannot tell whether this program enables NMI"
+    );
+    assert_eq!(
+        warning.notes[0],
+        "`ppu.ctrl` is written on some paths through this program and not\nothers, so bit 7 is unknown"
+    );
+    assert_ne!(
+        warning.notes[0],
+        "the last write to `ppu.ctrl` before the frame is not a value\nrasterc can see, so bit 7 is unknown"
+    );
+}

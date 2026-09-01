@@ -8,7 +8,10 @@ use raster_syntax::{
     Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement, Type, Wait,
 };
 pub use raster_timing::CycleConstraint;
-use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
+use raster_timing::{
+    timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState,
+    TimedFrameNmi, NMI_CYCLES, PPU_CTRL_NMI,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Place(pub u32);
@@ -1274,6 +1277,7 @@ pub fn lower(typed: &TypedProgram) -> Result<Program, LowerFailure> {
     lowerer.selects_bank = functions_that_select(&typed.program);
     lowerer.lower_program(&typed.program);
     lowerer.check_mmc3_irq_frame();
+    lowerer.check_timed_frame_nmi();
     if lowerer.errors.is_empty() {
         lowerer.program.warnings = lowerer.warnings;
         Ok(lowerer.program)
@@ -1647,6 +1651,29 @@ impl Lowerer {
         let span = frame.strategy_span;
         if let Err(error) = validate_mmc3_irq_frame(&self.ppu_configuration()) {
             self.error(span, mmc3_irq_message(error));
+        }
+    }
+
+    /// Warn where a `frame ... using timed` can be interrupted by an NMI.
+    ///
+    /// Nothing is checked on a program that already failed, for the reason `check_mmc3_irq_frame`
+    /// gives: the configuration is read by walking calls, and a program whose recursion was just
+    /// rejected has no walk that terminates.
+    fn check_timed_frame_nmi(&mut self) {
+        if !self.errors.is_empty() {
+            return;
+        }
+        let Some(frame) = &self.program.frame else {
+            return;
+        };
+        if frame.strategy != FrameStrategy::Timed {
+            return;
+        }
+        // Copied out before anything is pushed: `self.warnings` cannot be borrowed mutably while
+        // `self.program.frame` is borrowed.
+        let span = frame.strategy_span;
+        if let Some(verdict) = timed_frame_nmi(self.ppu_configuration().ctrl) {
+            self.warnings.push(timed_frame_nmi_warning(verdict, span));
         }
     }
 
@@ -3353,6 +3380,55 @@ fn enter_function(
         conditional,
     );
     visiting.pop();
+}
+
+/// The last note both NMI warnings end with, so the two cannot drift apart.
+const CLEAR_BIT_7_NOTE: &str = "clear bit 7 to keep the schedule, or use `using irq`, which\n\
+                                synchronizes on every scanline it fires";
+
+/// What the carets say under a `timed` frame's strategy, whichever verdict it is.
+const TIMED_SCHEDULE_LABEL: &str = "this schedule counts cycles from one synchronization onwards";
+
+/// The warning a `frame ... using timed` earns when NMI can reach it.
+fn timed_frame_nmi_warning(verdict: TimedFrameNmi, span: Span) -> LowerWarning {
+    let unknown = |first: String| LowerWarning {
+        message: "rasterc cannot tell whether this program enables NMI".to_owned(),
+        label: TIMED_SCHEDULE_LABEL.to_owned(),
+        notes: vec![
+            first,
+            format!(
+                "bit 7 is NMI, and each NMI costs the schedule {NMI_CYCLES} cycles it has\n\
+                 already spent; writing a constant with bit 7 clear keeps it"
+            ),
+        ],
+        span,
+        assumes_budget_met: false,
+    };
+    match verdict {
+        TimedFrameNmi::On { ctrl } => LowerWarning {
+            message: "this program enables NMI, and a `timed` frame cannot afford one".to_owned(),
+            label: TIMED_SCHEDULE_LABEL.to_owned(),
+            notes: vec![
+                format!(
+                    "`ppu.ctrl` holds ${ctrl:02X} when the frame starts, and bit 7 is NMI;\n\
+                     each NMI costs the schedule {NMI_CYCLES} cycles it has already spent"
+                ),
+                CLEAR_BIT_7_NOTE.to_owned(),
+            ],
+            span,
+            assumes_budget_met: false,
+        },
+        TimedFrameNmi::Unproven => unknown(
+            "the last write to `ppu.ctrl` before the frame is not a value\n\
+             rasterc can see, so bit 7 is unknown"
+                .to_owned(),
+        ),
+        TimedFrameNmi::Conditional => unknown(
+            "`ppu.ctrl` is written on some paths through this program and not\n\
+             others, so bit 7 is unknown"
+                .to_owned(),
+        ),
+    }
 }
 
 /// The diagnostic an MMC3 precondition failure reads as, naming the value that caused it.
