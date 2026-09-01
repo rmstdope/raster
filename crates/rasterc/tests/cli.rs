@@ -617,3 +617,38 @@ fn a_program_too_big_for_the_bank_is_told_how_much_of_its_own_has_to_go() {
         "got:\n{stderr}"
     );
 }
+
+#[test]
+fn a_prg_window_warning_prints_to_stderr_and_still_writes_a_rom() {
+    let directory = Scratch::new("prgwindowwarning");
+    let input = directory.path().join("repoint.raster");
+    let output = directory.path().join("repoint.nes");
+    fs::write(
+        &input,
+        "main {\n    ppu.mask = 0\n    mmc3.bank_select = 6\n    mmc3.bank_data = 2\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert!(output.exists());
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: this write repoints the PRG window at $8000\n",
+                " --> {path}:4:5\n",
+                "  |\n",
+                "4 |     mmc3.bank_data = 2\n",
+                "  |     ^^^^^^^^^^^^^^^^^^ R6 is selected, so this replaces $8000-$9FFF\n",
+                "  = note: reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the\n",
+                "          bytes at $8000 are not the ones it mapped from here on\n",
+                "  = note: PRG bank switching is not supported yet: banks 0 to 2 hold $FF,\n",
+                "          and bank 3 is a second view of the fixed bank at $E000\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+}

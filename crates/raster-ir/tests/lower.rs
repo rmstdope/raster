@@ -499,3 +499,327 @@ fn a_compound_bank_select_cannot_be_folded_and_warns() {
         "rasterc cannot see this value here, so bits 6 and 7 are unknown"
     );
 }
+
+#[test]
+fn a_bank_data_write_after_selecting_r6_warns() {
+    let program = lower_source("main { mmc3.bank_select = 6\n mmc3.bank_data = 2 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this write repoints the PRG window at $8000"
+    );
+    assert_eq!(
+        warning.label,
+        "R6 is selected, so this replaces $8000-$9FFF"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the\nbytes at $8000 are not the ones it mapped from here on",
+            "PRG bank switching is not supported yet: banks 0 to 2 hold $FF,\nand bank 3 is a second view of the fixed bank at $E000",
+        ]
+    );
+}
+
+#[test]
+fn a_bank_data_write_after_selecting_r7_warns() {
+    let program = lower_source("main { mmc3.bank_select = 7\n mmc3.bank_data = 2 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this write repoints the PRG window at $A000"
+    );
+    assert_eq!(
+        warning.label,
+        "R7 is selected, so this replaces $A000-$BFFF"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the\nbytes at $A000 are not the ones it mapped from here on",
+            "PRG bank switching is not supported yet: banks 0 to 2 hold $FF,\nand bank 3 is a second view of the fixed bank at $E000",
+        ]
+    );
+}
+
+#[test]
+fn a_bank_data_write_to_a_chr_register_is_silent() {
+    for register in 0..=5u8 {
+        let source = format!("main {{ mmc3.bank_select = {register}\n mmc3.bank_data = 3 }}");
+        let program = lower_source(&source);
+
+        assert!(program.warnings.is_empty(), "for {source:?}");
+    }
+}
+
+#[test]
+fn a_bare_bank_data_write_lands_on_the_register_reset_selected() {
+    let program = lower_source("main { mmc3.bank_data = 0 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this write repoints the PRG window at $A000"
+    );
+    assert_eq!(
+        warning.label,
+        "nothing selects a register before this, and reset selected R7 last"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the\nbytes at $A000 are not the ones it mapped from here on",
+            "write `mmc3.bank_select` with 0 to 5 first to point this at a CHR window",
+        ]
+    );
+}
+
+#[test]
+fn a_bank_select_with_mode_bits_still_names_its_register() {
+    let program = lower_source("main { mmc3.bank_select = $46\n mmc3.bank_data = 2 }");
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        program.warnings[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        program.warnings[1].label,
+        "R6 is selected, so this replaces $8000-$9FFF"
+    );
+}
+
+#[test]
+fn a_bank_data_write_after_an_unfoldable_select_warns_softly() {
+    let program =
+        lower_source("main { var pick: u8 = 6\n mmc3.bank_select = pick\n mmc3.bank_data = 2 }");
+
+    assert_eq!(program.warnings.len(), 2);
+    let warning = &program.warnings[1];
+    assert_eq!(
+        warning.message,
+        "rasterc cannot tell which bank register this write lands on"
+    );
+    assert_eq!(
+        warning.label,
+        "the last bank select before this is not one rasterc can see"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "R6 and R7 are the two 8 KiB PRG windows; a write landing on\neither one repoints $8000 or $A000",
+            "selecting with a literal 0 to 5 immediately before the write\nkeeps the map reset chose",
+        ]
+    );
+}
+
+#[test]
+fn a_compound_bank_select_leaves_the_selection_unknown() {
+    // `mmc3.bank_select += 1` builds a `Value::Binary` unconditionally, so it
+    // can never fold however plain it reads.
+    let program = lower_source("main { mmc3.bank_select += 1\n mmc3.bank_data = 2 }");
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        program.warnings[1].label,
+        "the last bank select before this is not one rasterc can see"
+    );
+}
+
+#[test]
+fn branches_that_select_different_registers_leave_the_selection_unknown() {
+    let program = lower_source(
+        "main { var c: u8 = 1\n if c != 0 { mmc3.bank_select = 6 } else { mmc3.bank_select = 0 }\n mmc3.bank_data = 2 }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "the last bank select before this is not one rasterc can see"
+    );
+}
+
+#[test]
+fn an_if_with_no_else_that_selects_leaves_the_selection_unknown() {
+    let program = lower_source(
+        "main { var c: u8 = 1\n mmc3.bank_select = 0\n if c != 0 { mmc3.bank_select = 6 }\n mmc3.bank_data = 2 }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "the last bank select before this is not one rasterc can see"
+    );
+}
+
+#[test]
+fn branches_that_select_the_same_register_keep_it() {
+    let program = lower_source(
+        "main { var c: u8 = 1\n if c != 0 { mmc3.bank_select = 0 } else { mmc3.bank_select = 0 }\n mmc3.bank_data = 2 }",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_loop_body_that_selects_judges_its_own_bank_data_write_as_unknown() {
+    let program = lower_source(
+        "main { var n: u8 = 3\n mmc3.bank_select = 0\n while n != 0 { mmc3.bank_data = n\n mmc3.bank_select = 6 } }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "the last bank select before this is not one rasterc can see"
+    );
+}
+
+#[test]
+fn a_loop_body_that_cannot_select_keeps_the_selection_from_outside_it() {
+    let program = lower_source(
+        "main { var n: u8 = 3\n mmc3.bank_select = 0\n while n != 0 { mmc3.bank_data = n } }",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_for_body_that_selects_carries_its_selection_past_the_loop() {
+    let program =
+        lower_source("main { for i in 0..3 { mmc3.bank_select = 6 }\n mmc3.bank_data = 2 }");
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "R6 is selected, so this replaces $8000-$9FFF"
+    );
+}
+
+#[test]
+fn a_bank_data_warning_survives_a_failed_lowering() {
+    let source = "main { mmc3.bank_select = 6\n mmc3.bank_data = 2\n loop {} }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("`loop` is not supported yet");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(failure.errors[0].message, "`loop` is not supported yet");
+    assert_eq!(failure.warnings.len(), 1);
+    assert_eq!(
+        failure.warnings[0].label,
+        "R6 is selected, so this replaces $8000-$9FFF"
+    );
+}
+
+#[test]
+fn a_bank_data_write_in_a_function_says_any_register_may_be_selected() {
+    let program = lower_source(
+        "fn set_chr(tile: u8) { mmc3.bank_data = tile }\nmain { mmc3.bank_select = 0\n set_chr(3) }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "this function can be called with any register selected"
+    );
+    assert_eq!(
+        program.warnings[0].notes[1],
+        "selecting with a literal 0 to 5 in this function, before the\nwrite, keeps the map reset chose"
+    );
+}
+
+#[test]
+fn a_call_that_cannot_select_leaves_the_selection_alone() {
+    let program = lower_source(
+        "var counter: u8\nfn bump() { counter = counter + 1 }\nmain { mmc3.bank_select = 0\n bump()\n mmc3.bank_data = 3 }",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_call_that_can_select_makes_the_selection_unknown() {
+    let program = lower_source(
+        "fn tick() { mmc3.bank_select = 6 }\nmain { mmc3.bank_select = 0\n tick()\n mmc3.bank_data = 3 }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "the last bank select before this is not one rasterc can see"
+    );
+}
+
+#[test]
+fn a_call_that_can_only_select_through_another_call_makes_the_selection_unknown() {
+    // Declared in both orders, because the fixed point is order-independent by
+    // construction and a reader should not have to take that on trust.
+    for source in [
+        "fn tick() { mmc3.bank_select = 6 }\nfn outer() { tick() }\nmain { mmc3.bank_select = 0\n outer()\n mmc3.bank_data = 3 }",
+        "fn outer() { tick() }\nfn tick() { mmc3.bank_select = 6 }\nmain { mmc3.bank_select = 0\n outer()\n mmc3.bank_data = 3 }",
+    ] {
+        let program = lower_source(source);
+
+        assert_eq!(program.warnings.len(), 1, "for {source:?}");
+        assert_eq!(
+            program.warnings[0].label,
+            "the last bank select before this is not one rasterc can see",
+            "for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn a_loop_body_that_only_selects_through_a_call_judges_itself_as_unknown() {
+    let program = lower_source(
+        "fn tick() { mmc3.bank_select = 6 }\nmain { var n: u8 = 3\n mmc3.bank_select = 0\n while n != 0 { mmc3.bank_data = n\n tick() } }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "the last bank select before this is not one rasterc can see"
+    );
+}
+
+#[test]
+fn a_bank_data_write_in_a_frame_handler_says_a_handler_runs_with_any_register_selected() {
+    let program = lower_source(
+        "main { ppu.mask = 0 }\nframe bars using timed { every 8 scanlines from 0 to 239 { mmc3.bank_data = 1 } }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "a frame handler runs with any register selected"
+    );
+    assert_eq!(
+        program.warnings[0].notes[1],
+        "selecting with a literal 0 to 5 in the handler, before the\nwrite, keeps the map reset chose"
+    );
+}
+
+#[test]
+fn a_loop_body_that_selects_judges_a_bank_data_write_after_it_as_unknown() {
+    // `loop` is refused, so this goes through `parse`/`analyze`/`lower` by
+    // hand: the warning still has to reach the author, and the `Loop` arm's
+    // pre-scan is what makes it the soft one rather than `Known(0)`.
+    let source =
+        "main { mmc3.bank_select = 0\n loop { mmc3.bank_select = 6 }\n mmc3.bank_data = 2 }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("`loop` is not supported yet");
+
+    assert_eq!(failure.warnings.len(), 1);
+    assert_eq!(
+        failure.warnings[0].label,
+        "the last bank select before this is not one rasterc can see"
+    );
+}

@@ -567,11 +567,15 @@ with pattern table 0 at PPU $0000, and R6/R7 give a linear 32 KiB PRG map with
 your code in the fixed bank at $E000.
 
 Nothing preserves that afterwards. Repointing a window with `mmc3.bank_select`
-and `mmc3.bank_data` is what those registers are for, and compiles silently.
-But bits 6 and 7 of a bank select are PRG mode and CHR A12 inversion, and they
-reinterpret every bank register at once, from whichever select was written
-last — so rasterc warns when it can see one of them set, and warns when it
-cannot see the value at all.
+and `mmc3.bank_data` is what those registers are for, and repointing a CHR
+window compiles silently. Two things do not. Bits 6 and 7 of a bank select are
+PRG mode and CHR A12 inversion, and they reinterpret every bank register at
+once, from whichever select was written last — so rasterc warns when it can see
+one of them set, and warns when it cannot see the value at all. And R6 and R7
+are the two 8 KiB PRG windows, so a `mmc3.bank_data` write that lands on either
+one retires the linear map — rasterc warns there too, and says so more quietly
+when it cannot tell which register a write lands on. A bank data write with no
+select before it lands on R7, because R7 is what reset selected last.
 
 **rasterc today:** as designed.
 
