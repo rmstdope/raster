@@ -592,7 +592,7 @@ Sixteen registers have names, and three of them can be read.
 | `ppu.oam_data` | `$2004` | **allowed** |
 | `ppu.scroll` | `$2005` | refused |
 | `ppu.addr` | `$2006` | refused |
-| `ppu.data` | `$2007` | **allowed** |
+| `ppu.data` | `$2007` | **allowed, and buffered** |
 | `mmc3.bank_select` | `$8000` | refused |
 | `mmc3.bank_data` | `$8001` | refused |
 | `mmc3.mirroring` | `$A000` | refused |
@@ -613,6 +613,17 @@ reads `$2001` before it writes, and `$2001` does not read, so it is refused
 too: keep what you wrote in a variable of your own and write the whole value.
 
 Every one of the sixteen may still be written. This is only about reads.
+
+`ppu.data` reads back, but not the byte you just addressed. A $2007
+read hands you the byte the previous read fetched and loads the byte
+at the current address for the next one, so a single read gives you
+the wrong byte and rasterc warns about it. Read it twice in a row —
+discard the first, keep the second — and rasterc is silent. Palette
+addresses, $3F00 to $3FFF, are not buffered and read back at once.
+
+A compound assignment is refused outright: `ppu.data += 1` reads
+$2007 for you, and there is no way to prime a read that happens
+inside a statement.
 
 ---
 

@@ -455,6 +455,28 @@ const MMC3_PORT_BASE: u16 = 0x8000;
 const WRITE_THE_WHOLE_VALUE: &str = "keep what you wrote in a variable of your own\n\
                                      and write the whole value";
 
+/// What a $2007 read actually does. Said the same way by the warning and by
+/// the compound-assignment refusal, so the two cannot drift apart.
+const PPU_DATA_BUFFER_NOTE: &str =
+    "$2007 hands back what the previous read fetched, and loads the\n\
+                                    byte at this address for the next read";
+
+/// The sequence that gets the author the byte they asked for, and the one
+/// address range the buffer does not apply to.
+const PPU_DATA_READ_TWICE: &str =
+    "read `ppu.data` twice in a row, discard the first and keep the\n\
+                                   second; a palette address, $3F00 to $3FFF, is not buffered and\n\
+                                   reads back at once";
+
+/// Why a compound assignment to `ppu.data` cannot be made to work.
+const PPU_DATA_COMPOUND_NOTE: &str =
+    "the byte it would add to is the one at the previous address,\n\
+                                      not the one at the address you are writing";
+
+/// What to write instead of a compound assignment to `ppu.data`.
+const PPU_DATA_KEEP_IT: &str = "read the byte you want into a variable of your own, add to\n\
+                                that, and write the whole value";
+
 /// What a read of a write-only port actually returns.
 fn dead_read_note(register: Register) -> String {
     let address = register.address();
@@ -482,6 +504,115 @@ enum ReadSite {
     /// There is no read on that line at all, so the refusal says which operator
     /// made one. Carries the operator as the author wrote it.
     CompoundAssignment(&'static str),
+}
+
+/// How many times this statement reads `ppu.data` in its own right.
+///
+/// Does NOT descend into a nested block — an `if` body, a `while` body, a
+/// `cycles(...)` region — because a read in there is separated from this
+/// statement's neighbours by a branch or by a region boundary, and may not run
+/// at all. It DOES look at an `if`'s or a `while`'s condition, which is
+/// evaluated where the statement sits.
+fn ppu_data_reads(statement: &Spanned<SyntaxStatement>) -> usize {
+    match &statement.value {
+        SyntaxStatement::Declaration(declaration) => declaration
+            .initializer
+            .as_ref()
+            .map_or(0, ppu_data_reads_in),
+        SyntaxStatement::Expression(expression) => ppu_data_reads_in(expression),
+        SyntaxStatement::Return(Some(expression)) => ppu_data_reads_in(expression),
+        SyntaxStatement::If { condition, .. } => ppu_data_reads_in(condition),
+        SyntaxStatement::While { condition, .. } => ppu_data_reads_in(condition),
+        // Counted for completeness rather than for reach: `raster-sema`
+        // refuses a `for` range or step that is not a compile-time constant,
+        // so neither can hold a `ppu.data` read today.
+        SyntaxStatement::For { range, step, .. } => {
+            ppu_data_reads_in(range) + step.as_ref().map_or(0, ppu_data_reads_in)
+        }
+        SyntaxStatement::Block(_)
+        | SyntaxStatement::Loop(_)
+        | SyntaxStatement::Cycles { .. }
+        | SyntaxStatement::Wait(_)
+        | SyntaxStatement::Sync(_)
+        | SyntaxStatement::Break
+        | SyntaxStatement::Continue
+        | SyntaxStatement::Return(None) => 0,
+    }
+}
+
+/// How many times this expression reads `ppu.data`.
+///
+/// A `Member` expression whose base is the name `ppu` and whose member is
+/// `data` is one read; everything else recurses into its children. This is a
+/// syntactic count and deliberately not `Lowerer::register` — it runs before
+/// lowering the statement, so it must not report errors or touch any state.
+///
+/// A `ppu.data` that is *itself* the destination of an assignment or a compound
+/// assignment is **not** a read: `ppu.data = $21` is a write, and `ppu.data +=
+/// 1` reads $2007 only in a way this bead refuses outright. Counting either
+/// would make a write look like a priming read and silence the warning on the
+/// line beside it. Only the destination is excluded, not the whole left
+/// subtree — `table[ppu.data] = 5` reads $2007 to work out where to write.
+fn ppu_data_reads_in(expression: &Spanned<SyntaxExpression>) -> usize {
+    match &expression.value {
+        SyntaxExpression::Member { base, member } => {
+            usize::from(is_ppu_data(&base.value, &member.value))
+        }
+        SyntaxExpression::Prefix { operand, .. } => ppu_data_reads_in(operand),
+        SyntaxExpression::Infix {
+            left,
+            operator,
+            right,
+        } => {
+            // Only the destination *itself* is the write. A `ppu.data` read
+            // that is part of working out where to write — `table[ppu.data] =
+            // 5` — is an ordinary read, and counting it is the difference
+            // between a spurious warning on the line above and none.
+            let left_reads = if assigns(operator.value) && is_ppu_data_member(&left.value) {
+                0
+            } else {
+                ppu_data_reads_in(left)
+            };
+            left_reads + ppu_data_reads_in(right)
+        }
+        SyntaxExpression::Call { callee, arguments } => {
+            ppu_data_reads_in(callee) + arguments.iter().map(ppu_data_reads_in).sum::<usize>()
+        }
+        SyntaxExpression::Index { base, index } => {
+            ppu_data_reads_in(base) + ppu_data_reads_in(index)
+        }
+        SyntaxExpression::Range { start, end } => ppu_data_reads_in(start) + ppu_data_reads_in(end),
+        SyntaxExpression::Name(_)
+        | SyntaxExpression::Number(_)
+        | SyntaxExpression::String(_)
+        | SyntaxExpression::Character(_)
+        | SyntaxExpression::Boolean(_) => 0,
+    }
+}
+
+/// Whether this operator writes its left operand: plain assignment, or one of
+/// the four compound assignments.
+fn assigns(operator: Operator) -> bool {
+    matches!(
+        operator,
+        Operator::Assign
+            | Operator::PlusEqual
+            | Operator::MinusEqual
+            | Operator::StarEqual
+            | Operator::SlashEqual
+    )
+}
+
+/// Whether this expression is the `ppu.data` member access itself, rather than
+/// something that merely contains one.
+fn is_ppu_data_member(expression: &SyntaxExpression) -> bool {
+    matches!(expression, SyntaxExpression::Member { base, member }
+        if is_ppu_data(&base.value, &member.value))
+}
+
+/// Whether this `Member` expression's base and member spell `ppu.data`.
+fn is_ppu_data(base: &SyntaxExpression, member: &str) -> bool {
+    matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") && member == "data"
 }
 
 /// The warning a write to `mmc3.bank_select` earns, if it earns one.
@@ -652,6 +783,16 @@ struct Lowerer {
     /// through a call. A call to one of these makes `selection` unknown; a call
     /// to anything else leaves it alone.
     selects_bank: BTreeSet<String>,
+    /// Whether the `ppu.data` read about to be lowered has another `ppu.data`
+    /// read beside it: in the statement immediately before it, in the statement
+    /// immediately after it, or a second time in its own statement.
+    ///
+    /// Set by `lower_statements` before each statement of a block, saved and
+    /// restored around the block so a nested block does not inherit its
+    /// parent's answer, and `false` everywhere else — a global `var`
+    /// initializer reads at reset, before any `ppu.addr` write, and has no
+    /// neighbouring statement to prime it.
+    ppu_data_read_has_neighbour: bool,
 }
 
 impl Lowerer {
@@ -668,6 +809,7 @@ impl Lowerer {
             main_label: None,
             selection: BankSelection::Unknown(Unseen::InThisBody),
             selects_bank: BTreeSet::new(),
+            ppu_data_read_has_neighbour: false,
         }
     }
 
@@ -1152,9 +1294,25 @@ impl Lowerer {
     fn lower_statements(&mut self, block: &Block) -> (Vec<Statement>, bool) {
         let mut statements = Vec::new();
         let mut always_returns = false;
-        for statement in &block.statements {
+        // Counted for the whole block up front: a statement's neighbour on the
+        // right has not been lowered yet, so it cannot be observed while
+        // lowering.
+        let reads: Vec<usize> = block.statements.iter().map(ppu_data_reads).collect();
+        let outer = self.ppu_data_read_has_neighbour;
+        for (index, statement) in block.statements.iter().enumerate() {
+            let before = index > 0 && reads[index - 1] > 0;
+            let after = reads.get(index + 1).is_some_and(|count| *count > 0);
+            self.ppu_data_read_has_neighbour = before || after || reads[index] >= 2;
             always_returns |= self.lower_statement(statement, &mut statements);
         }
+        // Restored, not cleared, as the safe direction rather than an observed
+        // one: no `lower_statement` arm today lowers a nested block and *then*
+        // lowers an expression of its own — `lower_if`, `lower_while`,
+        // `lower_for` and the `Cycles` arm all lower their condition or spec
+        // first, and the loop above re-sets the field on its next iteration —
+        // so nothing can currently tell this apart from clearing it. It guards
+        // the arm that does it in the other order.
+        self.ppu_data_read_has_neighbour = outer;
         (statements, always_returns)
     }
 
@@ -1780,6 +1938,9 @@ impl Lowerer {
     /// drift apart. A write never comes here: every one of the sixteen may
     /// still be written, and this changes nothing about a write.
     fn read_register(&mut self, register: Register, span: Span, site: ReadSite) -> Option<Value> {
+        if register == Register::PpuData {
+            return self.read_ppu_data(span, site);
+        }
         if !register.is_write_only() {
             return Some(Value::Register(register));
         }
@@ -1799,6 +1960,40 @@ impl Lowerer {
             notes,
         );
         None
+    }
+
+    /// A read of `$2007`, which reads back but not the byte you just addressed.
+    ///
+    /// Unlike the thirteen ports raster-1t9 refuses, this one has a sequence
+    /// that is correct — read twice, keep the second — so a plain read is a
+    /// warning rather than a refusal. A compound assignment is refused: its
+    /// read happens inside the statement, where no second read can reach it.
+    fn read_ppu_data(&mut self, span: Span, site: ReadSite) -> Option<Value> {
+        if let ReadSite::CompoundAssignment(spelling) = site {
+            self.refuse_with(
+                span,
+                "`ppu.data` cannot be the destination of a compound assignment",
+                format!("`{spelling}` reads $2007 before it writes, and that read is buffered"),
+                vec![
+                    PPU_DATA_COMPOUND_NOTE.to_owned(),
+                    PPU_DATA_KEEP_IT.to_owned(),
+                ],
+            );
+            return None;
+        }
+        if !self.ppu_data_read_has_neighbour {
+            self.warnings.push(LowerWarning {
+                message: "this `ppu.data` read gives you the byte before the one you asked for"
+                    .to_owned(),
+                label: "nothing next to this read primes the PPU's read buffer".to_owned(),
+                notes: vec![
+                    PPU_DATA_BUFFER_NOTE.to_owned(),
+                    PPU_DATA_READ_TWICE.to_owned(),
+                ],
+                span,
+            });
+        }
+        Some(Value::Register(Register::PpuData))
     }
 
     /// The value a compound assignment reads out of its own destination, or

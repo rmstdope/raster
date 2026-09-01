@@ -17,6 +17,14 @@ fn lower_errors(source: &str) -> Vec<raster_ir::LowerError> {
     lower(&typed).expect_err("fixture should not lower").errors
 }
 
+/// The whole failure, rather than just its errors: a lowering that fails can
+/// still have found warnings on the way, and some rules are about both at once.
+fn lower_failure(source: &str) -> raster_ir::LowerFailure {
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    lower(&typed).expect_err("fixture should not lower")
+}
+
 /// Every named register, with the three facts a diagnostic needs from it: the
 /// name it has in source, its address, and whether a read of it is refused.
 /// Written out here rather than derived, so the test fails when the compiler's
@@ -1029,7 +1037,10 @@ fn a_compound_assignment_to_anything_that_reads_is_untouched() {
     let program = lower_source("main {\n    var n: u8 = 1\n    n += 2\n    ppu.mask = n\n}\n");
     assert!(program.main.is_some());
 
-    let readable = lower_source("main {\n    ppu.data += 1\n}\n");
+    // `ppu.oam_data`, not `ppu.data`: raster-hqh refuses a compound assignment
+    // to $2007 because the read it performs is buffered, so it is no longer an
+    // example of a register that reads.
+    let readable = lower_source("main {\n    ppu.oam_data += 1\n}\n");
     assert!(readable.main.is_some());
 }
 
@@ -1058,4 +1069,186 @@ fn a_bank_select_whose_value_was_refused_leaves_the_selection_unknown() {
         failure.warnings[0].label,
         "the last bank select before this is not one rasterc can see"
     );
+}
+
+#[test]
+fn a_lone_ppu_data_read_is_a_warning() {
+    let source = "main {\n    var tile: u8 = ppu.data\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this `ppu.data` read gives you the byte before the one you asked for"
+    );
+    assert_eq!(
+        warning.label,
+        "nothing next to this read primes the PPU's read buffer"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2007 hands back what the previous read fetched, and loads the\nbyte at this address for the next read",
+            "read `ppu.data` twice in a row, discard the first and keep the\nsecond; a palette address, $3F00 to $3FFF, is not buffered and\nreads back at once",
+        ]
+    );
+    // The span covers `ppu.data` and nothing else.
+    assert_eq!(line_of(source, warning.span.start), 2);
+}
+
+#[test]
+fn a_primed_ppu_data_read_is_silent() {
+    let program =
+        lower_source("main {\n    var discard: u8 = ppu.data\n    var tile: u8 = ppu.data\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn three_ppu_data_reads_in_a_row_are_all_silent() {
+    let program = lower_source(
+        "main {\n    var a: u8 = ppu.data\n    var b: u8 = ppu.data\n    var c: u8 = ppu.data\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn two_ppu_data_reads_in_one_statement_are_each_other_s_neighbour() {
+    let program = lower_source("main {\n    var sum: u8 = ppu.data + ppu.data\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_statement_between_two_ppu_data_reads_breaks_the_pair() {
+    let program = lower_source(
+        "main {\n    var a: u8 = ppu.data\n    ppu.addr = $20\n    var b: u8 = ppu.data\n}\n",
+    );
+
+    assert_eq!(program.warnings.len(), 2);
+}
+
+#[test]
+fn a_neighbour_never_crosses_a_block_boundary() {
+    let program = lower_source(
+        "main {\n    var flag: u8 = 1\n    if flag != 0 {\n        var a: u8 = ppu.data\n    }\n    var b: u8 = ppu.data\n}\n",
+    );
+
+    assert_eq!(program.warnings.len(), 2);
+}
+
+#[test]
+fn a_compound_assignment_to_ppu_data_is_refused() {
+    let errors = lower_errors("main {\n    ppu.data += 1\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "`ppu.data` cannot be the destination of a compound assignment"
+    );
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("`+=` reads $2007 before it writes, and that read is buffered")
+    );
+    assert_eq!(
+        errors[0].notes,
+        [
+            "the byte it would add to is the one at the previous address,\nnot the one at the address you are writing",
+            "read the byte you want into a variable of your own, add to\nthat, and write the whole value",
+        ]
+    );
+    assert_eq!(errors[0].refusal, Refusal::Rejected);
+}
+
+#[test]
+fn every_compound_operator_names_itself_in_the_ppu_data_refusal() {
+    for spelling in ["+=", "-=", "*=", "/="] {
+        let errors = lower_errors(&format!("main {{\n    ppu.data {spelling} 1\n}}\n"));
+
+        assert_eq!(errors.len(), 1, "{spelling}");
+        assert_eq!(
+            errors[0].label.as_deref(),
+            Some(
+                format!("`{spelling}` reads $2007 before it writes, and that read is buffered")
+                    .as_str()
+            ),
+            "{spelling}"
+        );
+    }
+}
+
+#[test]
+fn a_refused_compound_assignment_is_not_a_neighbour() {
+    // `ppu.data += 1` writes $2007; the read it makes of its own destination is
+    // refused. Neither is a read that primes the buffer for the line below, so
+    // that line still warns.
+    let failure = lower_failure("main {\n    ppu.data += 1\n    var a: u8 = ppu.data\n}\n");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(failure.warnings.len(), 1);
+}
+
+#[test]
+fn a_ppu_data_read_in_a_global_initializer_has_no_neighbour() {
+    // A global initializer runs at reset, before any `ppu.addr` write, and has
+    // no neighbouring statement to prime it — so both of these warn even though
+    // they are written one under the other.
+    let program = lower_source("var a: u8 = ppu.data\nvar b: u8 = ppu.data\nmain { }\n");
+
+    assert_eq!(program.warnings.len(), 2);
+}
+
+#[test]
+fn a_ppu_data_write_is_not_a_priming_neighbour() {
+    // The trap the plan names: a write to $2007 is not a read of it, so it
+    // primes nothing, and the read below it is still lone. Without this, the
+    // warning is silenced on the line after every `ppu.data = ...` and no other
+    // test in the workspace notices.
+    let program = lower_source("main {\n    ppu.data = $21\n    var a: u8 = ppu.data\n}\n");
+
+    assert_eq!(program.warnings.len(), 1);
+}
+
+#[test]
+fn an_if_condition_that_reads_ppu_data_is_a_neighbour() {
+    // A condition is evaluated where its statement sits, so it primes the read
+    // above it. The `if` body is a block and never a neighbour; that is
+    // `a_neighbour_never_crosses_a_block_boundary`.
+    let program = lower_source(
+        "main {\n    var flag: u8 = 0\n    var a: u8 = ppu.data\n    if ppu.data != 0 { flag = 2 }\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_while_condition_that_reads_ppu_data_is_a_neighbour() {
+    let program =
+        lower_source("main {\n    var a: u8 = ppu.data\n    while ppu.data != 0 { }\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_returned_ppu_data_read_is_a_neighbour() {
+    let program = lower_source(
+        "fn fetch() -> u8 {\n    var a: u8 = ppu.data\n    return ppu.data\n}\nmain { fetch() }\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_ppu_data_read_inside_an_assignment_destination_is_still_a_read() {
+    // Only the destination itself is a write. A `ppu.data` read that is part of
+    // working out *where* to write is an ordinary read, and primes the line
+    // above it. Arrays are refused by this release, so the program does not
+    // lower — but the warnings it found on the way still say what the rule is.
+    let failure = lower_failure(
+        "var table: [2]u8\nmain {\n    var a: u8 = ppu.data\n    table[ppu.data] = 5\n}\n",
+    );
+
+    assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
 }
