@@ -76,13 +76,7 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
     // before the stage gave up, and the errors are why it did.
     let mut ir = lower(&typed).map_err(|failure| {
         let mut diagnostics = warned(failure.warnings, source);
-        diagnostics.extend(spanned(
-            failure
-                .errors
-                .into_iter()
-                .map(|e| (e.message, e.span, e.refusal)),
-            source,
-        ));
+        diagnostics.extend(lowered(failure.errors, source));
         diagnostics
     })?;
     // Every failing stage after lowering reports the warnings lowering found,
@@ -156,6 +150,37 @@ fn warned(warnings: Vec<raster_ir::LowerWarning>, source: &str) -> Vec<Diagnosti
             diagnostic
         })
         .collect()
+}
+
+/// Lowering's errors, as diagnostics. Unlike a parse or a semantic error, one
+/// of these may carry a label and notes of its own — the write-only register
+/// refusal names the port under the carets and says what a read of that address
+/// returns — so it cannot go through `spanned`, whose label mirrors the message.
+/// It still goes through `noted`, because it still carries a `Refusal`.
+///
+/// `Span::clamped` for the same reason `spanned` uses it: offsets arrive as
+/// `u32` from another crate, and a panic in the renderer would show the author a
+/// backtrace instead of a mistake.
+fn lowered(errors: Vec<raster_ir::LowerError>, source: &str) -> Vec<Diagnostic> {
+    noted(
+        errors
+            .into_iter()
+            .map(|error| {
+                let raster_ir::LowerError {
+                    message,
+                    label,
+                    notes,
+                    span,
+                    refusal,
+                } = error;
+                let span = Span::clamped(span.start as usize, span.end as usize, source);
+                let label = label.unwrap_or_else(|| message.clone());
+                let mut diagnostic = Diagnostic::error(message, span, label);
+                diagnostic.notes = notes;
+                (diagnostic, refusal)
+            })
+            .collect(),
+    )
 }
 
 /// The note a refusal of this kind carries, if it carries one.
