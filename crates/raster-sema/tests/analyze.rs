@@ -517,14 +517,27 @@ fn return_inside_a_frame_handler_is_refused_like_any_other_timed_block() {
 /// Every refusal a timed region raises, and the kind it must carry.
 ///
 /// A `TimedRegionCost` refusal is a cost-model gap: the construct is fine, and a region costed as
-/// straight-line code cannot price it, so `rasterc` says so beside the diagnostic. The three
+/// straight-line code cannot price it, so `rasterc` says so beside the diagnostic. The four
 /// `Rejected` ones deliberately say nothing — two hardware waits have no cost to measure ever, so
 /// "once their cost can be measured" would promise what the compiler cannot deliver, and `sync
-/// exact` in the wrong place is a placement rule whose message already says where to put it.
+/// exact` in the wrong place and a `return` inside a block are placement rules whose messages
+/// already say where to put the construct.
 ///
 /// This is a table rather than a sentence in the source because the kind is what `rasterc` asks:
 /// moving one of these back to an unclassified refusal takes the note away silently, which is the
 /// failure this bead exists to close.
+///
+/// This corpus is the counterpart of the "rasterc today" column in section 6.3 of
+/// docs/raster-language-spec.md: one fixture per refusal `raster-sema` raises by name inside a
+/// timed block. Per refusal rather than per operator on purpose — `*`, `/` and `%` share one arm
+/// and one message here, as do `<<` and `>>`, so a row each would exercise the same code twice.
+/// Rule 4's other half, the refusal a cycle-annotated function meets when it is lowered, is not
+/// raised in this crate and is pinned by
+/// `a_cycle_annotated_function_that_returns_still_names_the_real_refusal` in
+/// crates/rasterc/tests/compile.rs. A row added or removed here is an edit to that column, and a
+/// construct this test stops covering is that column going stale. Nothing enforces the tie but
+/// this sentence — a machine-readable list in the spec was considered and declined, because it
+/// puts a block of construct names in front of an author.
 #[test]
 fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
     use raster_diag::Refusal::{Rejected, TimedRegionCost};
@@ -584,6 +597,11 @@ fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
             Rejected,
             "`sync exact` waits an unpredictable number of cycles",
             "main {\n    cycles(20) pad {\n        sync exact\n    }\n}\n",
+        ),
+        (
+            Rejected,
+            "`return` inside a timed block jumps out before the block has spent its budget",
+            "main {\n    cycles(20) pad {\n        return\n    }\n}\n",
         ),
     ];
 
