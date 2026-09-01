@@ -15,7 +15,7 @@ fn compiles_the_demo_to_the_same_rom_as_m1() {
 
 const SUPPORTED_SUBSET: &str = concat!(
     "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
-    "arithmetic, and `ppu.*` / `mmc3.*` register writes; timed regions\n",
+    "arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks\n",
     "with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n",
     "`frame` of `every ... scanlines` events"
 );
@@ -192,7 +192,7 @@ fn a_string_expression_says_what_the_release_can_build() {
 }
 
 const TIMED_REGION_COST: &str = concat!(
-    "a timed region is costed as straight-line code; loops, branches\n",
+    "a timed block is costed as straight-line code; loops, branches\n",
     "and calls will be admitted once their cost can be measured"
 );
 
@@ -205,7 +205,7 @@ fn a_timed_region_says_why_it_cannot_charge_a_loop() {
 
     assert_eq!(
         diagnostics[0].message,
-        "a shift inside a timed region compiles to a loop whose cost is not yet proven"
+        "a shift inside a timed block compiles to a loop whose cost is not yet proven"
     );
     assert_eq!(diagnostics[0].notes, [TIMED_REGION_COST]);
 }
@@ -219,7 +219,7 @@ fn a_hardware_wait_inside_a_timed_region_carries_no_note() {
 
     let waited = diagnostics
         .iter()
-        .find(|d| d.message == "`wait vblank` has no provable cost inside a timed region")
+        .find(|d| d.message == "`wait vblank` has no provable cost inside a timed block")
         .expect("the vblank wait is refused");
     assert!(
         waited.notes.is_empty(),
