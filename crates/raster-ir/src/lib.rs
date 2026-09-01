@@ -131,6 +131,41 @@ impl Register {
             | Self::Mmc3IrqEnable => true,
         }
     }
+
+    /// Whether a write to this port reaches the register at all.
+    ///
+    /// One of the sixteen is read-only: $2002, the PPU's status port, which the
+    /// CPU can only read. The PPU discards a store to it entirely — there is no
+    /// register behind the address to hold the value, and no flag or latch the
+    /// store moves.
+    ///
+    /// Both sides are listed rather than `matches!(self, Self::PpuStatus)`, for
+    /// the same reason `is_write_only` lists both: the match stays exhaustive
+    /// with no `_` arm, so a register added later cannot inherit a verdict
+    /// nobody chose, because the compiler will not build until someone decides.
+    ///
+    /// This and `is_write_only` are independent facts, not opposites. $2004 and
+    /// $2007 are false for both: they read and write.
+    pub const fn is_read_only(self) -> bool {
+        match self {
+            Self::PpuStatus => true,
+            Self::PpuCtrl
+            | Self::PpuMask
+            | Self::PpuOamAddr
+            | Self::PpuOamData
+            | Self::PpuScroll
+            | Self::PpuAddr
+            | Self::PpuData
+            | Self::Mmc3BankSelect
+            | Self::Mmc3BankData
+            | Self::Mmc3Mirroring
+            | Self::Mmc3RamProtect
+            | Self::Mmc3IrqLatch
+            | Self::Mmc3IrqReload
+            | Self::Mmc3IrqDisable
+            | Self::Mmc3IrqEnable => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

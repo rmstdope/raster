@@ -25,40 +25,46 @@ fn lower_failure(source: &str) -> raster_ir::LowerFailure {
     lower(&typed).expect_err("fixture should not lower")
 }
 
-/// Every named register, with the three facts a diagnostic needs from it: the
-/// name it has in source, its address, and whether a read of it is refused.
-/// Written out here rather than derived, so the test fails when the compiler's
-/// own table changes rather than agreeing with it by construction.
-const REGISTERS: [(Register, &str, u16, bool); 16] = [
-    (Register::PpuCtrl, "ppu.ctrl", 0x2000, true),
-    (Register::PpuMask, "ppu.mask", 0x2001, true),
-    (Register::PpuStatus, "ppu.status", 0x2002, false),
-    (Register::PpuOamAddr, "ppu.oam_addr", 0x2003, true),
-    (Register::PpuOamData, "ppu.oam_data", 0x2004, false),
-    (Register::PpuScroll, "ppu.scroll", 0x2005, true),
-    (Register::PpuAddr, "ppu.addr", 0x2006, true),
-    (Register::PpuData, "ppu.data", 0x2007, false),
-    (Register::Mmc3BankSelect, "mmc3.bank_select", 0x8000, true),
-    (Register::Mmc3BankData, "mmc3.bank_data", 0x8001, true),
-    (Register::Mmc3Mirroring, "mmc3.mirroring", 0xa000, true),
-    (Register::Mmc3RamProtect, "mmc3.ram_protect", 0xa001, true),
-    (Register::Mmc3IrqLatch, "mmc3.irq_latch", 0xc000, true),
-    (Register::Mmc3IrqReload, "mmc3.irq_reload", 0xc001, true),
-    (Register::Mmc3IrqDisable, "mmc3.irq_disable", 0xe000, true),
-    (Register::Mmc3IrqEnable, "mmc3.irq_enable", 0xe001, true),
+/// Every named register, with the four facts a diagnostic needs from it: the
+/// name it has in source, its address, whether a read of it is refused, and
+/// whether a write of it is refused. Written out here rather than derived, so
+/// the test fails when the compiler's own table changes rather than agreeing
+/// with it by construction.
+const REGISTERS: [(Register, &str, u16, bool, bool); 16] = [
+    (Register::PpuCtrl, "ppu.ctrl", 0x2000, true, false),
+    (Register::PpuMask, "ppu.mask", 0x2001, true, false),
+    (Register::PpuStatus, "ppu.status", 0x2002, false, true),
+    (Register::PpuOamAddr, "ppu.oam_addr", 0x2003, true, false),
+    (Register::PpuOamData, "ppu.oam_data", 0x2004, false, false),
+    (Register::PpuScroll, "ppu.scroll", 0x2005, true, false),
+    (Register::PpuAddr, "ppu.addr", 0x2006, true, false),
+    (Register::PpuData, "ppu.data", 0x2007, false, false),
+    (Register::Mmc3BankSelect, "mmc3.bank_select", 0x8000, true, false),
+    (Register::Mmc3BankData, "mmc3.bank_data", 0x8001, true, false),
+    (Register::Mmc3Mirroring, "mmc3.mirroring", 0xa000, true, false),
+    (Register::Mmc3RamProtect, "mmc3.ram_protect", 0xa001, true, false),
+    (Register::Mmc3IrqLatch, "mmc3.irq_latch", 0xc000, true, false),
+    (Register::Mmc3IrqReload, "mmc3.irq_reload", 0xc001, true, false),
+    (Register::Mmc3IrqDisable, "mmc3.irq_disable", 0xe000, true, false),
+    (Register::Mmc3IrqEnable, "mmc3.irq_enable", 0xe001, true, false),
 ];
 
 #[test]
-fn the_register_table_names_every_register_and_says_which_read() {
-    for (register, name, address, write_only) in REGISTERS {
+fn the_register_table_names_every_register_and_says_which_read_and_write() {
+    for (register, name, address, write_only, read_only) in REGISTERS {
         assert_eq!(register.name(), name);
         assert_eq!(register.address(), address);
         assert_eq!(register.is_write_only(), write_only, "{name}");
+        assert_eq!(register.is_read_only(), read_only, "{name}");
+        // The two are independent facts, not opposites: $2004 and $2007 are
+        // false for both, because they read and write.
+        assert!(!(write_only && read_only), "{name}");
     }
-    // Three of the sixteen read: $2002, $2004 and $2007. If this number moves,
-    // a register has changed sides and the spec table in §9.5 has to move with
-    // it.
+    // Three of the sixteen read: $2002, $2004 and $2007. One of the sixteen
+    // cannot be written: $2002. If either number moves, a register has changed
+    // sides and the spec table in §9.5 has to move with it.
     assert_eq!(REGISTERS.iter().filter(|row| !row.3).count(), 3);
+    assert_eq!(REGISTERS.iter().filter(|row| row.4).count(), 1);
 }
 
 #[test]
@@ -963,7 +969,7 @@ fn every_compound_operator_names_itself_in_the_refusal() {
 
 #[test]
 fn every_write_only_register_refuses_a_read_and_every_readable_one_does_not() {
-    for (_register, name, _address, write_only) in REGISTERS {
+    for (_register, name, _address, write_only, _read_only) in REGISTERS {
         let source = format!("main {{ var v: u8 = {name} }}");
         let syntax = parse(&source).expect("fixture should parse");
         let typed = analyze(&syntax).expect("fixture should analyze");
