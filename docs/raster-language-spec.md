@@ -1,8 +1,8 @@
 # Raster — Language Specification
 
 **Draft 0.1 — August 2026**
-*Status: design draft. Nothing here is implemented yet. Syntax is provisional and
-expected to change as the MVP is built.*
+*Status: design draft. Syntax is provisional. Nothing here is built unless a
+"rasterc today" column or note says so.*
 
 ---
 
@@ -52,7 +52,7 @@ it is nine cycles over budget is worth having.
 
 1. **Timing is checked, not hoped for.** A `cycles` block that cannot be proven is a
    compile error, not a warning.
-2. **The optimizer never lies about time.** Inside a timed region, the compiler may
+2. **The optimizer never lies about time.** Inside a timed block, the compiler may
    only apply transformations whose cycle cost it can account for exactly. Outside
    one, it optimizes freely.
 3. **Effects are declarative; their lowering is the compiler's job.** The author says
@@ -250,9 +250,13 @@ fn demo() {
 Operators: `+ - * / % & | ^ ~ << >> == != < <= > >= && || !`, compound assignment
 forms, and `.` for member access, `[]` for indexing.
 
-Division and general multiplication are expensive on 6502; the compiler will refuse
-them inside a `cycles` block unless the operands are compile-time constants or the
-operation lowers to shifts. This is intentional — see §6.4.
+Division and general multiplication are expensive on 6502, and the compiler refuses
+them inside a `cycles` block. This is intentional — see §6.4.
+
+**rasterc today:** `*`, `/`, `%`, `<<` and `>>` are all refused inside a timed block
+whatever their operands, because each lowers to a loop and a loop is not straight-line
+code (§6.3). This is not caution: before the refusal existed, `v * 3` was predicted at
+38 cycles and spent 69.
 
 ---
 
@@ -292,29 +296,32 @@ forms, which cost 3 and 4 cycles in 1–2 bytes, so any count ≥ 2 is reachable
 minimal ROM cost. If the block already exceeds the target, that is an error — padding
 never removes work.
 
-### 6.3 Rules inside a timed region
+**rasterc today:** as designed, except that a block exactly one cycle short of its
+budget cannot be padded — a single cycle has no filler — and says so rather than
+rounding.
 
-For a cycle count to be provable, the compiler restricts what may appear:
+### 6.3 Rules inside a timed block
 
-1. **No unbounded loops.** `while` with a non-constant trip count is rejected.
-   `for i in 0..N` with constant `N` is allowed and is always fully unrolled or
-   compiled to a loop with a proven constant cost.
-2. **Branches must be balanced.** Both arms of an `if` must cost the same, or the
-   block must be `pad`, in which case the compiler pads the cheaper arm. An `if`
-   without an `else` is padded to the cost of the taken path.
-3. **Page-crossing penalties are resolved, not assumed.** Indexed addressing that may
-   cross a page boundary costs an extra cycle. The compiler either proves no crossing
-   occurs (via alignment) or accounts for the worst case and tells you which it did.
-   `align 256` on a variable forces the safe layout.
-4. **Calls must be timed.** A function called inside a `cycles` block must itself
-   carry a cycle annotation.
-5. **No interrupts, unless declared.** An IRQ or NMI firing inside a timed block
-   destroys its timing. The compiler inserts `sei` around timed regions by default;
-   `cycles(N) interruptible { }` opts out for regions that are themselves interrupt
-   handlers.
+For a cycle count to be provable, the compiler restricts what may appear. A `frame`
+handler (§7) is a timed block and obeys the same rules.
 
-These restrictions apply *only inside* `cycles` blocks. The rest of the program is
-compiled conventionally with full optimization.
+**Today the restriction is one sentence: a timed block is straight-line code.**
+rasterc costs a region by adding up its instructions, so anything whose generated code
+can move the program counter elsewhere is refused. The designed rules below are the
+relaxations a cost model that survives control flow would buy.
+
+| Designed | rasterc today |
+|---|---|
+| **1. No unbounded loops.** `while` with a non-constant trip count is rejected. `for i in 0..N` with constant `N` is allowed and is always fully unrolled or compiled to a loop with a proven constant cost. | **stricter** — `for`, `while` and `loop` are all refused: a block is costed as straight-line code, so no loop is charged correctly. |
+| **2. Branches must be balanced.** Both arms of an `if` must cost the same, or the block must be `pad`, in which case the compiler pads the cheaper arm. An `if` without an `else` is padded to the cost of the taken path. | **stricter** — `if` is refused outright; nothing balances arms yet. |
+| **3. Page-crossing penalties are resolved, not assumed.** Indexed addressing that may cross a page boundary costs an extra cycle. The compiler either proves no crossing occurs (via alignment) or accounts for the worst case and tells you which it did. `align 256` on a variable forces the safe layout. | **stricter** — always the worst case, and it does not say which. There is no `align` in the language, and no source construct reaches the penalty yet: the code generator emits no indexed addressing mode at all. |
+| **4. Calls must be timed.** A function called inside a `cycles` block must itself carry a cycle annotation. Whether cycle cost should compose across function boundaries at all, and how, is §15 question 1; this rule is the shape that question has not yet settled. | **stricter** — a call inside a block is refused, and a function carrying a cycle annotation is refused when it is lowered, so the shape this rule describes does not compile today. |
+| **5. No interrupts, unless declared.** An IRQ or NMI firing inside a timed block destroys its timing. The compiler inserts `sei` around timed blocks by default; `cycles(N) interruptible { }` opts out for blocks that are themselves interrupt handlers. | **as designed** — the `php`/`sei` … `plp` bracket costs nine cycles and is charged to the region's own budget, so the annotation is the region's wall-clock cost. |
+| **6. A region must be straight-line.** Generated code that can go anywhere but the next instruction — a branch, a jump, a `jsr`, an `rts`, an `rti` or a `brk` — is a compile error whatever construct produced it. | **as designed** — enforced on the emitted instructions, so a construct nobody has thought of is caught too. `return`, the arithmetic of §5, every `wait` form and `sync exact` are each refused earlier and by name, so the message points at your source rather than at an opcode. |
+
+Rule 6 is a floor rather than an ambition: rules 1–4 are the work of lifting it. These
+restrictions apply *only inside* `cycles` blocks. The rest of the program is compiled
+conventionally with full optimization.
 
 ### 6.4 Why the restrictions are the feature
 
@@ -323,7 +330,7 @@ make a silent choice that changes duration. Raster's position is that inside a t
 region, "I cannot prove this" must be a compile error and not a shrug. The
 consequence — the one architectural commitment the whole project rests on — is that
 **the backend carries a cycle-cost model through every pass**, and any optimization
-that cannot report its effect on cycle count is disabled inside timed regions.
+that cannot report its effect on cycle count is disabled inside timed blocks.
 
 ### 6.5 Waiting
 
@@ -336,6 +343,11 @@ wait scanline 96             // delay until a given scanline (see §7)
 `wait cycles(N)` generates an optimal delay for any N ≥ 2: a nested
 `dex`/`bne` loop for the bulk and padding instructions for the remainder, costing a
 handful of bytes regardless of N.
+
+**rasterc today:** every `wait` form is refused *inside* a timed block, because a
+wait spends its cycles in a loop and a block is costed as straight-line code; widen
+the budget and let `pad` fill it instead. Outside a region, `wait cycles(N)` is built
+for any N ≥ 2; `wait vblank` and `wait scanline` are not built.
 
 ### 6.6 Frame sync and jitter
 
@@ -351,6 +363,10 @@ which lowers to the standard sprite-0-hit-and-poll or read-$2002-and-branch
 de-jitter sequence. `sync exact` is required before any `cycles` block that the
 compiler can see writes to a PPU register during rendering; omitting it is an error
 with a note explaining why.
+
+**rasterc today:** as designed, and enforced — a timed block that writes a PPU
+register with no preceding `sync exact` is refused. A `frame` handler is entered
+already synchronized and needs none of its own.
 
 ---
 
@@ -379,17 +395,23 @@ frame main using irq {
 }
 ```
 
+A handler body is a timed block: every rule of §6.3 applies inside one, and its
+budget is the window the schedule leaves it.
+
 ### 7.1 Lowering strategies
 
 The `using` clause selects how the schedule is realised. If omitted, the compiler
 picks based on the target mapper and the schedule's shape, and reports its choice.
 
-| Strategy | Mechanism | Notes |
-|---|---|---|
-| `using irq` | MMC3 scanline counter | Preferred on MMC3. Each entry programs `$C000`/`$C001` for the delta to the next event, `$E001` to enable, and acknowledges via `$E000`/`$E001` in the handler. |
-| `using timed` | Cycle-counted delay loop from a synced frame start | Works on any mapper including NROM. Costs the whole frame's CPU time. |
-| `using sprite0` | Sprite 0 hit polling | One split only, position determined by sprite placement. |
-| `using hybrid` | Sprite 0 for the first split, IRQ chain after | Common demo idiom. |
+| Strategy | Mechanism | Notes | rasterc today |
+|---|---|---|---|
+| `using irq` | MMC3 scanline counter | Preferred on MMC3. Each entry programs `$C000`/`$C001` for the delta to the next event, `$E001` to enable, and acknowledges via `$E000`/`$E001` in the handler. | **not built** |
+| `using timed` | Cycle-counted delay loop from a synced frame start | Works on any mapper including NROM. Costs the whole frame's CPU time. | **as designed** — and it is what an omitted `using` clause means |
+| `using sprite0` | Sprite 0 hit polling | One split only, position determined by sprite placement. | **not built** |
+| `using hybrid` | Sprite 0 for the first split, IRQ chain after | Common demo idiom. | **not built** |
+
+**rasterc today:** one `frame` per program, and events on the visible picture only —
+`at vblank` is not built.
 
 ### 7.2 What the compiler verifies
 
@@ -419,6 +441,10 @@ enforces at compile time:
   from scanline numbers rather than making you do it.
 - Handlers must acknowledge (`$E000` then `$E001`) before returning, which is emitted
   automatically.
+
+**rasterc today:** not built. All four of these arrive with `using irq` — the A12
+check, the latch computation and the automatic acknowledge are designed and
+unimplemented.
 
 ---
 
@@ -541,11 +567,17 @@ with pattern table 0 at PPU $0000, and R6/R7 give a linear 32 KiB PRG map with
 your code in the fixed bank at $E000.
 
 Nothing preserves that afterwards. Repointing a window with `mmc3.bank_select`
-and `mmc3.bank_data` is what those registers are for, and compiles silently.
-But bits 6 and 7 of a bank select are PRG mode and CHR A12 inversion, and they
-reinterpret every bank register at once, from whichever select was written
-last — so rasterc warns when it can see one of them set, and warns when it
-cannot see the value at all.
+and `mmc3.bank_data` is what those registers are for, and repointing a CHR
+window compiles silently. Two things do not. Bits 6 and 7 of a bank select are
+PRG mode and CHR A12 inversion, and they reinterpret every bank register at
+once, from whichever select was written last — so rasterc warns when it can see
+one of them set, and warns when it cannot see the value at all. And R6 and R7
+are the two 8 KiB PRG windows, so a `mmc3.bank_data` write that lands on either
+one retires the linear map — rasterc warns there too, and says so more quietly
+when it cannot tell which register a write lands on. A bank data write with no
+select before it lands on R7, because R7 is what reset selected last.
+
+**rasterc today:** as designed.
 
 ---
 
@@ -597,7 +629,7 @@ Rules:
   idea is taken directly from NESFab, which gets it right.
 - A `cycles` annotation on an `asm fn` is **verified**, not trusted — the compiler
   counts the instructions itself. An `asm fn` without an annotation may not be called
-  from inside a timed region.
+  from inside a timed block.
 - Labels beginning with `.` are local to the block.
 - Parameters and locals are referable by name; the compiler substitutes the allocated
   address.
@@ -633,6 +665,12 @@ schedule.
 ---
 
 ## 13. Complete example — the MVP demo
+
+This is the program the MVP must compile — not one that compiles today. It parses, and
+a test in `raster-syntax` reads it out of this document and keeps it parsing;
+everything past the parser is still ahead of the compiler, including arrays, indexed
+reads, a call inside a handler and `using irq`. For a program that compiles now, see
+`examples/mvp/demo.raster`.
 
 ```
 target nes {
@@ -689,7 +727,7 @@ main {
 }
 ```
 
-This is the program the MVP must compile — see the companion MVP plan document.
+See the companion MVP plan document.
 
 ---
 
@@ -728,11 +766,11 @@ counts the warnings it printed.
    needed, with annotations only at the points the author cares about.
 2. **How is DMC DMA cycle theft modelled?** The DMC channel steals 4 cycles at
    unpredictable times, which can break any exact timing. Options: forbid DMC inside
-   timed regions, budget worst-case, or provide a `dmc_safe` mode.
+   timed blocks, budget worst-case, or provide a `dmc_safe` mode.
 3. **What is the story for PAL?** Different scanline counts, different cycle ratio
    (3.2 CPU cycles per dot rather than 3). Probably a target flag that changes all
    budget constants, with `region: dual` a later ambition.
-4. **How much of the language is available outside timed regions?** The temptation is
+4. **How much of the language is available outside timed blocks?** The temptation is
    to grow a full general-purpose language; the discipline is to stay small.
 5. **Should the timeline be an interpreter or generated code?** An interpreted
    bytecode timeline is smaller and easier to author; generated code is faster.
@@ -741,8 +779,11 @@ counts the warnings it printed.
 
 ## 16. Grammar sketch
 
-*Informal EBNF for the constructs defined above; to be formalised once the MVP
-parser exists.*
+*Informal EBNF for the constructs defined above. The MVP parser now exists and is the
+authority where the two differ. Two differences are known: a cycle bound is any
+compile-time constant expression rather than a bare `number`, and `interruptible` is a
+contextual identifier rather than a reserved keyword — §3's keyword list is correct in
+omitting it.*
 
 ```
 program     = { item } ;
@@ -755,7 +796,7 @@ fn          = "fn" ident "(" [ params ] ")" [ "->" type ] { modifier } block ;
 asmfn       = [ "unsafe" ] "asm" "fn" ident "(" [ params ] ")" [ "->" type ]
               { "employs" "(" idents ")" | cyclespec } asmblock ;
 modifier    = cyclespec | "in" ident ;
-cyclespec   = "cycles" "(" ( number | "<=" number | "?" ) ")" [ "pad" ] [ "interruptible" ] ;
+cyclespec   = "cycles" "(" ( expr | "<=" expr | "?" ) ")" [ "pad" ] [ "interruptible" ] ;
 frame       = "frame" ident [ "using" strategy ] "{" { event } "}" ;
 event       = "at" ( "scanline" expr | "vblank" ) block
             | "every" expr "scanlines" "from" expr "to" expr block ;

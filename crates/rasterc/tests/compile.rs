@@ -737,3 +737,18 @@ fn the_refusal_figure_grows_with_the_program_after_the_overflow_point() {
         "sixty `if` blocks after the overflow point moved the reported size by {grew} bytes"
     );
 }
+
+#[test]
+fn a_prg_window_warning_does_not_fail_the_build() {
+    let rom = compile_source("main { mmc3.bank_select = 6\n mmc3.bank_data = 2 }")
+        .expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1);
+    let warning = &rom.warnings[0];
+    assert_eq!(warning.severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        warning.message,
+        "this write repoints the PRG window at $8000"
+    );
+    assert!(warning.span.is_some());
+}
