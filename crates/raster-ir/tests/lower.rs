@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use raster_diag::Refusal;
-use raster_ir::{lower, PlaceKind, Statement};
+use raster_ir::{lower, PlaceKind, Register, Statement};
 use raster_sema::analyze;
 use raster_syntax::parse;
 
@@ -15,6 +15,42 @@ fn lower_errors(source: &str) -> Vec<raster_ir::LowerError> {
     let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
     lower(&typed).expect_err("fixture should not lower").errors
+}
+
+/// Every named register, with the three facts a diagnostic needs from it: the
+/// name it has in source, its address, and whether a read of it is refused.
+/// Written out here rather than derived, so the test fails when the compiler's
+/// own table changes rather than agreeing with it by construction.
+const REGISTERS: [(Register, &str, u16, bool); 16] = [
+    (Register::PpuCtrl, "ppu.ctrl", 0x2000, true),
+    (Register::PpuMask, "ppu.mask", 0x2001, true),
+    (Register::PpuStatus, "ppu.status", 0x2002, false),
+    (Register::PpuOamAddr, "ppu.oam_addr", 0x2003, true),
+    (Register::PpuOamData, "ppu.oam_data", 0x2004, false),
+    (Register::PpuScroll, "ppu.scroll", 0x2005, true),
+    (Register::PpuAddr, "ppu.addr", 0x2006, true),
+    (Register::PpuData, "ppu.data", 0x2007, false),
+    (Register::Mmc3BankSelect, "mmc3.bank_select", 0x8000, true),
+    (Register::Mmc3BankData, "mmc3.bank_data", 0x8001, true),
+    (Register::Mmc3Mirroring, "mmc3.mirroring", 0xa000, true),
+    (Register::Mmc3RamProtect, "mmc3.ram_protect", 0xa001, true),
+    (Register::Mmc3IrqLatch, "mmc3.irq_latch", 0xc000, true),
+    (Register::Mmc3IrqReload, "mmc3.irq_reload", 0xc001, true),
+    (Register::Mmc3IrqDisable, "mmc3.irq_disable", 0xe000, true),
+    (Register::Mmc3IrqEnable, "mmc3.irq_enable", 0xe001, true),
+];
+
+#[test]
+fn the_register_table_names_every_register_and_says_which_read() {
+    for (register, name, address, write_only) in REGISTERS {
+        assert_eq!(register.name(), name);
+        assert_eq!(register.address(), address);
+        assert_eq!(register.is_write_only(), write_only, "{name}");
+    }
+    // Three of the sixteen read: $2002, $2004 and $2007. If this number moves,
+    // a register has changed sides and the spec table in §9.5 has to move with
+    // it.
+    assert_eq!(REGISTERS.iter().filter(|row| !row.3).count(), 3);
 }
 
 #[test]

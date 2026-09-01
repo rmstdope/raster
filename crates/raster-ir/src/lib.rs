@@ -74,6 +74,63 @@ impl Register {
             Self::Mmc3IrqEnable => 0xe001,
         }
     }
+
+    /// The register's name in source, which is what a diagnostic calls it.
+    ///
+    /// One-for-one with the match in `Lowerer::register`: every arm there maps
+    /// a `("ns", "member")` pair to a variant, and every arm here spells that
+    /// pair back. The table test in `tests/lower.rs` is what keeps the two in
+    /// step.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::PpuCtrl => "ppu.ctrl",
+            Self::PpuMask => "ppu.mask",
+            Self::PpuStatus => "ppu.status",
+            Self::PpuOamAddr => "ppu.oam_addr",
+            Self::PpuOamData => "ppu.oam_data",
+            Self::PpuScroll => "ppu.scroll",
+            Self::PpuAddr => "ppu.addr",
+            Self::PpuData => "ppu.data",
+            Self::Mmc3BankSelect => "mmc3.bank_select",
+            Self::Mmc3BankData => "mmc3.bank_data",
+            Self::Mmc3Mirroring => "mmc3.mirroring",
+            Self::Mmc3RamProtect => "mmc3.ram_protect",
+            Self::Mmc3IrqLatch => "mmc3.irq_latch",
+            Self::Mmc3IrqReload => "mmc3.irq_reload",
+            Self::Mmc3IrqDisable => "mmc3.irq_disable",
+            Self::Mmc3IrqEnable => "mmc3.irq_enable",
+        }
+    }
+
+    /// Whether a read of this port returns anything to do with the register.
+    ///
+    /// Three of the sixteen can be read: $2002, $2004 and $2007. A read of any
+    /// other returns whatever was last on the PPU's data bus, or — at $8000 and
+    /// above — a byte of the PRG bank the mapper has at that address, which is
+    /// a byte of the program itself.
+    ///
+    /// Both sides are listed rather than `!matches!(...)` on the three, so the
+    /// match stays exhaustive with no `_` arm: a register added later cannot
+    /// inherit a verdict nobody chose, because the compiler will not build
+    /// until someone decides.
+    pub const fn is_write_only(self) -> bool {
+        match self {
+            Self::PpuStatus | Self::PpuOamData | Self::PpuData => false,
+            Self::PpuCtrl
+            | Self::PpuMask
+            | Self::PpuOamAddr
+            | Self::PpuScroll
+            | Self::PpuAddr
+            | Self::Mmc3BankSelect
+            | Self::Mmc3BankData
+            | Self::Mmc3Mirroring
+            | Self::Mmc3RamProtect
+            | Self::Mmc3IrqLatch
+            | Self::Mmc3IrqReload
+            | Self::Mmc3IrqDisable
+            | Self::Mmc3IrqEnable => true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
