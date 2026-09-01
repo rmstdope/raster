@@ -1,0 +1,39 @@
+// The widest handler body a `frame ... using irq` schedule can express, run on a console.
+//
+// `IRQ_HANDLER_BODY_CYCLES` is nine. Seven is the widest body this fixture can build — a register
+// store read from a variable, `LDA <zero page>` three cycles and `STA $2001` four — and it is what
+// every handler here is made of.
+//
+// Seven is not the widest body the compiler accepts. That is eight, `ppu.mask = ppu.status`, and it
+// cannot appear here: what `$2002` returns is not a mask, writing it would turn rendering off, and
+// the counter this schedule depends on clocks on A12 rises that only happen while the PPU fetches.
+// Nothing in the language costs nine, so the window's last cycle is unreachable whatever a fixture
+// does.
+//
+// Every store changes the mask, which is what makes the picture evidence: a handler storing the
+// value the mask already holds paints nothing, and a row would read as one band whether the store
+// landed inside the hblank or half-way along the line. The chain wraps, so the last handler's
+// value is what the first one changes away from on the next frame.
+//
+// Rendering stays on throughout — `$1e` and every emphasis of it keep both halves set — because
+// `using irq` counts filtered A12 rises and A12 only moves while the PPU is fetching.
+var red: u8 = $3e
+var green: u8 = $5e
+var blue: u8 = $9e
+var plain: u8 = $1e
+
+main {
+    ppu.addr = $3f              // the palette lives at $3F00 ...
+    ppu.addr = $00              // ... and $3F00 is the backdrop
+    ppu.data = $0f              // black, and black is what every band is made of
+
+    ppu.ctrl = $08              // background at $0000, sprites at $1000: A12 rises every scanline
+    ppu.mask = $1e              // both halves of rendering on, or nothing fetches at all
+}
+
+frame bars using irq {
+    at scanline 40 { ppu.mask = red }
+    at scanline 90 { ppu.mask = green }
+    at scanline 140 { ppu.mask = blue }
+    at scanline 190 { ppu.mask = plain }
+}

@@ -445,14 +445,18 @@ fn irq_lowering_acknowledges_before_rearming_and_returns_from_fixed_bank() {
 /// and a lie about a factor of three is exactly the kind an author cannot check.
 #[test]
 fn an_irq_frame_too_large_for_the_bank_is_not_told_its_schedule_is_tripled() {
-    let diagnostics = compile_source(
-        "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
-         frame bars using irq {\n\
-         \x20   every 1 scanlines from 0 to 239 {\n\
-         \x20       ppu.mask = $1e\n    ppu.mask = $3e\n    ppu.mask = $1e\n\
-         \x20   }\n\
-         }\n",
-    )
+    // The bulk is in `main` rather than in the handler: a handler body is held to
+    // `IRQ_HANDLER_BODY_CYCLES`, so three stores in one would be refused for its width before the
+    // linker ever weighed the bank, and this test is about the bank.
+    let filler = "    ppu.mask = $1e\n".repeat(800);
+    let diagnostics = compile_source(&format!(
+        "main {{\n    ppu.ctrl = $08\n{filler}}}\n\
+         frame bars using irq {{\n\
+         \x20   every 1 scanlines from 0 to 239 {{\n\
+         \x20       ppu.mask = $3e\n\
+         \x20   }}\n\
+         }}\n"
+    ))
     .expect_err("the fixed bank is finite");
 
     assert_eq!(
@@ -771,4 +775,94 @@ fn a_write_only_register_read_renders_its_own_label_and_notes() {
         .notes
         .iter()
         .any(|n| n.contains("this release compiles")));
+}
+
+/// The window an `irq` handler's body gets is the hblank the MMC3 leaves it, and its refusal is not
+/// the one a `cycles` block earns: the window is nobody's budget, and the advice is different.
+#[test]
+fn an_irq_handler_wider_than_its_hblank_names_its_cost_and_its_window() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 {\n\
+                  \n        ppu.mask = $3e\n        ppu.mask = $5e\n        ppu.mask = $7e\n\
+                  \n        ppu.mask = $9e\n        ppu.mask = $be\n    }\n}\n";
+    let diagnostics = compile_source(source).expect_err("thirty cycles do not fit an hblank");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler exceeds its hblank"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "handler costs 30 cycles, the hblank leaves 9"
+    );
+    // The `\n`s are where the rendered note breaks: `render_note` splits on them and indents each
+    // continuation under `= note: `. They are asserted with the text rather than stripped, so a
+    // reflow that changes what an author reads fails here.
+    assert_eq!(
+        diagnostics[0].notes,
+        [
+            "the MMC3 asserts its interrupt near the end of the scanline before\n\
+             the one this handler runs on, so a store made once the window has\n\
+             closed lands part-way along a visible row",
+            "split the work across two events on consecutive scanlines to give\n\
+             each a window of its own, or use `using timed`, which gives a\n\
+             handler the whole scanline at the cost of the frame's entire CPU time",
+        ]
+    );
+    assert!(
+        diagnostics[0].span.is_some(),
+        "the diagnostic is source-spanned"
+    );
+}
+
+/// An author's own `cycles` block inside a handler keeps its own refusal.
+///
+/// The hblank refusal is made by retyping the overrun `timed_region` reports, and `timed_region`
+/// emits the body before it analyses it — so a nested block's overrun travels out through the same
+/// `Result`. Retyped indiscriminately it would claim the hblank leaves whatever the author wrote as
+/// their own budget, and point its caret at the wrong line.
+#[test]
+fn a_cycles_block_inside_an_irq_handler_keeps_its_own_refusal() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 {\n\
+                  \n        cycles(4) {\n            ppu.mask = $3e\n        }\n    }\n}\n";
+    let diagnostics = compile_source(source).expect_err("six cycles do not fit a budget of four");
+
+    assert_eq!(diagnostics[0].message, "timed block exceeds its budget");
+    assert_eq!(
+        diagnostics[0].label, "block costs 15 cycles, budget is 4",
+        "the author's budget is theirs, and the hblank leaves 9 rather than 4"
+    );
+}
+
+/// The rule, rather than the number: what the window admits and what it turns away, either side of
+/// the edge. `an_irq_handler_body_gets_what_is_left_of_the_scanline_it_interrupts` holds the
+/// constant at nine and this holds the comparison against it, so a `>` that should have been `>=`
+/// has somewhere to fail.
+#[test]
+fn the_hblank_admits_a_body_up_to_its_window_and_no_wider() {
+    let handler = |body: &str| {
+        format!(
+            "var v: u8 = $00\n\nmain {{\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}}\n\
+             \nframe bars using irq {{\n    at scanline 60 {{\n{body}    }}\n}}\n"
+        )
+    };
+
+    // Eight cycles: `LDA $2002` four and `STA $2001` four. This is the widest body the language can
+    // express, and it is one cycle under the window rather than at it — nothing costs nine.
+    compile_source(&handler("        ppu.mask = ppu.status\n"))
+        .expect("eight cycles fit a window of nine");
+
+    // Ten: two variable assignments, `LDA #imm` two and `STA <zero page>` three apiece.
+    let diagnostics = compile_source(&handler("        v = $01\n        v = $02\n"))
+        .expect_err("ten cycles do not fit a window of nine");
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler exceeds its hblank"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "handler costs 10 cycles, the hblank leaves 9"
+    );
 }

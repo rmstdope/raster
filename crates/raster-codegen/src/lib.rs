@@ -13,6 +13,7 @@ use raster_syntax::Span;
 use raster_timing::{
     analyze, mmc3_latch_for_delta, mmc3_latch_for_first_event, mmc3_latch_for_next_frame,
     plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError, FRAMES_PER_PASS,
+    IRQ_HANDLER_BODY_CYCLES,
 };
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
@@ -234,6 +235,16 @@ impl Generator<'_> {
     /// The preconditions this depends on — rendering on, and the two pattern tables in opposite
     /// halves so A12 moves at all — are `raster-timing`'s, checked in `raster-ir` before anything
     /// reaches here.
+    ///
+    /// **A handler's body is held to [`IRQ_HANDLER_BODY_CYCLES`] and refused when it does not
+    /// fit.** The interrupt lands in the hblank at the end of the scanline before the one the
+    /// author named, and a store made once that window has closed lands part-way along a visible
+    /// row — which is the one thing the schedule promises does not happen. Only the body is
+    /// charged: the ten cycles of prologue before it and the thirty-eight of latch, acknowledgement
+    /// and dispatch after it run once the picture has already started, where they harm nothing that
+    /// can be seen. The region is `interruptible`, so no `PHP`/`SEI`/`PLP` is emitted around it —
+    /// the 6502 set I on interrupt entry, and nine cycles of a window this small spent masking what
+    /// is already masked would be most of it.
     fn irq_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
         let Some(first) = frame.events.first() else {
             // A schedule with no events arms nothing; the program still ends in its own loop.
@@ -277,7 +288,16 @@ impl Generator<'_> {
             // Only the accumulator is saved. The loop these interrupt holds nothing in X or Y, and
             // `RTI` restores the flags the interrupt itself pushed.
             self.emit(PHA, Implied, None);
-            self.statements(&event.body, Some(halt_label))?;
+            self.timed_region(
+                &CycleConstraint::AtMost(IRQ_HANDLER_BODY_CYCLES),
+                false, // pad: a short handler spends nothing filling the window
+                true,  // interruptible: the 6502 set I on entry, so PHP/SEI/PLP would be nine
+                // cycles of a window this small, spent masking what is already masked
+                &event.body,
+                event.span,
+                Some(halt_label),
+            )
+            .map_err(|error| as_irq_window_error(error, event.span))?;
             self.emit(LDA_IMMEDIATE, Immediate, Some(u16::from(latch)));
             // The order hardware requires: the latch, then the reload request, then the
             // acknowledgement — which also disables — and only then the re-arm. Enabling before
@@ -829,6 +849,40 @@ impl Generator<'_> {
         let label = IrLabel(self.next_internal_label);
         self.next_internal_label += 1;
         label
+    }
+}
+
+/// The budget refusal an `irq` handler earns, which is not the one a `cycles` block earns.
+///
+/// [`Generator::timed_region`] reports an overrun as [`TimingError::OverBudget`], whose diagnostic
+/// talks about a block and the budget its author wrote. A handler's window is the hblank the MMC3
+/// leaves it and its advice is different, so the error is retyped here — rather than by teaching
+/// `analyze` a second kind of region, which would put a fact about one lowering inside the analyser
+/// every lowering shares.
+///
+/// **`handler` is what keeps the retype honest, and it is not a tidy-up.** `timed_region` emits the
+/// body before it analyses it, so an author's own `cycles(n) { }` nested inside the handler raises
+/// its overrun out through this same `Result`. Retyped indiscriminately, that block would be told
+/// the hblank leaves `n` — the author's own budget, not the window — under a caret on `cycles(n) {`
+/// rather than on the event. Only the failure carrying the handler's own span is this lowering's to
+/// rename; every other one is already saying something true and travels on untouched.
+fn as_irq_window_error(error: CodegenError, handler: Span) -> CodegenError {
+    match error {
+        CodegenError::Timing {
+            error:
+                TimingError::OverBudget {
+                    measured_cycles,
+                    budget,
+                },
+            span,
+        } if span == handler => CodegenError::Timing {
+            error: TimingError::IrqHandlerOverHblank {
+                measured_cycles,
+                budget,
+            },
+            span,
+        },
+        other => other,
     }
 }
 

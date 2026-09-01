@@ -52,6 +52,20 @@ to land on the scanlines the source names and stay there three hundred frames la
 spends one cycle more than the picture slides a scanline every three seconds, which five
 consecutive frames cannot see.
 
+`irq-colour-bars.raster` and `irq-hblank-window.raster` are the `frame ... using irq` ones, and
+both are judged in the emulator rather than counted. The first places three bands and holds them
+three hundred frames later; the second is made of the widest handler body a fixture can build inside
+`raster_timing::IRQ_HANDLER_BODY_CYCLES` — seven cycles, a register store read from a variable — and
+proves that a body the compiler accepts finishes inside the hblank the MMC3 leaves it. The widest
+body the compiler *accepts* is eight, `ppu.mask = ppu.status`, which no fixture can use: what `$2002`
+returns is not a mask, and writing it would turn off the rendering the MMC3 counter depends on.
+
+Every handler in both stores a value the mask does not already hold, which is what makes the picture
+evidence: a store of the value already there paints nothing, and the row would read as one band
+whether it landed inside the window or half-way along the line. For the same reason
+`irq-hblank-window.raster` is judged column by column rather than through `row_bands`, which drops
+any run shorter than eight pixels and so cannot tell a window of nine from one of eleven.
+
 `unsynchronized.raster` is the negative of spec section 6.6: a timed region writing a PPU register
 with nothing to align it. Inside a `frame` the same region is fine, because the frame emits the
 synchronization itself.
