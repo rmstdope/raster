@@ -712,23 +712,6 @@ pub enum Mmc3IrqError {
     ConditionalConfiguration { register: &'static str },
 }
 
-/// Check the hardware preconditions an MMC3 IRQ chain depends on.
-///
-/// Rendering has to be on — either half of it. The counter clocks on filtered A12 rises, and A12
-/// only rises where a scanline fetches from both halves of pattern memory; a rendering PPU runs its
-/// sprite pattern fetches at dots 257 to 320 whether or not sprites are composited, so a
-/// background-only split clocks the counter exactly as a full one does. What is fatal is rendering
-/// nothing at all, or configuring both tables into the same half.
-///
-/// 8x16 sprites are refused rather than judged: in that mode the hardware ignores the sprite-half
-/// bit and takes the half from bit 0 of each tile index, which is not in a register this can read.
-///
-/// `ppu.ctrl` is the whole of what decides the two halves *today*, and that is a fact about the
-/// reset runtime rather than about the MMC3: it programs CHR mode 0 with R0-R5 as 0, 2, 4, 5, 6, 7,
-/// a flat 8 KiB map with no A12 inversion, and nothing else can change it while PRG/CHR bank
-/// switching is unsupported. Spec section 7.3 asks for the CHR layout to be checked too; when a
-/// program can choose its own, this function needs it passed in and the sentence above stops being
-/// true on its own.
 /// Whether a `ppu.mask` value leaves the PPU fetching, which is what clocks the MMC3 counter.
 ///
 /// Either half of rendering counts. A rendering PPU runs its sprite pattern fetches at dots 257 to
@@ -749,6 +732,23 @@ fn known(state: RegisterState, register: &'static str) -> Result<u8, Mmc3IrqErro
     }
 }
 
+/// Check the hardware preconditions an MMC3 IRQ chain depends on.
+///
+/// Rendering has to be on — either half of it. The counter clocks on filtered A12 rises, and A12
+/// only rises where a scanline fetches from both halves of pattern memory; a rendering PPU runs its
+/// sprite pattern fetches at dots 257 to 320 whether or not sprites are composited, so a
+/// background-only split clocks the counter exactly as a full one does. What is fatal is rendering
+/// nothing at all, or configuring both tables into the same half.
+///
+/// 8x16 sprites are refused rather than judged: in that mode the hardware ignores the sprite-half
+/// bit and takes the half from bit 0 of each tile index, which is not in a register this can read.
+///
+/// `ppu.ctrl` is the whole of what decides the two halves *today*, and that is a fact about the
+/// reset runtime rather than about the MMC3: it programs CHR mode 0 with R0-R5 as 0, 2, 4, 5, 6, 7,
+/// a flat 8 KiB map with no A12 inversion, and nothing else can change it while PRG/CHR bank
+/// switching is unsupported. Spec section 7.3 asks for the CHR layout to be checked too; when a
+/// program can choose its own, this function needs it passed in and the sentence above stops being
+/// true on its own.
 pub fn validate_mmc3_irq_frame(ppu: &PpuConfiguration) -> Result<(), Mmc3IrqError> {
     let ctrl = known(ppu.ctrl, "ppu.ctrl")?;
     let mask = known(ppu.mask, "ppu.mask")?;

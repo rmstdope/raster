@@ -1103,7 +1103,7 @@ const RENDERING_OFF_STOPS_THE_CHAIN: &str =
 /// What to write instead. `using timed` counts cycles and needs no counter, so it may blank freely.
 const BLANK_WITH_A_TIMED_FRAME: &str =
     "use `using timed` if the frame needs to blank the picture\n\
-                                        part-way down";
+     part-way down";
 
 /// The same hazard, stated as a possibility rather than a fact, for the warning.
 const AN_UNREADABLE_MASK_MAY_STOP_THE_CHAIN: &str =

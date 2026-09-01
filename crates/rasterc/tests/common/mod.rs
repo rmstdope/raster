@@ -16,6 +16,10 @@ pub fn demo_source() -> String {
 
 /// A `tests/cycles` fixture, read from the repository so a test can never drift from the source an
 /// author actually compiles.
+// `cli.rs` includes this module and reads no fixture, so without this the `cli` test binary warns
+// that the function is never used. Each test file is its own crate, which is why one helper can be
+// dead in one of them and load-bearing in another.
+#[allow(dead_code)]
 pub fn cycles_fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/cycles")

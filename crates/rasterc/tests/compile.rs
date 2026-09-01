@@ -234,6 +234,27 @@ fn an_irq_handler_that_turns_rendering_off_is_refused() {
     );
 }
 
+/// A named constant is folded at the store, so `ppu.mask = DARK` arrives at the check as
+/// `Value::Constant(0)` and is refused exactly as a literal is - with `$00` in the label, not the
+/// name. This is the whole reason the check walks the events rather than the source: were the
+/// folding to stop, the refusal would silently become the warning and the build would go green.
+#[test]
+fn a_blanking_mask_written_as_a_named_constant_is_refused_too() {
+    let source = "const DARK: u8 = $00\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = DARK }\n}\n";
+    let diagnostics = compile_source(source).expect_err("a folded constant is still a constant");
+
+    assert_eq!(diagnostics.len(), 1, "found {diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler cannot turn rendering off"
+    );
+    assert_eq!(
+        diagnostics[0].label, "`ppu.mask = $00` clears both rendering bits",
+        "the value it folded to, not the name the author typed"
+    );
+}
+
 /// One mistake, one error. An `every` body is lowered once and cloned per occurrence, so fourteen
 /// events share one span and one body; two blanking stores in one handler is still one handler that
 /// blanks the screen. Two *different* handlers are two mistakes, because the dedupe is on the span.
@@ -288,7 +309,7 @@ fn an_irq_frame_whose_mask_is_not_a_constant_warns_once() {
 
     assert_eq!(rom.warnings.len(), 1, "one per frame, not one per handler");
     let warning = &rom.warnings[0];
-    assert_eq!(warning.severity, raster_diag::Severity::Warning);
+    assert_eq!(warning.severity, Severity::Warning);
     assert_eq!(
         warning.message,
         "this `irq` frame writes a `ppu.mask` the compiler cannot read"
