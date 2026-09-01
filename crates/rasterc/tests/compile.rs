@@ -2,7 +2,7 @@ use raster_diag::Severity;
 use rasterc::compile_source;
 
 mod common;
-use common::demo_source;
+use common::{cycles_fixture, demo_source};
 
 #[test]
 fn compiles_the_demo_to_the_same_rom_as_m1() {
@@ -328,6 +328,31 @@ fn an_irq_frame_reports_its_unreadable_mask_beside_its_blanking_one() {
     assert_eq!(
         diagnostics[1].message,
         "an `irq` handler cannot turn rendering off"
+    );
+}
+
+/// The two `irq` fixtures this repository ships keep saying what they said. `irq-colour-bars.raster`
+/// stores `$3e`, `$5e` and `$1e` - all constants keeping bits 3 and 4 set - so it must be silent.
+/// `irq-hblank-window.raster` stores four variables on purpose, because it exists to build the
+/// widest handler body the language can express and a `const` would fold to a cheaper instruction;
+/// its one warning is correct, and the fixture must not be changed to silence it.
+#[test]
+fn the_shipping_irq_fixtures_keep_their_diagnostics() {
+    let bars = compile_source(&cycles_fixture("irq-colour-bars.raster"))
+        .expect("the shipping fixture compiles");
+    assert_eq!(
+        bars.warnings.len(),
+        0,
+        "every mask it stores is a constant that renders: {:?}",
+        bars.warnings
+    );
+
+    let window = compile_source(&cycles_fixture("irq-hblank-window.raster"))
+        .expect("the shipping fixture compiles");
+    assert_eq!(window.warnings.len(), 1, "found {:?}", window.warnings);
+    assert_eq!(
+        window.warnings[0].message,
+        "this `irq` frame writes a `ppu.mask` the compiler cannot read"
     );
 }
 
