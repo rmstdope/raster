@@ -25,40 +25,94 @@ fn lower_failure(source: &str) -> raster_ir::LowerFailure {
     lower(&typed).expect_err("fixture should not lower")
 }
 
-/// Every named register, with the three facts a diagnostic needs from it: the
-/// name it has in source, its address, and whether a read of it is refused.
-/// Written out here rather than derived, so the test fails when the compiler's
-/// own table changes rather than agreeing with it by construction.
-const REGISTERS: [(Register, &str, u16, bool); 16] = [
-    (Register::PpuCtrl, "ppu.ctrl", 0x2000, true),
-    (Register::PpuMask, "ppu.mask", 0x2001, true),
-    (Register::PpuStatus, "ppu.status", 0x2002, false),
-    (Register::PpuOamAddr, "ppu.oam_addr", 0x2003, true),
-    (Register::PpuOamData, "ppu.oam_data", 0x2004, false),
-    (Register::PpuScroll, "ppu.scroll", 0x2005, true),
-    (Register::PpuAddr, "ppu.addr", 0x2006, true),
-    (Register::PpuData, "ppu.data", 0x2007, false),
-    (Register::Mmc3BankSelect, "mmc3.bank_select", 0x8000, true),
-    (Register::Mmc3BankData, "mmc3.bank_data", 0x8001, true),
-    (Register::Mmc3Mirroring, "mmc3.mirroring", 0xa000, true),
-    (Register::Mmc3RamProtect, "mmc3.ram_protect", 0xa001, true),
-    (Register::Mmc3IrqLatch, "mmc3.irq_latch", 0xc000, true),
-    (Register::Mmc3IrqReload, "mmc3.irq_reload", 0xc001, true),
-    (Register::Mmc3IrqDisable, "mmc3.irq_disable", 0xe000, true),
-    (Register::Mmc3IrqEnable, "mmc3.irq_enable", 0xe001, true),
+/// Every named register, with the four facts a diagnostic needs from it: the
+/// name it has in source, its address, whether a read of it is refused, and
+/// whether a write of it is refused. Written out here rather than derived, so
+/// the test fails when the compiler's own table changes rather than agreeing
+/// with it by construction.
+const REGISTERS: [(Register, &str, u16, bool, bool); 16] = [
+    (Register::PpuCtrl, "ppu.ctrl", 0x2000, true, false),
+    (Register::PpuMask, "ppu.mask", 0x2001, true, false),
+    (Register::PpuStatus, "ppu.status", 0x2002, false, true),
+    (Register::PpuOamAddr, "ppu.oam_addr", 0x2003, true, false),
+    (Register::PpuOamData, "ppu.oam_data", 0x2004, false, false),
+    (Register::PpuScroll, "ppu.scroll", 0x2005, true, false),
+    (Register::PpuAddr, "ppu.addr", 0x2006, true, false),
+    (Register::PpuData, "ppu.data", 0x2007, false, false),
+    (
+        Register::Mmc3BankSelect,
+        "mmc3.bank_select",
+        0x8000,
+        true,
+        false,
+    ),
+    (
+        Register::Mmc3BankData,
+        "mmc3.bank_data",
+        0x8001,
+        true,
+        false,
+    ),
+    (
+        Register::Mmc3Mirroring,
+        "mmc3.mirroring",
+        0xa000,
+        true,
+        false,
+    ),
+    (
+        Register::Mmc3RamProtect,
+        "mmc3.ram_protect",
+        0xa001,
+        true,
+        false,
+    ),
+    (
+        Register::Mmc3IrqLatch,
+        "mmc3.irq_latch",
+        0xc000,
+        true,
+        false,
+    ),
+    (
+        Register::Mmc3IrqReload,
+        "mmc3.irq_reload",
+        0xc001,
+        true,
+        false,
+    ),
+    (
+        Register::Mmc3IrqDisable,
+        "mmc3.irq_disable",
+        0xe000,
+        true,
+        false,
+    ),
+    (
+        Register::Mmc3IrqEnable,
+        "mmc3.irq_enable",
+        0xe001,
+        true,
+        false,
+    ),
 ];
 
 #[test]
-fn the_register_table_names_every_register_and_says_which_read() {
-    for (register, name, address, write_only) in REGISTERS {
+fn the_register_table_names_every_register_and_says_which_read_and_write() {
+    for (register, name, address, write_only, read_only) in REGISTERS {
         assert_eq!(register.name(), name);
         assert_eq!(register.address(), address);
         assert_eq!(register.is_write_only(), write_only, "{name}");
+        assert_eq!(register.is_read_only(), read_only, "{name}");
+        // The two are independent facts, not opposites: $2004 and $2007 are
+        // false for both, because they read and write.
+        assert!(!(write_only && read_only), "{name}");
     }
-    // Three of the sixteen read: $2002, $2004 and $2007. If this number moves,
-    // a register has changed sides and the spec table in §9.5 has to move with
-    // it.
+    // Three of the sixteen read: $2002, $2004 and $2007. One of the sixteen
+    // cannot be written: $2002. If either number moves, a register has changed
+    // sides and the spec table in §9.5 has to move with it.
     assert_eq!(REGISTERS.iter().filter(|row| !row.3).count(), 3);
+    assert_eq!(REGISTERS.iter().filter(|row| row.4).count(), 1);
 }
 
 #[test]
@@ -963,7 +1017,7 @@ fn every_compound_operator_names_itself_in_the_refusal() {
 
 #[test]
 fn every_write_only_register_refuses_a_read_and_every_readable_one_does_not() {
-    for (_register, name, _address, write_only) in REGISTERS {
+    for (_register, name, _address, write_only, _read_only) in REGISTERS {
         let source = format!("main {{ var v: u8 = {name} }}");
         let syntax = parse(&source).expect("fixture should parse");
         let typed = analyze(&syntax).expect("fixture should analyze");
@@ -995,6 +1049,118 @@ fn two_write_only_reads_on_one_line_are_two_errors_in_source_order() {
     // `lower_value`'s `Infix` arm lowers left before right, so the errors come
     // out the way the author reads the line.
     assert!(errors[0].span.start < errors[1].span.start);
+}
+
+#[test]
+fn writing_the_read_only_register_is_refused() {
+    const SOURCE: &str = "main {\n    ppu.mask = $1E\n    ppu.status = 0\n}\n";
+
+    let errors = lower_errors(SOURCE);
+
+    assert_eq!(errors.len(), 1);
+    let error = &errors[0];
+    assert_eq!(error.message, "`ppu.status` cannot be written");
+    assert_eq!(error.label.as_deref(), Some("$2002 is a read-only port"));
+    assert_eq!(
+        error.notes,
+        [
+            "writing $2002 changes nothing on the PPU: it is a status\nport, and the CPU can only read it",
+            "there is no value that makes this store do something;\ndelete the line",
+        ]
+    );
+    assert_eq!(error.refusal, Refusal::Rejected);
+    // The carets cover the destination and nothing else. Existing tests in this
+    // file assert the two offsets as numbers; slicing the source says what the
+    // numbers mean.
+    assert_eq!(
+        &SOURCE[error.span.start as usize..error.span.end as usize],
+        "ppu.status"
+    );
+}
+
+#[test]
+fn a_compound_assignment_to_the_read_only_register_is_refused() {
+    let errors = lower_errors("main {\n    ppu.status += 1\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "`ppu.status` cannot be written");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$2002 is a read-only port")
+    );
+    // Three notes, the operator first. The read of $2002 is legal and is not
+    // mentioned: raster-bm1 owns that question, not this bead.
+    assert_eq!(errors[0].notes.len(), 3);
+    assert_eq!(
+        errors[0].notes[0],
+        "`+=` writes its destination, so this writes $2002"
+    );
+}
+
+#[test]
+fn every_compound_operator_names_itself_in_the_write_refusal() {
+    for spelling in ["+=", "-=", "*=", "/="] {
+        let source = format!("main {{\n    ppu.status {spelling} 1\n}}\n");
+        let errors = lower_errors(&source);
+
+        assert_eq!(errors.len(), 1, "{spelling}");
+        assert_eq!(
+            errors[0].notes[0],
+            format!("`{spelling}` writes its destination, so this writes $2002"),
+        );
+    }
+}
+
+#[test]
+fn a_bad_write_and_a_bad_read_on_one_line_are_two_errors_in_source_order() {
+    let errors = lower_errors("main {\n    ppu.status = ppu.mask\n}\n");
+
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].message, "`ppu.status` cannot be written");
+    assert_eq!(errors[1].message, "`ppu.mask` cannot be read");
+    // A refused write still lowers its right-hand side, so the author sees both
+    // mistakes in one build. Nothing sorts the errors; they come out in the
+    // order they were pushed, which is the order the line is read.
+    assert!(errors[0].span.start < errors[1].span.start);
+}
+
+#[test]
+fn every_register_but_the_read_only_one_accepts_a_write() {
+    for (register, name, _address, _write_only, read_only) in REGISTERS {
+        // `= 0` raises no warning for fifteen of the sixteen; `mmc3.bank_data
+        // = 0` warns (raster-rid), which this test does not assert on, because
+        // `result.is_ok()` is unaffected by warnings. `mmc3.bank_select = 0` is
+        // the one worth naming: it is silent because bits 6 and 7 are clear,
+        // and a different constant would fold to a warning, so the test would
+        // pass for a reason it does not state.
+        let source = format!("main {{ {name} = 0 }}");
+        let syntax = parse(&source).expect("fixture should parse");
+        let typed = analyze(&syntax).expect("fixture should analyze");
+        let result = lower(&typed);
+        if read_only {
+            let failure = result.expect_err(name);
+            assert_eq!(failure.errors.len(), 1, "{name}");
+            assert_eq!(
+                failure.errors[0].message,
+                format!("`{name}` cannot be written")
+            );
+        } else {
+            assert!(result.is_ok(), "{name} is written");
+        }
+        assert_eq!(register.is_read_only(), read_only, "{name}");
+    }
+}
+
+#[test]
+fn reading_the_read_only_register_is_still_fine() {
+    // The mirror of `writing_a_write_only_register_is_still_fine`. $2002 reads
+    // perfectly well and this bead does not change that; its read side effects
+    // are raster-bm1. If this goes red, the check has been attached to
+    // `lower_value`'s `Member` arm instead of to the destination.
+    let program = lower_source(
+        "main {\n    var s: u8 = ppu.status\n    ppu.oam_data = $20\n    ppu.data = $0F\n}\n",
+    );
+    assert!(program.main.is_some());
 }
 
 #[test]

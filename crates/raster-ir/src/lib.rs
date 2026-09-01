@@ -131,6 +131,41 @@ impl Register {
             | Self::Mmc3IrqEnable => true,
         }
     }
+
+    /// Whether a write to this port reaches the register at all.
+    ///
+    /// One of the sixteen is read-only: $2002, the PPU's status port, which the
+    /// CPU can only read. The PPU discards a store to it entirely — there is no
+    /// register behind the address to hold the value, and no flag or latch the
+    /// store moves.
+    ///
+    /// Both sides are listed rather than `matches!(self, Self::PpuStatus)`, for
+    /// the same reason `is_write_only` lists both: the match stays exhaustive
+    /// with no `_` arm, so a register added later cannot inherit a verdict
+    /// nobody chose, because the compiler will not build until someone decides.
+    ///
+    /// This and `is_write_only` are independent facts, not opposites. $2004 and
+    /// $2007 are false for both: they read and write.
+    pub const fn is_read_only(self) -> bool {
+        match self {
+            Self::PpuStatus => true,
+            Self::PpuCtrl
+            | Self::PpuMask
+            | Self::PpuOamAddr
+            | Self::PpuOamData
+            | Self::PpuScroll
+            | Self::PpuAddr
+            | Self::PpuData
+            | Self::Mmc3BankSelect
+            | Self::Mmc3BankData
+            | Self::Mmc3Mirroring
+            | Self::Mmc3RamProtect
+            | Self::Mmc3IrqLatch
+            | Self::Mmc3IrqReload
+            | Self::Mmc3IrqDisable
+            | Self::Mmc3IrqEnable => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -613,6 +648,35 @@ fn is_ppu_data_member(expression: &SyntaxExpression) -> bool {
 /// Whether this `Member` expression's base and member spell `ppu.data`.
 fn is_ppu_data(base: &SyntaxExpression, member: &str) -> bool {
     matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") && member == "data"
+}
+
+const DELETE_THE_LINE: &str = "there is no value that makes this store do something;\n\
+                               delete the line";
+
+/// What a write to a read-only port actually does.
+///
+/// One shape today, because $2002 is the only read-only port among the sixteen.
+/// `is_read_only`'s exhaustive match is what forces whoever adds a second one to
+/// come back and decide whether this sentence still fits.
+fn dead_write_note(register: Register) -> String {
+    format!(
+        "writing ${:04X} changes nothing on the PPU: it is a status\n\
+         port, and the CPU can only read it",
+        register.address()
+    )
+}
+
+/// How a register write reached lowering, which decides whether the refusal has
+/// to say where the write came from.
+#[derive(Clone, Copy)]
+enum WriteSite {
+    /// The author wrote the assignment: `ppu.status = 0`. The write is on the
+    /// line in front of them, so nothing explains it.
+    Named,
+    /// A compound assignment wrote its own destination: `ppu.status += 1`.
+    /// There is no `=` on that line at all, so the refusal says which operator
+    /// made the write. Carries the operator as the author wrote it.
+    CompoundAssignment(&'static str),
 }
 
 /// The warning a write to `mmc3.bank_select` earns, if it earns one.
@@ -1641,6 +1705,42 @@ impl Lowerer {
                 let Some(destination) = self.lower_destination(left) else {
                     return;
                 };
+                // The operator, decided once, because the write refusal below
+                // quotes its spelling and the compound read further down quotes
+                // it too. `None` is a plain `=`. The error arm is an operator
+                // the `matches!` above admits and `compound_operator` does not
+                // map, which is unreachable today and stays as a guard.
+                let compound = if operator.value == Operator::Assign {
+                    None
+                } else {
+                    match compound_operator(operator.value) {
+                        Some(pair) => Some(pair),
+                        None => {
+                            self.error(operator.span, "this compound assignment is not supported");
+                            return;
+                        }
+                    }
+                };
+                // `left.span` covers the destination and nothing else: the
+                // label names the port, and the right-hand side is not part of
+                // the port.
+                let write_site = match compound {
+                    Some((_, spelling)) => WriteSite::CompoundAssignment(spelling),
+                    None => WriteSite::Named,
+                };
+                // The write check comes before the compound read below, so the
+                // error a reader sees is always the one at the start of the
+                // line.
+                if !self.write_destination(destination, left.span, write_site) {
+                    // The right-hand side is still lowered, so its own faults
+                    // are reported in this run rather than the next one — Q6:
+                    // both errors on `ppu.status = ppu.mask`. Nothing is pushed:
+                    // the statement has been refused, so it has no `Assign` to
+                    // emit, and returning here also keeps the warnings below
+                    // from firing on a line already refused.
+                    let _ = self.lower_value(right);
+                    return;
+                }
                 // Q7: one fault, one message. If lowering this statement's own
                 // value refused something — a read of a write-only register,
                 // say — the statement is being rewritten, so what its value
@@ -1649,19 +1749,9 @@ impl Lowerer {
                 // returned, so it covers a plain assignment as well as the
                 // compound arm's early `return`.
                 let errors_before = self.errors.len();
-                let value = match operator.value {
-                    Operator::Assign => self.lower_value(right),
-                    Operator::PlusEqual
-                    | Operator::MinusEqual
-                    | Operator::StarEqual
-                    | Operator::SlashEqual => {
-                        let Some((operator, spelling)) = compound_operator(operator.value) else {
-                            self.error(operator.span, "this compound assignment is not supported");
-                            return;
-                        };
-                        // `left.span` covers the destination and nothing else:
-                        // the label names the port, and the right-hand side is
-                        // not part of the port.
+                let value = match compound {
+                    None => self.lower_value(right),
+                    Some((binary, spelling)) => {
                         let Some(left_value) = self.destination_read(
                             destination,
                             left.span,
@@ -1678,9 +1768,8 @@ impl Lowerer {
                             return;
                         };
                         let right = self.lower_value(right);
-                        self.binary(left_value, operator, right, expression.span)
+                        self.binary(left_value, binary, right, expression.span)
                     }
-                    _ => unreachable!("assignment operator was checked above"),
                 };
                 // Whether lowering this statement's own value refused something —
                 // a read of a write-only register, say. Q7 of `raster-1t9`: one
@@ -2009,6 +2098,41 @@ impl Lowerer {
             Destination::Place(place) => Some(Value::Place(place)),
             Destination::Register(register) => self.read_register(register, span, site),
         }
+    }
+
+    /// Whether this destination may be written, refusing it if it may not.
+    ///
+    /// Every write of a register comes here — a plain assignment and the write
+    /// a compound assignment makes — so the two cannot drift apart. This is the
+    /// mirror of `read_register`, and the two are deliberately separate
+    /// functions: a register can be unreadable, unwritable, or neither, and
+    /// nothing about one answers the other.
+    ///
+    /// Returns `true` when the write may proceed, so the caller reads as a
+    /// guard. A `Place` is always writable.
+    fn write_destination(&mut self, destination: Destination, span: Span, site: WriteSite) -> bool {
+        let Destination::Register(register) = destination else {
+            return true;
+        };
+        if !register.is_read_only() {
+            return true;
+        }
+        let mut notes = Vec::new();
+        if let WriteSite::CompoundAssignment(spelling) = site {
+            notes.push(format!(
+                "`{spelling}` writes its destination, so this writes ${:04X}",
+                register.address()
+            ));
+        }
+        notes.push(dead_write_note(register));
+        notes.push(DELETE_THE_LINE.to_owned());
+        self.refuse_with(
+            span,
+            format!("`{}` cannot be written", register.name()),
+            format!("${:04X} is a read-only port", register.address()),
+            notes,
+        );
+        false
     }
 
     fn binary(&mut self, left: Value, operator: BinaryOperator, right: Value, span: Span) -> Value {

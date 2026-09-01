@@ -579,40 +579,44 @@ select before it lands on R7, because R7 is what reset selected last.
 
 **rasterc today:** as designed.
 
-### 9.5 Which registers read back
+### 9.5 Which registers read and which accept writes
 
-Sixteen registers have names, and three of them can be read.
+Sixteen registers have names. Three of them can be read, and fifteen of
+them can be written; `ppu.status` is the only one that can be read and not
+written.
 
-| Register | Address | A read of it |
-|---|---|---|
-| `ppu.ctrl` | `$2000` | refused |
-| `ppu.mask` | `$2001` | refused |
-| `ppu.status` | `$2002` | **allowed** |
-| `ppu.oam_addr` | `$2003` | refused |
-| `ppu.oam_data` | `$2004` | **allowed** |
-| `ppu.scroll` | `$2005` | refused |
-| `ppu.addr` | `$2006` | refused |
-| `ppu.data` | `$2007` | **allowed, and buffered** |
-| `mmc3.bank_select` | `$8000` | refused |
-| `mmc3.bank_data` | `$8001` | refused |
-| `mmc3.mirroring` | `$A000` | refused |
-| `mmc3.ram_protect` | `$A001` | refused |
-| `mmc3.irq_latch` | `$C000` | refused |
-| `mmc3.irq_reload` | `$C001` | refused |
-| `mmc3.irq_disable` | `$E000` | refused |
-| `mmc3.irq_enable` | `$E001` | refused |
+| Register | Address | A read of it | A write of it |
+|---|---|---|---|
+| `ppu.ctrl` | `$2000` | refused | **allowed** |
+| `ppu.mask` | `$2001` | refused | **allowed** |
+| `ppu.status` | `$2002` | **allowed** | refused |
+| `ppu.oam_addr` | `$2003` | refused | **allowed** |
+| `ppu.oam_data` | `$2004` | **allowed** | **allowed** |
+| `ppu.scroll` | `$2005` | refused | **allowed** |
+| `ppu.addr` | `$2006` | refused | **allowed** |
+| `ppu.data` | `$2007` | **allowed, and buffered** | **allowed** |
+| `mmc3.bank_select` | `$8000` | refused | **allowed** |
+| `mmc3.bank_data` | `$8001` | refused | **allowed** |
+| `mmc3.mirroring` | `$A000` | refused | **allowed** |
+| `mmc3.ram_protect` | `$A001` | refused | **allowed** |
+| `mmc3.irq_latch` | `$C000` | refused | **allowed** |
+| `mmc3.irq_reload` | `$C001` | refused | **allowed** |
+| `mmc3.irq_disable` | `$E000` | refused | **allowed** |
+| `mmc3.irq_enable` | `$E001` | refused | **allowed** |
 
-The other thirteen are write-only ports. A read of one does not return the
-last value written: a PPU port returns whatever was last on the PPU's data
-bus, and an MMC3 port returns a byte of your own program, from the PRG bank
-the mapper has at that address. There is no value that makes such a read
-correct, so the compiler refuses it rather than warning about it.
+The thirteen that cannot be read are write-only ports. A read of one does
+not return the last value written: a PPU port returns whatever was last on
+the PPU's data bus, and an MMC3 port returns a byte of your own program,
+from the PRG bank the mapper has at that address. There is no value that
+makes such a read correct, so the compiler refuses it rather than warning
+about it. `ppu.status` is the mirror of that: `$2002` is a status port the
+CPU can only read, the PPU ignores a store to it completely, and a write is
+refused for the same reason.
 
-That includes the read a compound assignment makes for you. `ppu.mask += $18`
-reads `$2001` before it writes, and `$2001` does not read, so it is refused
-too: keep what you wrote in a variable of your own and write the whole value.
-
-Every one of the sixteen may still be written. This is only about reads.
+That includes the read or write a compound assignment makes for you.
+`ppu.mask += $18` reads `$2001` before it writes, and `ppu.status += 1`
+writes `$2002` after it reads; both are refused. Keep what you wrote in a
+variable of your own and write the whole value.
 
 `ppu.data` reads back, but not the byte you just addressed. A $2007
 read hands you the byte the previous read fetched and loads the byte
