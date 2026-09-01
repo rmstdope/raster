@@ -308,6 +308,29 @@ fn an_irq_frame_whose_mask_is_not_a_constant_warns_once() {
     assert!(warning.span.is_some(), "the warning is source-spanned");
 }
 
+/// One frame can hold both faults, and both are printed - warnings before errors, which is what
+/// `compile_source` already does: the author who fixes the error is the author who needed the
+/// warning, and they only get one look at it.
+#[test]
+fn an_irq_frame_reports_its_unreadable_mask_beside_its_blanking_one() {
+    let source = "var level: u8 = $1e\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = $00 }\n\
+                  \n    at scanline 120 { ppu.mask = level }\n}\n";
+    let diagnostics = compile_source(source).expect_err("the first handler blanks the screen");
+
+    assert_eq!(diagnostics.len(), 2, "found {diagnostics:?}");
+    assert_eq!(diagnostics[0].severity, Severity::Warning);
+    assert_eq!(
+        diagnostics[0].message,
+        "this `irq` frame writes a `ppu.mask` the compiler cannot read"
+    );
+    assert_eq!(diagnostics[1].severity, Severity::Error);
+    assert_eq!(
+        diagnostics[1].message,
+        "an `irq` handler cannot turn rendering off"
+    );
+}
+
 /// Rendering one half is rendering: the sprite pattern fetches happen either way, so a
 /// background-only split - the commonest MMC3 IRQ program there is - compiles.
 #[test]
