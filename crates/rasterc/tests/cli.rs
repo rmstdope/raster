@@ -696,9 +696,13 @@ fn a_register_that_reads_still_compiles() {
     let directory = Scratch::new("readable");
     let input = directory.path().join("ok.raster");
     let output = directory.path().join("ok.nes");
+    // Read twice, discard the first: raster-hqh warns on a lone `ppu.data`
+    // read, because $2007 hands back what the previous read fetched. This test
+    // is about a readable register compiling silently, so it reads the way
+    // rasterc now asks for.
     fs::write(
         &input,
-        "main {\n    ppu.addr = $3f\n    ppu.addr = $00\n    var entry: u8 = ppu.data\n}\n",
+        "main {\n    ppu.addr = $3f\n    ppu.addr = $00\n    var discard: u8 = ppu.data\n    var entry: u8 = ppu.data\n}\n",
     )
     .unwrap();
 
@@ -707,4 +711,66 @@ fn a_register_that_reads_still_compiles() {
     assert_eq!(result, Ok(()));
     assert_eq!(stderr, "");
     assert!(output.exists());
+}
+
+#[test]
+fn a_lone_ppu_data_read_warns_and_still_writes_a_rom() {
+    let directory = Scratch::new("ppudatawarning");
+    let input = directory.path().join("read.raster");
+    let output = directory.path().join("read.nes");
+    fs::write(&input, "main {\n    var tile: u8 = ppu.data\n}\n").unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert!(output.exists());
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: this `ppu.data` read gives you the byte before the one you asked for\n",
+                " --> {path}:2:20\n",
+                "  |\n",
+                "2 |     var tile: u8 = ppu.data\n",
+                "  |                    ^^^^^^^^ nothing next to this read primes the PPU's read buffer\n",
+                "  = note: $2007 hands back what the previous read fetched, and loads the\n",
+                "          byte at this address for the next read\n",
+                "  = note: read `ppu.data` twice in a row, discard the first and keep the\n",
+                "          second; a palette address, $3F00 to $3FFF, is not buffered and\n",
+                "          reads back at once\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+    assert!(stdout.ends_with(" warnings  1\n"), "got:\n{stdout}");
+}
+
+#[test]
+fn a_ppu_data_compound_assignment_fails_the_build_and_writes_no_rom() {
+    let directory = Scratch::new("ppudatacompound");
+    let input = directory.path().join("bump.raster");
+    let output = directory.path().join("bump.nes");
+    fs::write(&input, "main {\n    ppu.data += 1\n}\n").unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(!output.exists());
+    assert!(
+        stderr.contains("error: `ppu.data` cannot be the destination of a compound assignment"),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("`+=` reads $2007 before it writes, and that read is buffered"),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.ends_with(&format!(
+            "error: could not compile {} (1 error)\n",
+            input.display()
+        )),
+        "got:\n{stderr}"
+    );
 }
