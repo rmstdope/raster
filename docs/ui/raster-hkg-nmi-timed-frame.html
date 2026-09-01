@@ -1,0 +1,210 @@
+<!doctype html>
+<title>raster-hkg — NMI and a timed frame</title>
+<meta charset="utf-8">
+<style>
+:root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+* { box-sizing: border-box; }
+body { margin:0; background:#f6f6f8; color:#22242c;
+       font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+.sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+     letter-spacing:.09em; color:#666b7a; font-weight:600; }
+.note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+.term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre; overflow-x:auto; border:1px solid #000; }
+.term .e { color: var(--red); font-weight:700; }
+.term .w { color: var(--yel); font-weight:700; }
+.term .g { color: var(--dim); }
+.term .c { color: var(--cyan); }
+.term .ok { color: var(--grn); }
+.src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+       font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto;
+       margin:.5rem 0 .5rem; }
+.tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+       padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+.cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+.silent { border-left:3px solid #8fd694; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#3f6b46; max-width:56em; }
+.bad { border-left:3px solid #ff6b6b; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#8c3535; max-width:56em; }
+table { border-collapse:collapse; margin:.6rem 0 0; font-size:.9rem; }
+th,td { text-align:left; padding:.35rem .9rem .35rem 0; border-bottom:1px solid #dfe1e9; vertical-align:top; }
+th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:.78rem; }
+code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#eceef4; padding:.08em .3em; border-radius:3px; }
+.nav { font-size:.85rem; color:#666b7a; margin:0 0 1.4rem; }
+.nav a { color:#3a6ea8; }
+@media (prefers-color-scheme: dark) {
+  body { background:#0d0e13; color:#d8dae4; }
+  .sub, h2, .note, .cost, .nav, th { color:#8b90a2; }
+  .tag { background:#1e2029; color:#a8adc0; }
+  .cost { border-color:#2a2d3a; }
+  .silent { color:#8fd694; }
+  .bad { color:#ff9b9b; }
+  .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  code { background:#171922; color:#c9cddb; }
+  th,td { border-color:#262a36; }
+  .nav a { color:#6fb0e8; }
+}
+</style>
+<main>
+<h1>raster-mb1 &mdash; nothing interrupts <code>main</code>, and what pins it</h1>
+<p class="sub">Agreed with the navigator over two rounds. The bead was filed as a warning: a
+<h1>raster-hkg &mdash; a <code>timed</code> frame cannot afford an NMI</h1>
+<p class="sub">Agreed with the navigator over three rounds. The bead was filed from the review of PR&nbsp;#50:
+&sect;9.4 tells an author that enabling NMI &ldquo;runs none of your code&rdquo;, which reads as a green
+light, and nothing in the specification says a <code>frame ... using timed</code> is destroyed by one.
+What ships is a <b>warning</b> &mdash; the ROM is still written &mdash; and two paragraphs of
+specification. Every terminal block below is the layout <code>rasterc</code> actually prints.</p>
+
+<h2>1 &middot; The program that compiles silently today</h2>
+<div class="src">1  main {
+2      ppu.ctrl = $88          // NMI on
+3      ppu.mask = $1e
+4  }
+5
+6  frame bars using timed {
+7      every 8 scanlines from 0 to 239 { ppu.mask = $1e }
+8  }</div>
+<p class="bad">That ROM is wrong and nothing says so. A <code>timed</code> frame synchronizes once and
+never again: every position after it is a count of cycles forward from that one moment. <code>$FFFA</code>
+is the runtime's bare <code>RTI</code>, so none of the author's code runs &mdash; but the interrupt still
+costs <b>13 cycles</b> (7 to enter, 6 for the <code>RTI</code>) once per frame, out of cycles the
+schedule had already allocated. The picture drifts by that much every frame and never comes back.</p>
+<p class="cost">Decided: <b>warn, and still build.</b> Considered and rejected: refusing, which &sect;6.4
+argues for and which <code>using irq</code>'s own PPU-configuration check already does &mdash; rejected
+because every other hazard rasterc can see but not prove is a warning, and a refusal blocks an author
+who is mid-edit and knows. Also rejected: specification text with no compiler change.</p>
+
+<h2>2 &middot; The message</h2>
+<div class="term"><span class="w">warning:</span> this program enables NMI, and a <span class="c">`timed`</span> frame cannot afford one
+ <span class="c">--&gt;</span> demo.raster:6:18
+  <span class="c">|</span>
+<span class="c">6 |</span> frame bars using timed {
+  <span class="c">|</span>                  <span class="w">^^^^^</span> this schedule counts cycles from one synchronization onwards
+  <span class="c">= note:</span> `ppu.ctrl` holds $88 when the frame starts, and bit 7 is NMI;
+          each NMI costs the schedule 13 cycles it has already spent
+  <span class="c">= note:</span> clear bit 7 to keep the schedule, or use `using irq`, which
+          synchronizes on every scanline it fires
+
+<span class="ok"> Compiled</span>  demo.raster -&gt; demo.nes
+   <span class="g">mapper</span>  MMC3 (4), NTSC
+      <span class="g">prg</span>  32 KiB, 4 banks of 8 KiB
+      <span class="g">chr</span>  8 KiB RAM
+    <span class="g">fixed</span>  $E000-$FFFF, 6357 of 8186 bytes used
+    <span class="g">yours</span>  6225 bytes
+  <span class="g">runtime</span>  132 bytes, the reset sequence around your program
+    <span class="g">entry</span>  reset $E000, nmi $F8D4, irq $F8D4
+ <span class="g">warnings</span>  1</div>
+<p class="cost">The carets sit on <code>timed</code>, the span the compiler already carries for a frame's
+strategy and the one <code>using irq</code>'s refusals point at. One warning per program, not one per
+<code>ppu.ctrl</code> write. The message names the schedule rather than the consequence; a draft leading
+with &ldquo;NMI is on, and it will pull this frame off the picture&rdquo; was rejected.</p>
+
+<h2>3 &middot; With the <code>using</code> clause left off</h2>
+<p class="note">An omitted clause <i>means</i> <code>timed</code> (&sect;7.1), so the same program earns the
+same warning. There is no <code>timed</code> to underline, so the carets take the frame's first line.</p>
+<div class="term"><span class="w">warning:</span> this program enables NMI, and a <span class="c">`timed`</span> frame cannot afford one
+ <span class="c">--&gt;</span> demo.raster:6:1
+  <span class="c">|</span>
+<span class="c">6 |</span> frame bars {
+  <span class="c">|</span> <span class="w">^^^^^^^^^^^^</span> this schedule counts cycles from one synchronization onwards
+  <span class="c">= note:</span> `ppu.ctrl` holds $88 when the frame starts, and bit 7 is NMI;
+          each NMI costs the schedule 13 cycles it has already spent
+  <span class="c">= note:</span> clear bit 7 to keep the schedule, or use `using irq`, which
+          synchronizes on every scanline it fires</div>
+
+<h2>4 &middot; A value rasterc cannot fold</h2>
+<div class="src">var flags: u8
+
+main {
+    ppu.ctrl = flags
+    ppu.mask = $1e
+}
+
+frame bars using timed { every 8 scanlines from 0 to 239 { ppu.mask = $1e } }</div>
+<div class="term"><span class="w">warning:</span> rasterc cannot tell whether this program enables NMI
+ <span class="c">--&gt;</span> demo.raster:8:18
+  <span class="c">|</span>
+<span class="c">8 |</span> frame bars using timed { every 8 scanlines from 0 to 239 { ppu.mask = $1e } }
+  <span class="c">|</span>                  <span class="w">^^^^^</span> this schedule counts cycles from one synchronization onwards
+  <span class="c">= note:</span> the last write to `ppu.ctrl` before the frame is not a value
+          rasterc can see, so bit 7 is unknown
+  <span class="c">= note:</span> bit 7 is NMI, and each NMI costs the schedule 13 cycles it has
+          already spent; writing a constant with bit 7 clear keeps it</div>
+<p class="cost">Decided: <b>say so</b> rather than stay silent, the shape
+<code>mmc3.bank_select</code> already uses for an unfoldable value.</p>
+
+<h2>5 &middot; Written on some paths and not others</h2>
+<div class="src">main {
+    if x { ppu.ctrl = $08 }
+    ppu.mask = $1e
+}
+
+frame bars using timed { every 8 scanlines from 0 to 239 { ppu.mask = $1e } }</div>
+<div class="term"><span class="w">warning:</span> rasterc cannot tell whether this program enables NMI
+ <span class="c">--&gt;</span> demo.raster:6:18
+  <span class="c">|</span>
+<span class="c">6 |</span> frame bars using timed { every 8 scanlines from 0 to 239 { ppu.mask = $1e } }
+  <span class="c">|</span>                  <span class="w">^^^^^</span> this schedule counts cycles from one synchronization onwards
+  <span class="c">= note:</span> `ppu.ctrl` is written on some paths through this program and not
+          others, so bit 7 is unknown
+  <span class="c">= note:</span> bit 7 is NMI, and each NMI costs the schedule 13 cycles it has
+          already spent; writing a constant with bit 7 clear keeps it</div>
+<p class="cost">Decided: <b>its own first note</b>, mirroring what <code>using irq</code> already
+distinguishes. One sentence covering both reasons was rejected: they are two different things for the
+author to go and fix.</p>
+
+<h2>6 &middot; A handler turns NMI on</h2>
+<div class="src">1  main {
+2      ppu.ctrl = $08          // NMI off: main is clean
+3      ppu.mask = $1e
+4  }
+5
+6  frame bars using timed {
+7      every 8 scanlines from 0 to 239 {
+8          ppu.ctrl = $88
+9      }
+10 }</div>
+<p class="cost">Decided: <b>in scope.</b> The program-level check reads what <code>ppu.ctrl</code> holds
+when the frame <i>starts</i>, and sees nothing here &mdash; <code>main</code> is clean. A handler write is
+worse than a clean one in <code>main</code>: NMI goes on for every frame after the first.</p>
+<div class="term"><span class="w">warning:</span> this write enables NMI, and a <span class="c">`timed`</span> frame cannot afford one
+ <span class="c">--&gt;</span> demo.raster:8:9
+  <span class="c">|</span>
+<span class="c">8 |</span>         ppu.ctrl = $88
+  <span class="c">|</span>         <span class="w">^^^^^^^^^^^^^^</span> bit 7 is NMI, and this handler runs on every frame
+  <span class="c">= note:</span> the schedule is counted from one synchronization and never
+          re-checked; each NMI costs it 13 cycles it has already spent
+  <span class="c">= note:</span> clear bit 7 to keep the schedule, or use `using irq`, which
+          synchronizes on every scanline it fires</div>
+<p class="cost">&ldquo;this <b>write</b>&rdquo; and not &ldquo;this program&rdquo;: the carets are on the
+write, and two warnings on one build must not read as the same one printed twice.</p>
+<p class="note">A handler write rasterc cannot fold gets the same treatment as one in <code>main</code>:</p>
+<div class="term"><span class="w">warning:</span> rasterc cannot tell whether this write enables NMI
+ <span class="c">--&gt;</span> demo.raster:7:9
+  <span class="c">|</span>
+<span class="c">7 |</span>         ppu.ctrl = flags
+  <span class="c">|</span>         <span class="w">^^^^^^^^^^^^^^^^</span> this is not a value rasterc can see, so bit 7 is unknown
+  <span class="c">= note:</span> bit 7 is NMI, and this handler runs on every frame; each NMI
+          costs the schedule 13 cycles it has already spent
+  <span class="c">= note:</span> writing a constant with bit 7 clear keeps the schedule</div>
+<p class="note">A handler is straight-line &mdash; <code>if</code>, <code>while</code>, <code>for</code>
+and calls are all refused inside a timed region &mdash; so a handler write is either a constant or
+unfoldable. There is no conditional case inside one.</p>
+
+<h2>7 &middot; Order in the output</h2>
+<p class="cost">The program-level check needs the whole program lowered, so it runs after lowering and its
+warnings are <b>appended</b>: a program that also trips a bank-select or <code>$2007</code> warning prints
+those first and the NMI ones last, whatever the line numbers say. The frame-level warning comes before any
+handler one, and handler warnings follow schedule order.</p>
+
+<h2>8 &middot; Silent, and asserted to stay silent</h2>
+<table>
+<tr><th>Program</th><th>After this bead</th></tr>
+<tr><td><code>using irq</code> with <code>ppu.ctrl = $88</code></td><td>silent &mdash; an IRQ chain re-synchronizes on every scanline it fires, and &sect;13's own example does this</td></tr>
+<tr><td><code>ppu.ctrl = $88</code> then <code>ppu.ctrl = $08</code>, timed frame</td><td>silent &mdash; bit 7 is clear when the frame starts, and that is what the warning is about</td></tr>
+<tr><td>a timed frame and no <code>ppu.ctrl</code> write at all</td><td>silent &mdash; reset leaves $00</td></tr>
+<tr><td>a <code>cycles(N)</code> block in <code>main</code>, NMI on, no frame</td><td>silent &mdash; out of scope by decision, and filed as its own bead</td></tr>
+</table>
+</main>
