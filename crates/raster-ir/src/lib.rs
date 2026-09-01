@@ -762,6 +762,9 @@ struct LatchEffect {
     /// Whether this statement is `sync exact`, whose poll reads $2002 without
     /// any read appearing in the source.
     sync: bool,
+    /// Whether rasterc cannot see what this statement does to the latch: it
+    /// contains a nested block, or a call whose callee rasterc does not follow.
+    opaque: bool,
 }
 
 /// Classify one statement. Purely syntactic and side-effect free: it runs
@@ -776,26 +779,34 @@ fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
                 .and_then(ppu_status_read_in),
             write: None,
             sync: false,
+            opaque: declaration.initializer.as_ref().is_some_and(contains_call),
         },
         SyntaxStatement::Expression(expression) => LatchEffect {
             read: ppu_status_read_in(expression),
             write: latch_write_in(expression),
             sync: false,
+            opaque: contains_call(expression),
         },
         SyntaxStatement::Return(Some(expression)) => LatchEffect {
             read: ppu_status_read_in(expression),
             write: None,
             sync: false,
+            opaque: contains_call(expression),
         },
+        // The condition is classified because it is evaluated where the
+        // statement sits; the statement is opaque because its body is not, and
+        // a body rasterc did not walk may have written either half itself.
         SyntaxStatement::If { condition, .. } => LatchEffect {
             read: ppu_status_read_in(condition),
             write: None,
             sync: false,
+            opaque: true,
         },
         SyntaxStatement::While { condition, .. } => LatchEffect {
             read: ppu_status_read_in(condition),
             write: None,
             sync: false,
+            opaque: true,
         },
         // Classified for completeness rather than for reach, exactly as
         // `ppu_data_reads` does: `raster-sema` refuses a `for` range or step
@@ -805,6 +816,7 @@ fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
                 .or_else(|| step.as_ref().and_then(ppu_status_read_in)),
             write: None,
             sync: false,
+            opaque: true,
         },
         // Matched on the statement rather than on the identifier:
         // `raster-sema` already refuses any strategy but `exact`.
@@ -812,17 +824,26 @@ fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
             read: None,
             write: None,
             sync: true,
+            opaque: false,
         },
         SyntaxStatement::Block(_)
         | SyntaxStatement::Loop(_)
-        | SyntaxStatement::Cycles { .. }
-        | SyntaxStatement::Wait(_)
+        | SyntaxStatement::Cycles { .. } => LatchEffect {
+            read: None,
+            write: None,
+            sync: false,
+            opaque: true,
+        },
+        // `raster-sema` refuses a `wait cycles` argument that is not a
+        // compile-time constant, so it can hold neither a read nor a call.
+        SyntaxStatement::Wait(_)
         | SyntaxStatement::Break
         | SyntaxStatement::Continue
         | SyntaxStatement::Return(None) => LatchEffect {
             read: None,
             write: None,
             sync: false,
+            opaque: false,
         },
     }
 }
@@ -898,6 +919,25 @@ fn latch_pair(base: &SyntaxExpression, member: &str) -> Option<LatchPair> {
         "addr" => Some(LatchPair::Address),
         "scroll" => Some(LatchPair::Scroll),
         _ => None,
+    }
+}
+
+/// Whether this expression contains a call, whose callee rasterc does not
+/// follow. A called function may write either half of a pair itself, so the
+/// latch state is not knowable past one.
+fn contains_call(expression: &Spanned<SyntaxExpression>) -> bool {
+    match &expression.value {
+        SyntaxExpression::Call { .. } => true,
+        SyntaxExpression::Member { base, .. } => contains_call(base),
+        SyntaxExpression::Prefix { operand, .. } => contains_call(operand),
+        SyntaxExpression::Infix { left, right, .. } => contains_call(left) || contains_call(right),
+        SyntaxExpression::Index { base, index } => contains_call(base) || contains_call(index),
+        SyntaxExpression::Range { start, end } => contains_call(start) || contains_call(end),
+        SyntaxExpression::Name(_)
+        | SyntaxExpression::Number(_)
+        | SyntaxExpression::String(_)
+        | SyntaxExpression::Character(_)
+        | SyntaxExpression::Boolean(_) => false,
     }
 }
 
@@ -1655,6 +1695,9 @@ impl Lowerer {
             }
             if let Some(pair) = effect.write {
                 latch = if latch.is_some() { None } else { Some(pair) };
+            }
+            if effect.opaque {
+                latch = None;
             }
             let before = index > 0 && reads[index - 1] > 0;
             let after = reads.get(index + 1).is_some_and(|count| *count > 0);

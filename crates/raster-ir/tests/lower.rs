@@ -1552,3 +1552,50 @@ fn sync_exact_outside_a_pair_is_silent() {
 
     assert!(program.warnings.is_empty());
 }
+
+#[test]
+fn a_pair_is_not_tracked_into_a_nested_block() {
+    let program = lower_source(
+        "main {\n    var flag: u8 = 1\n    ppu.addr = $3f\n    if flag > 0 {\n        var s: u8 = ppu.status\n    }\n    ppu.addr = $00\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+/// The latch goes back to closed after a block rasterc cannot see through, so
+/// the read below is silent rather than wrong about a pair that may or may not
+/// still be open.
+#[test]
+fn a_pair_is_not_tracked_across_a_nested_block() {
+    let program = lower_source(
+        "main {\n    var flag: u8 = 1\n    ppu.addr = $3f\n    if flag > 0 {\n        ppu.mask = 0\n    }\n    var s: u8 = ppu.status\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_pair_is_not_tracked_across_a_call() {
+    let program = lower_source(
+        "fn paint() {\n    ppu.mask = $1e\n}\n\nmain {\n    ppu.addr = $3f\n    paint()\n    var s: u8 = ppu.status\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+/// A condition is evaluated where its statement sits, so a poll loop between
+/// the two halves of a pair breaks it like any other read.
+#[test]
+fn a_condition_that_reads_ppu_status_breaks_a_pair() {
+    let source =
+        "main {\n    ppu.addr = $3f\n    while ppu.status < $80 {\n    }\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].message,
+        "this `ppu.status` read leaves your `ppu.addr` pair half written"
+    );
+    // The carets are on the `ppu.status` in the condition, not on the `while`.
+    assert_eq!(line_of(source, program.warnings[0].span.start), 3);
+}
