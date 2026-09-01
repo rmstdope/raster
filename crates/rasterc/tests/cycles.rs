@@ -198,6 +198,25 @@ fn assert_prediction_is_spent(name: &str) {
     compare(name, cost(&timed_region(&source)), measured(name, &source));
 }
 
+/// A fixture whose measured cost is its prediction, or one cycle less.
+///
+/// Every other fixture in this file is exact, and that is the point of them. This one holds an
+/// OAM DMA, whose 513-or-514-cycle stall the compiler charges at 514 because it cannot know the
+/// parity of the cycle the write lands on. One cycle of slack is the uncertainty made visible;
+/// two would be a bug in the cost model.
+fn assert_prediction_is_spent_within_one(name: &str) {
+    let source = fixture(name);
+    let predicted = cost(&timed_region(&source));
+    let actual = measured(name, &source);
+    let difference = i64::from(actual) - i64::from(predicted);
+
+    assert!(
+        (-1..=0).contains(&difference),
+        "{name}: the compiler predicted {predicted} cycles and the region spent {actual}, \
+         a difference of {difference} — an OAM DMA may come in one cycle under and no more"
+    );
+}
+
 /// The message a failing comparison actually fails with.
 ///
 /// Asserting the formatter's output directly would leave the diagnostic green after it stopped
@@ -251,6 +270,14 @@ fn every_timed_fixture_spends_exactly_what_the_compiler_predicted() {
     ] {
         assert_prediction_is_spent(name);
     }
+}
+
+/// Deliberately not in `every_timed_fixture_spends_exactly_what_the_compiler_predicted`: that
+/// list is the exact-agreement guarantee, and this is the one construct rasterc emits whose
+/// predicted cost is not necessarily its cost.
+#[test]
+fn an_oam_dma_fixture_spends_its_prediction_or_one_cycle_less() {
+    assert_prediction_is_spent_within_one("oam-dma.raster");
 }
 
 #[test]

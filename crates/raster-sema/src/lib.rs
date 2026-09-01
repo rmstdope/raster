@@ -1085,7 +1085,15 @@ fn register_member(namespace: &str, member: &str) -> bool {
     match namespace {
         "ppu" => matches!(
             member,
-            "ctrl" | "mask" | "status" | "oam_addr" | "oam_data" | "scroll" | "addr" | "data"
+            "ctrl"
+                | "mask"
+                | "status"
+                | "oam_addr"
+                | "oam_data"
+                | "scroll"
+                | "addr"
+                | "data"
+                | "oam_dma"
         ),
         "mmc3" => matches!(
             member,

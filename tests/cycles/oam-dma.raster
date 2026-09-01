@@ -1,0 +1,8 @@
+// One OAM DMA inside an exact block. The stall is 513 or 514 cycles and the compiler charges 514,
+// so the ROM spends what was predicted or one cycle less — which is what this fixture pins.
+main {
+    sync exact
+    cycles(600) pad {
+        ppu.oam_dma = $02
+    }
+}

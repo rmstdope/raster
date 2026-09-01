@@ -866,3 +866,153 @@ fn the_hblank_admits_a_body_up_to_its_window_and_no_wider() {
         "handler costs 10 cycles, the hblank leaves 9"
     );
 }
+#[test]
+fn an_oam_dma_write_compiles_to_a_store_to_4014() {
+    let rom = compile_source("main {\n    ppu.oam_addr = 0\n    ppu.oam_dma = $02\n}\n")
+        .expect("a sprite DMA is a register write like any other");
+
+    assert!(
+        rom.warnings.is_empty(),
+        "a DMA outside a timed block promises nothing about cycles: {:?}",
+        rom.warnings
+    );
+    // `LDA #$00 / STA $2003 / LDA #$02 / STA $4014` — the store to $4014 is
+    // what starts the copy, and it is the byte pair this pins.
+    let stores = rom
+        .image
+        .windows(3)
+        .filter(|window| window == &[0x8d, 0x14, 0x40])
+        .count();
+    assert_eq!(stores, 1, "exactly one `STA $4014` reaches the ROM");
+}
+
+#[test]
+fn an_exact_block_with_a_dma_warns_that_its_cost_is_uncertain() {
+    let rom = compile_source(
+        "main {\n    sync exact\n    cycles(600) pad {\n        ppu.oam_dma = $02\n    }\n}\n",
+    )
+    .expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1, "{:?}", rom.warnings);
+    let warning = &rom.warnings[0];
+    assert_eq!(warning.severity, Severity::Warning);
+    assert_eq!(warning.message, "this block's cost is one cycle uncertain");
+    assert_eq!(
+        warning.label,
+        "an OAM DMA stalls 513 or 514 cycles, so this block spends 599 or 600"
+    );
+    assert_eq!(
+        warning.notes,
+        ["the block is charged the worst case, so it never overruns;\n`cycles(<= 600)` says the same thing without the promise"]
+    );
+}
+
+#[test]
+fn a_ceiling_block_with_a_dma_is_silent() {
+    // A ceiling is still a true ceiling at 514, and a report is explicitly a
+    // measurement, so the warning is noise in both.
+    let ceiling = compile_source(
+        "main {\n    sync exact\n    cycles(<= 600) {\n        ppu.oam_dma = $02\n    }\n}\n",
+    )
+    .expect("a ceiling admits the DMA");
+    assert!(ceiling.warnings.is_empty(), "{:?}", ceiling.warnings);
+
+    let report = compile_source(
+        "main {\n    sync exact\n    cycles(?) dma {\n        ppu.oam_dma = $02\n    }\n}\n",
+    )
+    .expect("a report admits the DMA");
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+#[test]
+fn two_dmas_in_one_exact_block_warn_once_about_both() {
+    let rom = compile_source(
+        "main {\n    sync exact\n    cycles(1200) pad {\n        ppu.oam_dma = $02\n        ppu.oam_dma = $02\n    }\n}\n",
+    )
+    .expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1, "{:?}", rom.warnings);
+    let warning = &rom.warnings[0];
+    assert_eq!(warning.message, "this block's cost is 2 cycles uncertain");
+    assert_eq!(
+        warning.label,
+        "2 OAM DMAs stall 513 or 514 cycles each, so this block spends between 1198 and 1200"
+    );
+}
+
+#[test]
+fn an_over_budget_block_withdraws_its_uncertainty_warning() {
+    // One fault, one message. The warning says what the block *spends*, which
+    // is only true once padding brought it to its budget — and a block refused
+    // for costing more than its budget is never padded. Printing both would put
+    // two different numbers for one block in front of the author.
+    let diagnostics = compile_source(
+        "main {\n    sync exact\n    cycles(114) pad {\n        ppu.oam_dma = $02\n    }\n}\n",
+    )
+    .expect_err("529 cycles do not fit in 114");
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].message, "timed block exceeds its budget");
+}
+
+#[test]
+fn a_budget_smaller_than_the_dmas_it_holds_is_refused_not_a_panic() {
+    // The warning is pushed in lowering, before the timing analysis that
+    // refuses the block, so an exact budget below the DMA count reached the
+    // subtraction that builds its label. A compiler that aborts instead of
+    // diagnosing is the one failure mode a diagnostics-first tool cannot ship.
+    let diagnostics = compile_source(
+        "main {\n    sync exact\n    cycles(1) pad {\n        ppu.oam_dma = $02\n        ppu.oam_dma = $02\n    }\n}\n",
+    )
+    .expect_err("1028 cycles of stall do not fit in 1");
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].message, "timed block exceeds its budget");
+}
+
+#[test]
+fn every_refusal_of_a_block_withdraws_its_uncertainty_warning() {
+    // `assumes_budget_met` is about a padding that never happened, and all
+    // three of these leave the block unpadded. Withdrawing on only one of them
+    // would put two different numbers for one block in front of the author in
+    // the other two.
+    for (case, source) in [
+        (
+            "over budget",
+            "main {\n    sync exact\n    cycles(114) pad {\n        ppu.oam_dma = $02\n    }\n}\n",
+        ),
+        (
+            "under budget, no `pad`",
+            "main {\n    sync exact\n    cycles(600) {\n        ppu.oam_dma = $02\n    }\n}\n",
+        ),
+        (
+            "one cycle short, unpaddable",
+            "main {\n    sync exact\n    cycles(530) pad {\n        ppu.oam_dma = $02\n    }\n}\n",
+        ),
+    ] {
+        let diagnostics = compile_source(source).expect_err("{case} is refused");
+        assert!(
+            diagnostics.iter().all(|d| d.severity == Severity::Error),
+            "{case}: a refused block keeps no warning about what it spends: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn a_refusal_elsewhere_leaves_this_block_its_warning() {
+    // The withdrawal is span-matched, not blanket: a second block blowing its
+    // budget says nothing about the first block's uncertainty, and codegen
+    // stops at the first error either way.
+    let diagnostics = compile_source(
+        "main {\n    sync exact\n    cycles(600) pad {\n        ppu.oam_dma = $02\n    }\n    cycles(2) pad {\n        ppu.mask = 1\n    }\n}\n",
+    )
+    .expect_err("the second block is over budget");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message == "this block's cost is one cycle uncertain"),
+        "the first block's warning is still true: {diagnostics:?}"
+    );
+}

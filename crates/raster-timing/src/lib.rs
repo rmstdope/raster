@@ -34,7 +34,13 @@ pub struct TimingReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TimingError {
     /// The region costs more than its budget permits.
-    OverBudget { measured_cycles: u32, budget: u32 },
+    OverBudget {
+        measured_cycles: u32,
+        budget: u32,
+        /// Of `measured_cycles`, the part that is OAM DMA stall. Zero when the
+        /// region holds none.
+        oam_dma_cycles: u32,
+    },
     /// The region costs less than an exact budget requires and does not carry `pad`.
     UnderBudget { measured_cycles: u32, budget: u32 },
     /// No sequence of filler instructions costs exactly this many cycles.
@@ -188,6 +194,7 @@ pub fn analyze(region: &TimedRegion, legal_isa: bool) -> Result<TimingReport, Ti
         return Err(TimingError::OverBudget {
             measured_cycles,
             budget,
+            oam_dma_cycles: oam_dma_stall_cycles(&region.instructions),
         });
     }
 
@@ -214,6 +221,9 @@ pub fn analyze(region: &TimedRegion, legal_isa: bool) -> Result<TimingReport, Ti
 
 /// Charge every penalty a flat instruction sequence cannot prove away.
 ///
+/// Three of them: an indexed read that may cross a page, a branch that may be taken and cross
+/// one, and an OAM DMA, whose stall is charged the worse of the two lengths it may take.
+///
 /// This is the cost the compiler holds a timed region to, so anything checking a region's cost
 /// should call it rather than re-derive the same sum: a test that agrees with itself proves
 /// nothing.
@@ -227,7 +237,44 @@ pub fn worst_case_cycles(instructions: &[Instruction]) -> u32 {
             context.indexed_read_page_crossings.push(index);
         }
     }
-    cycles(instructions, context)
+    cycles(instructions, context) + oam_dma_stall_cycles(instructions)
+}
+
+/// The port a write to which starts an OAM DMA: 256 bytes into sprite memory,
+/// and the CPU halted while it happens.
+pub const OAM_DMA_PORT: u16 = 0x4014;
+
+/// The cycles one OAM DMA is charged.
+///
+/// The stall is 513 cycles, or 514 when the write lands on an odd CPU cycle.
+/// Nothing in the compiler knows the parity — a region's cost is counted from
+/// its own top and never from reset — so the worst of the two is charged, which
+/// is the direction that meets a budget early rather than overrunning it.
+pub const OAM_DMA_STALL_CYCLES: u32 = 514;
+
+/// `STY`, `STA` and `STX` absolute — the three stores whose target address is in the instruction
+/// itself. All three are `op!(4, Absolute, true, false)` in `raster-6502`'s opcode table. Written
+/// out rather than as the range they happen to form, because the list is three named instructions
+/// and not an interval.
+const ABSOLUTE_STORES: [u8; 3] = [0x8c, 0x8d, 0x8e];
+
+/// The cycles these instructions spend stalled in OAM DMAs, charged at the worst case.
+///
+/// A store to an absolute address is the only shape that can start one, and the address is the
+/// whole test: this charges whatever writes `$4014`, not whatever the register table happens to
+/// call it. `STX` and `STY` are listed beside `STA` because the 6502 has them even though codegen
+/// emits only `STA` today — the rule is about the hardware, not about this month's code generator.
+/// Indexed stores are not counted: their effective address is not in the instruction, so a flat
+/// sequence cannot tell whether one lands on `$4014`.
+pub fn oam_dma_stall_cycles(instructions: &[Instruction]) -> u32 {
+    instructions
+        .iter()
+        .filter(|instruction| {
+            ABSOLUTE_STORES.contains(&instruction.opcode)
+                && instruction.operand == Some(OAM_DMA_PORT)
+        })
+        .count() as u32
+        * OAM_DMA_STALL_CYCLES
 }
 
 /// PPU dots in one NTSC scanline — spec Appendix A.

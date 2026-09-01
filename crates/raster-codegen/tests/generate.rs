@@ -340,7 +340,8 @@ fn a_region_over_its_budget_is_reported_with_its_cost_and_span() {
         error,
         raster_timing::TimingError::OverBudget {
             measured_cycles: 6 + MASKING,
-            budget: 2
+            budget: 2,
+            oam_dma_cycles: 0
         }
     );
     // The span underlines the header alone, as spec section 14 shows.
