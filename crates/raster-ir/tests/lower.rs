@@ -1905,10 +1905,21 @@ fn a_timed_frame_whose_ppu_ctrl_is_written_on_some_paths_is_a_warning() {
         warning.notes[0],
         "`ppu.ctrl` is written on some paths through this program and not\nothers, so bit 7 is unknown"
     );
-    assert_ne!(
-        warning.notes[0],
-        "the last write to `ppu.ctrl` before the frame is not a value\nrasterc can see, so bit 7 is unknown"
+    // The pin the plan asks for is that the two unknowns stay two sentences, so the comparison is
+    // against what the unfoldable fixture actually renders rather than against a copy of it.
+    let unfoldable = lower_source(
+        "var flags: u8\n\
+         main {\n\
+         ppu.ctrl = flags\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
     );
+    assert_eq!(warning.message, unfoldable.warnings[0].message);
+    assert_ne!(warning.notes[0], unfoldable.warnings[0].notes[0]);
+    assert_eq!(warning.notes[1], unfoldable.warnings[0].notes[1]);
 }
 
 /// A handler write is worse than a clean `main`: NMI goes on for every frame after the first, and
@@ -2101,5 +2112,57 @@ fn an_nmi_warning_prints_after_a_bank_warning_whatever_the_line_numbers() {
     assert!(
         program.warnings[1].span.start < program.warnings[0].span.start,
         "the fixture is only a test of ordering while the two disagree with source order"
+    );
+}
+
+/// Handler warnings follow schedule order, which is not the order the events were written: bodies
+/// are lowered in source order and the events sorted by scanline afterwards. Section 7 of this
+/// bead's agreed page says schedule order, and this is the fixture where the two disagree.
+#[test]
+fn two_handlers_that_touch_ppu_ctrl_warn_in_schedule_order() {
+    let program = lower_source(
+        "var flags: u8\n\
+         main {\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         at scanline 200 { ppu.ctrl = $88 }\n\
+         at scanline 20 { ppu.ctrl = flags }\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        program.warnings[0].message, "rasterc cannot tell whether this write enables NMI",
+        "scanline 20 runs first, though it is written second"
+    );
+    assert_eq!(
+        program.warnings[1].message,
+        "this write enables NMI, and a `timed` frame cannot afford one"
+    );
+}
+
+/// Two writes inside one handler keep the order the body has them in: the sort that puts handlers
+/// into schedule order is stable, and within one handler there is only one order to have.
+#[test]
+fn two_ppu_ctrl_writes_in_one_handler_keep_the_order_the_body_has_them_in() {
+    let source = "var flags: u8\n\
+                  main {\n\
+                  ppu.mask = $1e\n\
+                  }\n\
+                  frame bars using timed {\n\
+                  at scanline 20 { ppu.ctrl = $88\n\
+                  ppu.ctrl = flags }\n\
+                  }";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        &source[program.warnings[0].span.start as usize..program.warnings[0].span.end as usize],
+        "ppu.ctrl = $88"
+    );
+    assert_eq!(
+        &source[program.warnings[1].span.start as usize..program.warnings[1].span.end as usize],
+        "ppu.ctrl = flags"
     );
 }

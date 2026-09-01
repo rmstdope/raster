@@ -1345,6 +1345,10 @@ struct Lowerer {
 struct HandlerCtrlWrite {
     span: Span,
     bits: Option<u8>,
+    /// The scanline the handler that carries this write runs at, stamped once the write's own
+    /// event is built. Handler bodies are lowered in source order and the events sorted by
+    /// scanline afterwards, so this is what puts the warnings back into schedule order.
+    scanline: u32,
 }
 
 impl Lowerer {
@@ -1566,7 +1570,9 @@ impl Lowerer {
                     }
                     FramePosition::Scanline(value) => {
                         if let Some(scanline) = self.visible_scanline(value) {
+                            let collected = self.handler_ctrl_writes.len();
                             let body = self.lower_frame_body(body);
+                            self.tag_handler_ctrl_writes(collected, scanline);
                             events.push(FrameEvent {
                                 scanline,
                                 body,
@@ -1598,7 +1604,11 @@ impl Lowerer {
                     // The body is lowered once and cloned per occurrence. Lowering it again for
                     // each would allocate a fresh temporary every time, and `every 1 scanlines
                     // from 0 to 239` would exhaust the zero page on a handler that needs one slot.
+                    let collected = self.handler_ctrl_writes.len();
                     let body = self.lower_frame_body(body);
+                    // The body is lowered once and cloned per occurrence, so its writes are
+                    // warned about once — at the first scanline the schedule reaches them.
+                    self.tag_handler_ctrl_writes(collected, from);
                     let mut scanline = Some(from);
                     while let Some(current) = scanline.filter(|&current| current <= to) {
                         events.push(FrameEvent {
@@ -1694,7 +1704,10 @@ impl Lowerer {
         if let Some(verdict) = timed_frame_nmi(self.ppu_configuration().ctrl) {
             self.warnings.push(timed_frame_nmi_warning(verdict, span));
         }
-        for write in std::mem::take(&mut self.handler_ctrl_writes) {
+        let mut writes = std::mem::take(&mut self.handler_ctrl_writes);
+        // Stable, so several writes inside one handler keep the order the body has them in.
+        writes.sort_by_key(|write| write.scanline);
+        for write in writes {
             if let Some(warning) = handler_nmi_warning(&write) {
                 self.warnings.push(warning);
             }
@@ -1747,6 +1760,17 @@ impl Lowerer {
     /// A `return` never reaches here: `raster-sema` refuses one in a frame handler, which is what
     /// keeps an IRQ handler's `RTI` reachable — codegen compiles a `return` into a jump to the end
     /// of `main`, and an interrupt left that way keeps its three bytes of stack for ever.
+    /// Stamp the handler `ppu.ctrl` writes collected since `from` with the scanline they run at.
+    ///
+    /// A handler body is lowered in source order and the events are sorted by scanline afterwards,
+    /// so without this the warnings come out in the order the events were *written* — which is not
+    /// what the schedule does, and not what section 7 of this bead's agreed page says.
+    fn tag_handler_ctrl_writes(&mut self, from: usize, scanline: u32) {
+        for write in &mut self.handler_ctrl_writes[from..] {
+            write.scanline = scanline;
+        }
+    }
+
     fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
         self.enter_scope();
         self.selection = BankSelection::Unknown(Unseen::FrameEntry);
@@ -2390,6 +2414,9 @@ impl Lowerer {
                             Value::Constant(bits) => Some(*bits),
                             _ => None,
                         },
+                        // Stamped by `tag_handler_ctrl_writes` once the event this body belongs
+                        // to is built; the scanline is not known from inside the body.
+                        scanline: 0,
                     });
                 }
                 output.push(Statement::Assign { destination, value });
