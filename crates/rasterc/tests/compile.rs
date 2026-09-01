@@ -259,8 +259,7 @@ fn a_blanking_irq_handler_is_refused_once_however_often_it_runs() {
         "an `irq` handler cannot turn rendering off"
     );
     assert_eq!(
-        diagnostics[0].label,
-        "`ppu.mask = $00` clears both rendering bits",
+        diagnostics[0].label, "`ppu.mask = $00` clears both rendering bits",
         "the first blanking store, not the last"
     );
 
@@ -273,6 +272,40 @@ fn a_blanking_irq_handler_is_refused_once_however_often_it_runs() {
         2,
         "two handlers are two mistakes, found {diagnostics:?}"
     );
+}
+
+/// A mask the compiler cannot read may or may not clear the rendering bits, and a computed mask is
+/// how a fade or a brightness ramp is written - so it is one warning per frame and the build
+/// succeeds. Three handlers rather than one is the assertion that matters: one would pass with
+/// per-handler reporting.
+#[test]
+fn an_irq_frame_whose_mask_is_not_a_constant_warns_once() {
+    let source = "var level: u8 = $1e\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = level }\n\
+                  \n    at scanline 120 { ppu.mask = level }\n\
+                  \n    at scanline 180 { ppu.mask = level }\n}\n";
+    let rom = compile_source(source).expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1, "one per frame, not one per handler");
+    let warning = &rom.warnings[0];
+    assert_eq!(warning.severity, raster_diag::Severity::Warning);
+    assert_eq!(
+        warning.message,
+        "this `irq` frame writes a `ppu.mask` the compiler cannot read"
+    );
+    assert_eq!(
+        warning.label,
+        "a handler stores a value that is not a constant"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "if it clears both rendering bits the MMC3 counter stops,\n\
+             and no handler runs to start it again",
+            "keep bits 3 and 4 set in every value any handler stores",
+        ]
+    );
+    assert!(warning.span.is_some(), "the warning is source-spanned");
 }
 
 /// Rendering one half is rendering: the sprite pattern fetches happen either way, so a

@@ -1105,6 +1105,14 @@ const BLANK_WITH_A_TIMED_FRAME: &str =
     "use `using timed` if the frame needs to blank the picture\n\
                                         part-way down";
 
+/// The same hazard, stated as a possibility rather than a fact, for the warning.
+const AN_UNREADABLE_MASK_MAY_STOP_THE_CHAIN: &str =
+    "if it clears both rendering bits the MMC3 counter stops,\n\
+     and no handler runs to start it again";
+
+/// What the author must guarantee, since the compiler cannot.
+const KEEP_THE_RENDERING_BITS: &str = "keep bits 3 and 4 set in every value any handler stores";
+
 /// Whether this `Member` expression's base and member spell `ppu.status`.
 fn is_ppu_status(base: &SyntaxExpression, member: &str) -> bool {
     matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") && member == "status"
@@ -1122,6 +1130,29 @@ fn stolen_vblank_flag(span: Span) -> LowerWarning {
             SYNC_FIRST.to_owned(),
         ],
         span,
+        assumes_budget_met: false,
+    }
+}
+
+/// The warning an `irq` frame earns when a handler stores a `ppu.mask` this cannot read.
+///
+/// One per frame, not one per handler, and the carets go on the `using irq` clause rather than on
+/// any event. The compiler has no source text for a non-constant value - the intermediate
+/// representation holds a variable slot or an arithmetic tree - so the label cannot name the store,
+/// and a per-handler warning would print the same unnameable sentence once per handler. Measured on
+/// this repository's own `tests/cycles/irq-hblank-window.raster`, where per-handler reporting is
+/// four warnings and twenty-four lines on a correct forty-line program.
+fn unreadable_handler_mask(span: Span) -> LowerWarning {
+    LowerWarning {
+        message: "this `irq` frame writes a `ppu.mask` the compiler cannot read".to_owned(),
+        label: "a handler stores a value that is not a constant".to_owned(),
+        notes: vec![
+            AN_UNREADABLE_MASK_MAY_STOP_THE_CHAIN.to_owned(),
+            KEEP_THE_RENDERING_BITS.to_owned(),
+        ],
+        span,
+        // What the author wrote, not what a padded block spends: true whether or not any budget
+        // was met, so it is never the warning a budget refusal stands down.
         assumes_budget_met: false,
     }
 }
@@ -1695,7 +1726,8 @@ impl Lowerer {
         self.check_irq_handler_masks();
     }
 
-    /// Refuse a `using irq` handler that turns rendering off.
+    /// Refuse a `using irq` handler that turns rendering off, and warn about a frame whose handlers
+    /// store a mask this cannot read.
     ///
     /// Only reached for an `irq` frame whose opening configuration is already proven good, so
     /// everything found here is a hazard the program creates after the counter is running.
@@ -1709,8 +1741,10 @@ impl Lowerer {
         let Some(frame) = &self.program.frame else {
             return;
         };
+        let strategy_span = frame.strategy_span;
         let mut scanned: Vec<Span> = Vec::new();
         let mut blanking: Vec<(Span, u8)> = Vec::new();
+        let mut unreadable = false;
         for event in &frame.events {
             // An `every` body is lowered once and cloned per occurrence, so fourteen events can
             // share one span and one body. Judging each of them would print one mistake fourteen
@@ -1722,6 +1756,10 @@ impl Lowerer {
             if let Some(value) = first_blanking_mask(&event.body) {
                 blanking.push((event.span, value));
             }
+            unreadable |= writes_an_unreadable_mask(&event.body);
+        }
+        if unreadable {
+            self.warnings.push(unreadable_handler_mask(strategy_span));
         }
         for (span, value) in blanking {
             self.refuse_with(
@@ -3348,6 +3386,23 @@ fn first_blanking_mask(statements: &[Statement]) -> Option<u8> {
         }
     }
     None
+}
+
+/// Whether any `ppu.mask` store in `statements` writes a value this cannot read.
+///
+/// Anything that is not a folded constant: a variable, a register read, an arithmetic tree. Such a
+/// store may or may not clear the rendering bits, and the compiler has no way to find out - which is
+/// worth one warning per frame and is not worth a refusal, because a computed mask is how a fade or
+/// a brightness ramp is written and those are what raster effects are for.
+fn writes_an_unreadable_mask(statements: &[Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign {
+            destination: Destination::Register(Register::PpuMask),
+            value,
+        } => !matches!(value, Value::Constant(_)),
+        Statement::Timed { body, .. } => writes_an_unreadable_mask(body),
+        _ => false,
+    })
 }
 
 /// Record every store to `ppu.ctrl` and `ppu.mask` in `statements`, following calls.
