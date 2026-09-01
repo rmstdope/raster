@@ -897,7 +897,10 @@ fn a_compound_assignment_to_a_write_only_register_is_refused() {
     let failure = lower(&typed).expect_err("$8000 does not read back");
 
     assert_eq!(failure.errors.len(), 1);
-    assert_eq!(failure.errors[0].message, "`mmc3.bank_select` cannot be read");
+    assert_eq!(
+        failure.errors[0].message,
+        "`mmc3.bank_select` cannot be read"
+    );
     assert_eq!(
         failure.errors[0].label.as_deref(),
         Some("$8000 is a write-only port")
@@ -948,7 +951,10 @@ fn every_write_only_register_refuses_a_read_and_every_readable_one_does_not() {
         if register.is_write_only() {
             let failure = result.expect_err(name);
             assert_eq!(failure.errors.len(), 1, "{name}");
-            assert_eq!(failure.errors[0].message, format!("`{name}` cannot be read"));
+            assert_eq!(
+                failure.errors[0].message,
+                format!("`{name}` cannot be read")
+            );
         } else {
             assert!(result.is_ok(), "{name} reads");
         }
