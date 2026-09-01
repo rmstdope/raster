@@ -1004,6 +1004,33 @@ fn two_write_only_reads_on_one_line_are_two_errors_in_source_order() {
 }
 
 #[test]
+fn writing_the_read_only_register_is_refused() {
+    const SOURCE: &str = "main {\n    ppu.mask = $1E\n    ppu.status = 0\n}\n";
+
+    let errors = lower_errors(SOURCE);
+
+    assert_eq!(errors.len(), 1);
+    let error = &errors[0];
+    assert_eq!(error.message, "`ppu.status` cannot be written");
+    assert_eq!(error.label.as_deref(), Some("$2002 is a read-only port"));
+    assert_eq!(
+        error.notes,
+        [
+            "writing $2002 changes nothing on the PPU: it is a status\nport, and the CPU can only read it",
+            "there is no value that makes this store do something;\ndelete the line",
+        ]
+    );
+    assert_eq!(error.refusal, Refusal::Rejected);
+    // The carets cover the destination and nothing else. Existing tests in this
+    // file assert the two offsets as numbers; slicing the source says what the
+    // numbers mean.
+    assert_eq!(
+        &SOURCE[error.span.start as usize..error.span.end as usize],
+        "ppu.status"
+    );
+}
+
+#[test]
 fn writing_a_write_only_register_is_still_fine() {
     // The whole point of the rule is that it is about reads. Every one of the
     // thirteen may still be written, and this is the test that goes red if the
