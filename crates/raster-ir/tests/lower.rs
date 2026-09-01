@@ -1980,3 +1980,126 @@ fn a_handler_ppu_ctrl_write_rasterc_cannot_fold_is_a_warning() {
         ]
     );
 }
+
+/// An IRQ chain re-synchronizes on every scanline it fires, so NMI costs it nothing it cannot
+/// recover — and §13's own flagship example turns NMI on. It has to keep compiling quietly.
+#[test]
+fn an_irq_frame_that_enables_nmi_is_silent() {
+    let program = lower_source(
+        "main {\n\
+         ppu.ctrl = $88\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using irq {\n\
+         at scanline 60 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+/// The check is about what `ppu.ctrl` holds when the frame starts, not about every value it ever
+/// held: a program that sets bit 7 and clears it again is correct.
+#[test]
+fn a_timed_frame_that_clears_bit_7_again_before_it_starts_is_silent() {
+    let program = lower_source(
+        "main {\n\
+         ppu.ctrl = $88\n\
+         ppu.ctrl = $08\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+/// The reset runtime stores zero into `ppu.ctrl` before the author's code runs, so a program that
+/// never writes it is provably NMI-off. There is no fourth "never written" verdict to give.
+#[test]
+fn a_timed_frame_with_no_ppu_ctrl_write_is_silent() {
+    let program = lower_source(
+        "main {\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }",
+    );
+
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+/// An ordinary handler adjusting the nametable or the pattern half is a correct program, and a
+/// warning that fired on it would be one an author learns to ignore.
+#[test]
+fn a_handler_write_with_bit_7_clear_is_silent() {
+    let program = lower_source(
+        "main {\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.ctrl = $08 }\n\
+         }",
+    );
+
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+/// An omitted `using` clause means `timed` (spec section 7.1), so the same program earns the same
+/// warning. There is no `timed` to underline, so the carets fall back to the frame item's own
+/// span, which begins at the `frame` keyword.
+#[test]
+fn a_frame_with_no_using_clause_earns_the_same_warning() {
+    let source = "frame bars {\n\
+                  every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+                  }\n\
+                  main {\n\
+                  ppu.ctrl = $88\n\
+                  ppu.mask = $1e\n\
+                  }";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert!(
+        source[warning.span.start as usize..warning.span.end as usize].starts_with("frame bars"),
+        "the carets take the frame's own span, not a strategy that is not written"
+    );
+}
+
+/// The NMI check runs after lowering, so its warnings are appended to whatever lowering already
+/// found — whatever the line numbers say. The frame is declared first here and the bank select
+/// last, so source order and emission order disagree and this pins the one that ships.
+#[test]
+fn an_nmi_warning_prints_after_a_bank_warning_whatever_the_line_numbers() {
+    let program = lower_source(
+        "frame bars {\n\
+         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         }\n\
+         main {\n\
+         ppu.ctrl = $88\n\
+         mmc3.bank_select = $80\n\
+         }",
+    );
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        program.warnings[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(
+        program.warnings[1].message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert!(
+        program.warnings[1].span.start < program.warnings[0].span.start,
+        "the fixture is only a test of ordering while the two disagree with source order"
+    );
+}
