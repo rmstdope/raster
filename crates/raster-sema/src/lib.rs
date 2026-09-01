@@ -976,6 +976,13 @@ impl Analyzer {
     ) -> ValueType {
         let Some(root) = member_root(whole) else {
             // `f().x`, `a[0].y`: the chain does not root at a name at all.
+            //
+            // The base is still analysed for its own errors — `t[nope].y` must
+            // say that `nope` is unknown as well as that the member access is
+            // wrong. Collapsing the cascade was about the *duplicate* report,
+            // which came from `ensure_assignable` evaluating the base a second
+            // time and no longer happens. Review finding 2 on PR #47.
+            self.expression_type(base);
             self.error(base.span, "member access requires a register namespace");
             return ValueType::Unknown;
         };
@@ -1018,16 +1025,33 @@ impl Analyzer {
     /// The one error a member chain rooted at something that is not a namespace
     /// raises. Exactly one, whatever the chain's depth.
     ///
-    /// The carets sit under `whole` for three of the four cases, because the
-    /// label is a substitution the author can perform — "$2003 is spelled
+    /// The carets sit under `whole` for every case but one, because the label is
+    /// a substitution the author can perform — "$2003 is spelled
     /// `ppu.oam_addr`" does not read as one if the carets cover `oam` alone.
-    /// The exception is a root bound to something ordinary, where the label is
-    /// about that name and the carets stay on it, as they do today.
+    /// The exception is a root bound to something ordinary, which is also the
+    /// case checked first: the label is about that name, the carets stay on it
+    /// as they do today, and what a name the author declared *is* outranks what
+    /// the specification once called it.
     fn unknown_namespace(
         &mut self,
         whole: &Spanned<Expression>,
         root: &Spanned<String>,
     ) -> ValueType {
+        // The root is bound, to something that is not a namespace. First,
+        // because `oam` and `apu` are matched by name below and an author may
+        // have declared either — "there is no `oam` namespace" is false when
+        // they have just written `var oam`. The carets stay on that name, as
+        // they do today, because the label is about it. Review finding 4 on
+        // PR #47.
+        if let Some(kind) = self.root_kind(&root.value) {
+            self.error_with(
+                root.span,
+                "member access requires a register namespace",
+                format!("`{}` is {kind}, not a register namespace", root.value),
+            );
+            return ValueType::Unknown;
+        }
+
         let member = root_member(whole).map(|member| member.value.as_str());
 
         // The specification's own name for a port this release has.
@@ -1052,17 +1076,6 @@ impl Analyzer {
                 }
         }) {
             self.not_in_this_release_with(whole.span, *message, *label);
-            return ValueType::Unknown;
-        }
-
-        // The root is bound, to something that is not a namespace. The carets
-        // stay on that name, as they do today, because the label is about it.
-        if let Some(kind) = self.root_kind(&root.value) {
-            self.error_with(
-                root.span,
-                "member access requires a register namespace",
-                format!("`{}` is {kind}, not a register namespace", root.value),
-            );
             return ValueType::Unknown;
         }
 
@@ -1280,7 +1293,7 @@ const NAMESPACES: [&str; 2] = ["ppu", "mmc3"];
 /// nothing more specific to say.
 ///
 /// Written out rather than joined from `NAMESPACES`: two names read as "`ppu`
-/// and `mmc3`" and three would not, and
+/// and `mmc3`" and three would not, and this module's own
 /// `the_namespace_list_names_every_namespace` goes red the moment a third
 /// arrives, which is when somebody has to write the prose anyway.
 const NAMESPACE_LIST: &str = "rasterc has `ppu` and `mmc3`";
@@ -1420,4 +1433,35 @@ fn is_ppu_register_write(expression: &Spanned<Expression>) -> bool {
 /// de-jitter, and refusing it would send the author looking for a rule that is not there.
 fn is_sync_exact(statement: &Spanned<Statement>) -> bool {
     matches!(&statement.value, Statement::Sync(strategy) if strategy.value == "exact")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NAMESPACE_LIST, NAMESPACES};
+
+    /// `NAMESPACE_LIST` is prose, written out rather than joined, so it can
+    /// drift from the namespaces it promises. Only a test inside this crate can
+    /// see both — which is why the integration test that used to claim this
+    /// guard could not actually make it. Review finding 3 on PR #47.
+    #[test]
+    fn the_namespace_list_names_every_namespace() {
+        for namespace in NAMESPACES {
+            assert!(
+                NAMESPACE_LIST.contains(&format!("`{namespace}`")),
+                "`{NAMESPACE_LIST}` should name `{namespace}`"
+            );
+        }
+    }
+
+    /// And names nothing else: a namespace removed from `NAMESPACES` and left
+    /// in the prose promises an author something rasterc does not have.
+    #[test]
+    fn the_namespace_list_names_nothing_that_is_not_a_namespace() {
+        assert_eq!(
+            NAMESPACE_LIST.matches('`').count(),
+            NAMESPACES.len() * 2,
+            "`{NAMESPACE_LIST}` should quote exactly the {} namespaces",
+            NAMESPACES.len()
+        );
+    }
 }

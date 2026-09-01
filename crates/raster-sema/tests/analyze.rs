@@ -842,20 +842,18 @@ fn every_apu_register_answers_the_same_way() {
     }
 }
 
-/// The list is what the diagnostic promises, so a namespace added to one and
-/// missed by the other is caught here rather than by an author.
+/// The label a chain rooted at nothing carries is the namespace list. That the
+/// list agrees with `NAMESPACES` is checked in `raster-sema`'s own unit tests,
+/// where the private const is visible — an integration test can only compare
+/// the label against a third copy of the list, which guards nothing. Review
+/// finding 3 on PR #47.
 #[test]
-fn the_namespace_list_names_every_namespace() {
-    for namespace in ["ppu", "mmc3"] {
-        assert!(
-            errors_with_spans("main {\n    zzz.thing = 0\n}\n")[0]
-                .label
-                .as_deref()
-                .expect("the label is set")
-                .contains(&format!("`{namespace}`")),
-            "the namespace list should name `{namespace}`"
-        );
-    }
+fn an_unrooted_namespace_is_labelled_with_the_namespace_list() {
+    let errors = errors_with_spans("main {\n    zzz.thing = 0\n}\n");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("rasterc has `ppu` and `mmc3`")
+    );
 }
 
 /// §9.1 showed `ppu.status` on a line of its own, commented `// read`, since
@@ -892,4 +890,61 @@ fn a_register_write_and_a_call_are_still_statements() {
     let program = parse("fn f() -> void { }\nmain {\n    ppu.ctrl = $80\n    f()\n}\n")
         .expect("fixture should parse");
     analyze(&program).expect("a write and a call are valid statements");
+}
+
+/// Review finding 2 on PR #47. Collapsing the cascade must not swallow a real
+/// error that happens to sit inside a member chain's base. `nope` is unknown
+/// whatever the member access turns out to be, and an author told only about
+/// the member access learns about `nope` on the next build instead of this one.
+#[test]
+fn an_error_inside_a_member_chains_base_is_still_reported() {
+    let errors = errors_with_spans("main {\n    var t: [4]u8\n    t[nope].y = 1\n}\n");
+    let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "unknown name `nope`",
+            "member access requires a register namespace"
+        ]
+    );
+}
+
+/// And the base's own errors are reported once, not twice: the duplicate came
+/// from `ensure_assignable` re-evaluating the base, which no longer happens.
+#[test]
+fn a_member_chains_base_is_evaluated_once() {
+    let errors = errors_with_spans("main {\n    var t: [4]u8\n    t[nope].y = 1\n}\n");
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|e| e.message == "unknown name `nope`")
+            .count(),
+        1
+    );
+}
+
+/// Review finding 4 on PR #47. `oam` and `apu` are matched by name, so a local
+/// variable of either name used to be told "there is no `oam` namespace" — of
+/// a name the author had just declared. What a *bound* name is takes precedence
+/// over what the specification once called it.
+#[test]
+fn a_variable_shadowing_a_specification_namespace_is_named_for_what_it_is() {
+    for (source, root) in [
+        ("main {\n    var oam: u8 = 0\n    oam.addr = 1\n}\n", "oam"),
+        (
+            "main {\n    var apu: u8 = 0\n    apu.status = 1\n}\n",
+            "apu",
+        ),
+    ] {
+        let errors = errors_with_spans(source);
+        assert_eq!(errors.len(), 1, "{source}");
+        assert_eq!(
+            errors[0].message,
+            "member access requires a register namespace"
+        );
+        assert_eq!(
+            errors[0].label.as_deref(),
+            Some(format!("`{root}` is a variable, not a register namespace").as_str())
+        );
+    }
 }
