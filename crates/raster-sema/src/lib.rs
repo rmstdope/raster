@@ -356,7 +356,7 @@ impl Analyzer {
             {
                 self.error(
                     spec.span,
-                    "`sync exact` is required before a timed region that writes a PPU register, \
+                    "`sync exact` is required before a timed block that writes a PPU register, \
                      because NMI entry is not cycle-exact",
                 );
             }
@@ -394,7 +394,7 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.cannot_be_costed(
                         statement_span,
-                        "an unbounded loop has no provable cycle cost inside a timed region",
+                        "an unbounded loop has no provable cycle cost inside a timed block",
                     );
                 }
                 self.check_block(block);
@@ -407,7 +407,7 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.cannot_be_costed(
                         statement_span,
-                        "branch arms inside a timed region cannot yet be balanced, because each \
+                        "branch arms inside a timed block cannot yet be balanced, because each \
                          path through them costs a different number of cycles",
                     );
                 }
@@ -421,7 +421,7 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.cannot_be_costed(
                         statement_span,
-                        "a `while` loop's trip count cannot be proven inside a timed region",
+                        "a `while` loop's trip count cannot be proven inside a timed block",
                     );
                 }
                 self.require_type(condition, ValueType::Bool, "condition must have type bool");
@@ -436,8 +436,8 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.cannot_be_costed(
                         statement_span,
-                        "a `for` loop inside a timed region compiles to a loop whose cost is not \
-                         yet proven, because the region is costed as straight-line code",
+                        "a `for` loop inside a timed block compiles to a loop whose cost is not \
+                         yet proven, because the block is costed as straight-line code",
                     );
                 }
                 self.require_range(range, "for range");
@@ -478,7 +478,7 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.error(
                         statement_span,
-                        "`wait scanline` has no provable cost inside a timed region",
+                        "`wait scanline` has no provable cost inside a timed block",
                     );
                 }
             }
@@ -487,8 +487,8 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.cannot_be_costed(
                         statement_span,
-                        "`wait cycles` inside a timed region spends its cycles in a loop, which \
-                         the region's straight-line cost model cannot yet charge; widen the \
+                        "`wait cycles` inside a timed block spends its cycles in a loop, which \
+                         the block's straight-line cost model cannot yet charge; widen the \
                          budget and let `pad` fill it instead",
                     );
                 }
@@ -530,7 +530,7 @@ impl Analyzer {
                 if self.in_timed_region() {
                     self.error(
                         statement_span,
-                        "`wait vblank` has no provable cost inside a timed region",
+                        "`wait vblank` has no provable cost inside a timed block",
                     );
                 }
             }
@@ -539,7 +539,7 @@ impl Analyzer {
                     self.error(
                         statement_span,
                         "`sync exact` waits an unpredictable number of cycles, so it belongs \
-                         before a timed region rather than inside one",
+                         before a timed block rather than inside one",
                     );
                 }
                 if strategy.value != "exact" {
@@ -773,12 +773,12 @@ impl Analyzer {
             // charge a single pass: `v * 3` was predicted at 38 cycles and spends 69.
             Operator::Star | Operator::Slash | Operator::Percent => self.reject_in_timed_region(
                 operator.span,
-                "multiplication, division and remainder inside a timed region compile to loops \
+                "multiplication, division and remainder inside a timed block compile to loops \
                  whose cost is not yet proven",
             ),
             Operator::ShiftLeft | Operator::ShiftRight => self.reject_in_timed_region(
                 operator.span,
-                "a shift inside a timed region compiles to a loop whose cost is not yet proven",
+                "a shift inside a timed block compiles to a loop whose cost is not yet proven",
             ),
             _ => {}
         }
@@ -858,7 +858,7 @@ impl Analyzer {
             self.cannot_be_costed(
                 name.span,
                 format!(
-                    "`{}` cannot be called inside a timed region yet: a call's cost is the \
+                    "`{}` cannot be called inside a timed block yet: a call's cost is the \
                      callee's, and no function's cost is measured yet",
                     name.value
                 ),

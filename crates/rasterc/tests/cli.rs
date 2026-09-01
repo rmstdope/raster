@@ -360,7 +360,7 @@ fn reports_several_errors_separated_by_a_blank_line_and_a_count() {
                 "1 | frame display {{ at vblank {{}} }}\n",
                 "  |                    ^^^^^^ `at vblank` is not supported yet\n",
                 "  = note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
-                "          arithmetic, and `ppu.*` / `mmc3.*` register writes; timed regions\n",
+                "          arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks\n",
                 "          with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n",
                 "          `frame` of `every ... scanlines` events\n",
                 "\n",
