@@ -1,0 +1,191 @@
+<!doctype html>
+<title>raster-mb1 — nothing interrupts main</title>
+<meta charset="utf-8">
+<style>
+:root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+* { box-sizing: border-box; }
+body { margin:0; background:#f6f6f8; color:#22242c;
+       font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+.sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+     letter-spacing:.09em; color:#666b7a; font-weight:600; }
+.note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+.term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre; overflow-x:auto; border:1px solid #000; }
+.term .e { color: var(--red); font-weight:700; }
+.term .w { color: var(--yel); font-weight:700; }
+.term .g { color: var(--dim); }
+.term .c { color: var(--cyan); }
+.term .ok { color: var(--grn); }
+.src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+       font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto;
+       margin:.5rem 0 .5rem; }
+.tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+       padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+.cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+.silent { border-left:3px solid #8fd694; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#3f6b46; max-width:56em; }
+.bad { border-left:3px solid #ff6b6b; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#8c3535; max-width:56em; }
+table { border-collapse:collapse; margin:.6rem 0 0; font-size:.9rem; }
+th,td { text-align:left; padding:.35rem .9rem .35rem 0; border-bottom:1px solid #dfe1e9; vertical-align:top; }
+th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:.78rem; }
+code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#eceef4; padding:.08em .3em; border-radius:3px; }
+.nav { font-size:.85rem; color:#666b7a; margin:0 0 1.4rem; }
+.nav a { color:#3a6ea8; }
+@media (prefers-color-scheme: dark) {
+  body { background:#0d0e13; color:#d8dae4; }
+  .sub, h2, .note, .cost, .nav, th { color:#8b90a2; }
+  .tag { background:#1e2029; color:#a8adc0; }
+  .cost { border-color:#2a2d3a; }
+  .silent { color:#8fd694; }
+  .bad { color:#ff9b9b; }
+  .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  code { background:#171922; color:#c9cddb; }
+  th,td { border-color:#262a36; }
+  .nav a { color:#6fb0e8; }
+}
+</style>
+<main>
+<h1>raster-mb1 &mdash; nothing interrupts <code>main</code>, and what pins it</h1>
+<p class="sub">Agreed with the navigator over two rounds. The bead was filed as a warning: a
+<code>frame</code> handler leaves <code>main</code>'s MMC3 bank selection changed, so <code>main</code>'s
+next <code>mmc3.bank_data</code> write lands on a register nobody named. <b>That cannot happen in this
+release</b>, and the evidence is below. What ships instead is the thing that was actually missing: two
+tests that pin the invariant, and a paragraph of specification telling an author what they may rely on.
+No diagnostic changes.</p>
+
+<h2>1 &middot; The program the bead says compiles silently and is wrong</h2>
+<div class="src">main {
+    mmc3.bank_select = 0
+    mmc3.bank_data = 3
+}
+
+frame bars using timed {
+    every 8 scanlines from 0 to 239 {
+        mmc3.bank_select = 6
+    }
+}</div>
+<div class="term"><span class="ok"> Compiled</span>  demo.raster -&gt; demo.nes
+   <span class="g">mapper</span>  MMC3 (4), NTSC
+      <span class="g">prg</span>  32 KiB, 4 banks of 8 KiB
+    <span class="g">fixed</span>  $E000-$FFFF, 6357 of 8186 bytes used</div>
+<p class="silent">It does compile silently, and it is right to. <code>mmc3.bank_data = 3</code> lands on
+R0, exactly as the line above it says.</p>
+
+<h2>2 &middot; What is in the ROM &mdash; a <code>timed</code> frame</h2>
+<table>
+<tr><th>Fact</th><th>Where</th></tr>
+<tr><td><code>CLI</code> (opcode <code>$58</code>) appears <b>zero</b> times in the whole 32 KiB PRG image</td><td>the built ROM</td></tr>
+<tr><td><code>SEI</code> is the first instruction of reset, at <code>$E000</code></td><td><code>crates/raster-link/src/runtime.rs:150</code></td></tr>
+<tr><td><code>main</code>'s bank select at <code>$E085</code>, its bank data at <code>$E08A</code></td><td>the built ROM</td></tr>
+<tr><td>the first handler's <code>SEI</code> at <code>$E0AB</code> &mdash; after both</td><td>the built ROM</td></tr>
+</table>
+<p class="cost">A <code>timed</code> frame arms no interrupt at all. The console runs with the I flag set
+from power-on onwards, and the frame loop is straight-line code beginning where <code>main</code> ends.</p>
+
+<h2>3 &middot; What is in the ROM &mdash; a <code>using irq</code> frame</h2>
+<div class="src">main {
+    ppu.ctrl = $10
+    ppu.mask = $18
+    mmc3.bank_select = 0
+    mmc3.bank_data = 3
+}
+
+frame bars using irq {
+    at scanline 32 { mmc3.bank_select = 6 }
+    at scanline 64 { mmc3.bank_select = 0 }
+}</div>
+<table>
+<tr><th>Fact</th><th>Where</th></tr>
+<tr><td><code>CLI</code> appears <b>once</b>, at <code>$E0B5</code></td><td>the built ROM</td></tr>
+<tr><td><code>main</code>'s bank data write is at <code>$E094</code> &mdash; 33 bytes earlier</td><td>the built ROM</td></tr>
+<tr><td>the <code>CLI</code> is part of arming the chain, emitted after <code>main</code>'s statements</td><td><code>crates/raster-codegen/src/lib.rs:260</code></td></tr>
+</table>
+
+<h2>4 &middot; And every other route in is closed</h2>
+<table>
+<tr><th>Source</th><th>Why it cannot run the program's code during <code>main</code></th></tr>
+<tr><td>MMC3 scanline IRQ</td><td>the I flag, set at <code>$E000</code> and cleared only by the <code>CLI</code> above</td></tr>
+<tr><td>APU frame counter IRQ</td><td>an IRQ, so the flag covers it; reset also writes <code>$40</code> to <code>$4017</code> &mdash; <code>runtime.rs:161</code></td></tr>
+<tr><td>DMC IRQ</td><td>an IRQ, so the flag covers it; reset also writes 0 to <code>$4010</code> &mdash; <code>runtime.rs:183</code></td></tr>
+<tr><td>NMI</td><td>the flag cannot mask it &mdash; but <code>$FFFA</code> is the runtime's bare <code>RTI</code> for every program, so enabling NMI through <code>ppu.ctrl</code> runs none of the author's code (<code>runtime.rs:69</code>, <code>:96</code>)</td></tr>
+<tr><td>a hand-written <code>CLI</code></td><td><code>asm</code> functions are refused in this release &mdash; <code>crates/raster-ir/src/lib.rs:1087</code></td></tr>
+</table>
+
+<h2>5 &middot; The cross-handler direction is real, and already warned</h2>
+<p class="note">A handler <em>does</em> leave its selection behind for the next handler. rasterc already
+covers it: every handler body starts its bank tracking at <em>unknown</em>, so a
+<code>mmc3.bank_data</code> in a handler that did not select first already earns this.</p>
+<div class="src">frame bars using timed {
+    at scanline 32 { mmc3.bank_select = 6 }
+    at scanline 64 { mmc3.bank_data = 1 }
+}</div>
+<div class="term"><span class="w">warning: rasterc cannot tell which bank register this write lands on</span>
+ <span class="g">--&gt; demo.raster:3:22</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     at scanline 64 { mmc3.bank_data = 1 }
+  <span class="g">|</span>                      <span class="w">^^^^^^^^^^^^^^^^^^</span> a frame handler runs with any register selected
+  <span class="g">= note:</span> R6 and R7 are the two 8 KiB PRG windows; a write landing on
+          either one repoints $8000 or $A000
+  <span class="g">= note:</span> selecting with a literal 0 to 5 in the handler, before the
+          write, keeps the map reset chose</div>
+<p class="silent">There is no silent case anywhere. The analysis raster-rid shipped is already right for
+this release.</p>
+
+<h2>6 &middot; What ships &mdash; the new final paragraph of spec &sect;9.4</h2>
+<p class="note">It goes between the existing bank-warning paragraph and the
+<b>rasterc today: as designed</b> line. Chosen over a shorter version that left NMI unmentioned, and over
+a version phrased as a promise &mdash; this describes what the release does, so a later release that
+unmasks interrupts during <code>main</code> changes a stated fact rather than breaking a guarantee.</p>
+<div class="src">Nothing runs between two of `main`'s statements. Reset masks IRQs with `SEI`
+before your program starts, and the `CLI` that arms an IRQ chain is emitted
+after `main`'s last statement — a `timed` frame arms no interrupt at all. NMI
+is the one interrupt the flag cannot mask, and `$FFFA` points at an `RTI` in
+the runtime for every program this release builds, so enabling NMI through
+`ppu.ctrl` runs none of your code. A `mmc3.bank_select` and the `mmc3.bank_data`
+write that follows it are therefore always consecutive.
+
+Handlers are a different matter. They run in schedule order and each leaves its
+selection behind for the next, so rasterc treats every handler as starting with
+no register it can name.</div>
+
+<h2>7 &middot; What ships &mdash; the two tests, and what they say when they fail</h2>
+<p class="note">The invariant has two halves that break independently, in two crates. The failure messages
+were chosen long on purpose: the message is the only place the reasoning lives, and the person who reads
+it is mid-change and least inclined to go looking.</p>
+
+<p class="tag">crates/raster-codegen/tests/generate.rs</p>
+<div class="term"><span class="e">thread 'nothing_unmasks_irqs_before_main_has_run' panicked at ...</span>
+a `CLI` is emitted at item 41, before `main`'s halt label at item 63.
+
+rasterc's MMC3 bank tracking assumes nothing runs between two of `main`'s
+statements: it folds a `mmc3.bank_select` and judges the `mmc3.bank_data`
+write that follows it against the register that select named. If interrupts
+are unmasked while `main` is still running, a `frame` handler's own bank
+select can land between the two and the write moves a window the author
+never named — silently, because the tracking still believes the fold.
+
+That needs a warning before this change ships. Spec section 9.4 says
+`main` is uninterrupted; either that paragraph changes with this, or
+this does not ship.</div>
+
+<p class="tag">crates/raster-link/tests/runtime.rs</p>
+<div class="term"><span class="e">thread 'the_nmi_vector_is_always_the_runtimes_own_handler' panicked at ...</span>
+$FFFA resolved to $E0C4, where the byte is $4C, not the runtime's `RTI`.
+
+NMI is the one interrupt the I flag cannot mask, so a program can take one at
+any point in `main` by setting bit 7 of `ppu.ctrl`. That is safe today only
+because $FFFA runs none of the program's own code. Pointing it anywhere else
+means a handler can run between two of `main`'s statements, which spec
+section 9.4 says cannot happen — and which rasterc's MMC3 bank tracking
+relies on. See `nothing_unmasks_irqs_before_main_has_run` in raster-codegen.</div>
+
+<h2>8 &middot; What is deliberately not tested</h2>
+<table>
+<tr><th>Not tested</th><th>Why</th></tr>
+<tr><td><code>PLP</code> as an unmasker</td><td>Every <code>PLP</code> codegen emits closes a region whose own <code>PHP</code> pushed the flags &mdash; it restores I, it does not clear it. A test forbidding <code>PLP</code> before <code>main</code> ends would fail on the first non-<code>interruptible</code> <code>cycles</code> block.</td></tr>
+<tr><td>the APU frame counter and DMC IRQs separately</td><td>Both are masked by the I flag like any other IRQ, so the codegen test already covers them. Reset silencing them as well is belt-and-braces, and is already pinned byte-for-byte by <code>PROLOGUE</code>.</td></tr>
+</table>
+</main>
