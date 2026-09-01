@@ -258,6 +258,30 @@ pub const PASS_CYCLES: u32 = scanline_cycles(SCANLINES_PER_FRAME * FRAMES_PER_PA
 /// [`plan_timed_frame`] is what spends 113 where the drift would otherwise accumulate.
 pub const SCANLINE_BODY_CYCLES: u32 = 114;
 
+/// The cycles of body a `frame ... using irq` handler has before the picture starts again.
+///
+/// The MMC3 asserts its interrupt on the filtered A12 rise in the sprite-fetch phase near the end
+/// of the scanline *before* the one the author named — the shift [`mmc3_latch_for_delta`] and
+/// [`mmc3_latch_for_first_event`] already carry. What is left of that scanline, once the CPU has
+/// finished the instruction it was in, run the seven-cycle interrupt sequence and pushed the
+/// accumulator, is all the room a store has before dot 0 of the next line.
+///
+/// **This number is measured, not derived.** The dot the rise lands on is not something this
+/// compiler can read, and the arithmetic from the documented sprite-fetch window (dots 257 to 320)
+/// only bounds it. It was measured by rendering handler bodies of known cost and reading the
+/// column at which each store's effect appeared: a store completing at body cycle `c` lands at
+/// column `3c - 27` in the latest of the six frame phases, so `c = 9` is the largest body whose
+/// last cycle is certainly still inside the hblank. Three probes of different construction — a ramp
+/// of visible stores, that ramp behind invisible six-cycle fillers, and the same behind five-cycle
+/// ones — agreed with that model to the dot. `irq_handler_body_fits_the_hblank_it_lands_in` in
+/// `crates/rasterc/tests/emulator.rs` is the executable half of the evidence, and the bead's notes
+/// carry the rest.
+///
+/// Nine cycles is one statement: one register store is six cycles and one variable assignment is
+/// five, and two of anything tears the row. That is the rule this compiler enforces, agreed with
+/// the navigator once the measurement was in.
+pub const IRQ_HANDLER_BODY_CYCLES: u32 = 9;
+
 /// The CPU cycles in `scanlines` NTSC scanlines, to the nearest cycle.
 ///
 /// 341 dots is not a whole number of CPU cycles, so this rounds; the error never exceeds half a

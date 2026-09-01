@@ -639,3 +639,27 @@ fn mmc3_irq_refuses_a_ppu_configuration_it_cannot_prove() {
         })
     );
 }
+
+/// The window an `irq` handler's body gets is the hblank the MMC3 leaves it, and it is a
+/// measurement rather than a derivation — so this test's job is to hold the number still.
+///
+/// The bounds are asserted alongside the equality on purpose: a later edit that inflates the
+/// constant to make some other test pass fails here rather than quietly widening the window a
+/// running console does not actually offer.
+#[test]
+fn an_irq_handler_body_gets_what_is_left_of_the_scanline_it_interrupts() {
+    use raster_timing::{IRQ_HANDLER_BODY_CYCLES, SCANLINE_BODY_CYCLES};
+
+    /// `LDA #imm` (2) plus `STA $2001` (4): the cheapest thing a handler can usefully do.
+    const ONE_REGISTER_STORE: u32 = 6;
+
+    assert_eq!(IRQ_HANDLER_BODY_CYCLES, 9);
+    assert!(
+        IRQ_HANDLER_BODY_CYCLES > ONE_REGISTER_STORE,
+        "a handler that cannot make one register store is a strategy with no use"
+    );
+    assert!(
+        IRQ_HANDLER_BODY_CYCLES < SCANLINE_BODY_CYCLES,
+        "the hblank is a fraction of the scanline a `using timed` handler gets"
+    );
+}
