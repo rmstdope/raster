@@ -690,6 +690,28 @@ enum LatchPair {
     Scroll,
 }
 
+/// The shared-latch note in `ppu.addr`'s words.
+const ADDRESS_SHARED_LATCH_NOTE: &str =
+    "$2005 and $2006 share one write latch, and reading $2002 puts\n\
+     it back to expecting a high byte";
+
+/// What the PPU never sees when an address pair is broken.
+const ADDRESS_LOST_HALF_NOTE: &str =
+    "the PPU never sees the low byte, so it reads and writes at an\n\
+     address you did not ask for";
+
+/// The shared-latch note in `ppu.scroll`'s words. Deliberately not shared with
+/// the `ppu.addr` one: a scroll pair has an X scroll and a Y scroll, not a high
+/// and a low byte, and the navigator chose sharp words per register over one
+/// neutral set for both.
+const SCROLL_SHARED_LATCH_NOTE: &str =
+    "$2005 and $2006 share one write latch, and reading $2002 puts\n\
+     it back to expecting an X scroll";
+
+/// What the PPU never sees when a scroll pair is broken.
+const SCROLL_LOST_HALF_NOTE: &str = "the PPU never sees the Y scroll, so the picture scrolls\n\
+                                     somewhere you did not ask for";
+
 impl LatchPair {
     /// The register as the author spells it: `ppu.addr` or `ppu.scroll`.
     const fn name(self) -> &'static str {
@@ -710,20 +732,16 @@ impl LatchPair {
     /// The note explaining the shared latch, in this register's own words.
     const fn shared_latch_note(self) -> &'static str {
         match self {
-            Self::Address => "$2005 and $2006 share one write latch, and reading $2002 puts\n\
-                              it back to expecting a high byte",
-            Self::Scroll => "$2005 and $2006 share one write latch, and reading $2002 puts\n\
-                             it back to expecting an X scroll",
+            Self::Address => ADDRESS_SHARED_LATCH_NOTE,
+            Self::Scroll => SCROLL_SHARED_LATCH_NOTE,
         }
     }
 
     /// The note saying what the PPU never sees, in this register's own words.
     const fn lost_half_note(self) -> &'static str {
         match self {
-            Self::Address => "the PPU never sees the low byte, so it reads and writes at an\n\
-                              address you did not ask for",
-            Self::Scroll => "the PPU never sees the Y scroll, so the picture scrolls\n\
-                             somewhere you did not ask for",
+            Self::Address => ADDRESS_LOST_HALF_NOTE,
+            Self::Scroll => SCROLL_LOST_HALF_NOTE,
         }
     }
 }
@@ -740,7 +758,8 @@ const SYNC_POLLS_STATUS: &str = "`sync exact` polls $2002, and that resets the l
 const MOVE_THE_SYNC: &str = "put `sync exact` above the pair or below it, not inside it";
 
 /// Why the vblank flag is gone by the time the sync below looks for it.
-const FLAG_IS_ONCE_A_FRAME: &str = "the flag is set once a frame, and any read of $2002 clears it,\n\
+const FLAG_IS_ONCE_A_FRAME: &str =
+    "the flag is set once a frame, and any read of $2002 clears it,\n\
                                     whoever does the reading";
 
 /// What the sync therefore does instead.
@@ -823,8 +842,7 @@ fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
         // `ppu_data_reads` does: `raster-sema` refuses a `for` range or step
         // that is not a compile-time constant, so neither can hold a read.
         SyntaxStatement::For { range, step, .. } => LatchEffect {
-            read: ppu_status_read_in(range)
-                .or_else(|| step.as_ref().and_then(ppu_status_read_in)),
+            read: ppu_status_read_in(range).or_else(|| step.as_ref().and_then(ppu_status_read_in)),
             write: None,
             sync: false,
             opaque: true,
@@ -837,14 +855,14 @@ fn latch_effect(statement: &Spanned<SyntaxStatement>) -> LatchEffect {
             sync: true,
             opaque: false,
         },
-        SyntaxStatement::Block(_)
-        | SyntaxStatement::Loop(_)
-        | SyntaxStatement::Cycles { .. } => LatchEffect {
-            read: None,
-            write: None,
-            sync: false,
-            opaque: true,
-        },
+        SyntaxStatement::Block(_) | SyntaxStatement::Loop(_) | SyntaxStatement::Cycles { .. } => {
+            LatchEffect {
+                read: None,
+                write: None,
+                sync: false,
+                opaque: true,
+            }
+        }
         // `raster-sema` refuses a `wait cycles` argument that is not a
         // compile-time constant, so it can hold neither a read nor a call.
         SyntaxStatement::Wait(_)
@@ -888,8 +906,9 @@ fn ppu_status_read_in(expression: &Spanned<SyntaxExpression>) -> Option<Span> {
             };
             left_read.or_else(|| ppu_status_read_in(right))
         }
-        SyntaxExpression::Call { callee, arguments } => ppu_status_read_in(callee)
-            .or_else(|| arguments.iter().find_map(ppu_status_read_in)),
+        SyntaxExpression::Call { callee, arguments } => {
+            ppu_status_read_in(callee).or_else(|| arguments.iter().find_map(ppu_status_read_in))
+        }
         SyntaxExpression::Index { base, index } => {
             ppu_status_read_in(base).or_else(|| ppu_status_read_in(index))
         }
@@ -906,10 +925,7 @@ fn ppu_status_read_in(expression: &Spanned<SyntaxExpression>) -> Option<Span> {
 
 /// The `ppu.addr` or `ppu.scroll` write this expression is, if it is one.
 fn latch_write_in(expression: &Spanned<SyntaxExpression>) -> Option<LatchPair> {
-    let SyntaxExpression::Infix {
-        left, operator, ..
-    } = &expression.value
-    else {
+    let SyntaxExpression::Infix { left, operator, .. } = &expression.value else {
         return None;
     };
     if !assigns(operator.value) {

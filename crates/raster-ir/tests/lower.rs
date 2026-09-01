@@ -1680,9 +1680,8 @@ fn a_ppu_status_read_directly_before_sync_exact_warns() {
 /// with anything between them is a stale flag either way.
 #[test]
 fn a_ppu_status_read_two_statements_before_sync_exact_is_silent() {
-    let program = lower_source(
-        "main {\n    var s: u8 = ppu.status\n    ppu.mask = $1e\n    sync exact\n}\n",
-    );
+    let program =
+        lower_source("main {\n    var s: u8 = ppu.status\n    ppu.mask = $1e\n    sync exact\n}\n");
 
     assert!(program.warnings.is_empty());
 }
