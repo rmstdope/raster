@@ -1,0 +1,150 @@
+<title>raster-xeo — The exact words</title>
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 66rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:54em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  h3 { font-size:.92rem; margin:1.4rem 0 .3rem; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:58em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto;
+         margin:.5rem 0 .5rem; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:58em; }
+  .silent { border-left:3px solid #8fd694; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#3f6b46; max-width:58em; }
+  table { border-collapse:collapse; font-size:.88rem; margin:.6rem 0 0; }
+  th,td { text-align:left; padding:.28rem .9rem .28rem 0; border-bottom:1px solid #e0e2ea; vertical-align:top; }
+  th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:.74rem;}
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background:#e9ebf1; padding:.1em .35em; border-radius:3px;}
+  .pick { font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em; padding:.3rem .45rem; border-radius:4px;
+          background:#dde6f5; color:#2c4a7c; margin-right:.4rem; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost, th { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .silent { color:#8fd694; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    th,td { border-color:#242733; }
+    code { background:#1e2029; color:#c9cddb; }
+    .pick { background:#1c2b45; color:#9dc0f0; }
+  }
+</style>
+<main>
+<span class="tag">AGREED &middot; raster-xeo</span>
+<h1>Every string, exactly as it ships</h1>
+<p class="sub">The wording the navigator chose. <code>{name}</code> is
+<code>Register::name()</code>, <code>{addr}</code> is <code>Register::address()</code> as four uppercase
+hex digits, <code>{op}</code> is the compound operator as the author wrote it. Every string here is pure
+ASCII, which is what every emitted diagnostic in this repository is.</p>
+
+<h2>The strings</h2>
+<table>
+<tr><th>Piece</th><th>When</th><th>Text</th></tr>
+<tr><td>message</td><td>always</td><td><code>`{name}` cannot be written</code></td></tr>
+<tr><td>label</td><td>always</td><td><code>${addr} is a read-only port</code></td></tr>
+<tr><td>note 1</td><td>compound assignment only</td><td><code>`{op}` writes its destination, so this writes ${addr}</code><br>one rendered line; it does not wrap and must not be split</td></tr>
+<tr><td>note 2</td><td>always</td><td><code>writing ${addr} changes nothing on the PPU: it is a status</code><br><code>port, and the CPU can only read it</code><br>two rendered lines, split at the newline shown</td></tr>
+<tr><td>note 3</td><td>always</td><td><code>there is no value that makes this store do something;</code><br><code>delete the line</code><br>two rendered lines, split at the newline shown</td></tr>
+</table>
+<p class="cost">The refusal carries <strong>no</strong> "this release compiles ..." note. That list belongs
+to a construct the specification defines and this release has not built yet; writing a read-only port is
+not something that arrives in a later release. <code>Refusal::Rejected</code> is what makes that true.</p>
+
+<h2>A plain assignment &mdash; two notes</h2>
+<div class="term"><span class="e">error: `ppu.status` cannot be written</span>
+ <span class="g">--&gt; demo.raster:3:5</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     ppu.status = 0
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> $2002 is a read-only port
+  <span class="g">= note:</span> writing $2002 changes nothing on the PPU: it is a status
+          port, and the CPU can only read it
+  <span class="g">= note:</span> there is no value that makes this store do something;
+          delete the line
+
+<span class="e">error: could not compile demo.raster (1 error)</span></div>
+
+<h2>A compound assignment &mdash; three notes, the operator first</h2>
+<div class="term"><span class="e">error: `ppu.status` cannot be written</span>
+ <span class="g">--&gt; demo.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.status += 1
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> $2002 is a read-only port
+  <span class="g">= note:</span> `+=` writes its destination, so this writes $2002
+  <span class="g">= note:</span> writing $2002 changes nothing on the PPU: it is a status
+          port, and the CPU can only read it
+  <span class="g">= note:</span> there is no value that makes this store do something;
+          delete the line</div>
+<p class="cost">All four compound operators take the same shape: <code>+=</code>, <code>-=</code>,
+<code>*=</code>, <code>/=</code>, each spelled in note 1 as the author wrote it.</p>
+
+<h2>Beside the refusal it mirrors (<code>raster-1t9</code>, unchanged)</h2>
+<div class="term"><span class="e">error: `ppu.mask` cannot be read</span>
+ <span class="g">--&gt; demo.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.mask += $18
+  <span class="g">|</span>     <span class="e">^^^^^^^^</span> $2001 is a write-only port
+  <span class="g">= note:</span> `+=` reads its destination before it writes, so this reads $2001
+  <span class="g">= note:</span> reading $2001 returns whatever was last on the PPU's data bus,
+          not the last value written
+  <span class="g">= note:</span> keep what you wrote in a variable of your own
+          and write the whole value</div>
+
+<h2>Spec &sect;9.5, in full, as it ships</h2>
+<div class="src">### 9.5 Which registers read and which accept writes
+
+Sixteen registers have names. Three of them can be read, and fifteen of
+them can be written; `ppu.status` is the only one that can be read and not
+written.
+
+| Register | Address | A read of it | A write of it |
+|---|---|---|---|
+| `ppu.ctrl` | `$2000` | refused | **allowed** |
+| `ppu.mask` | `$2001` | refused | **allowed** |
+| `ppu.status` | `$2002` | **allowed** | refused |
+| `ppu.oam_addr` | `$2003` | refused | **allowed** |
+| `ppu.oam_data` | `$2004` | **allowed** | **allowed** |
+| `ppu.scroll` | `$2005` | refused | **allowed** |
+| `ppu.addr` | `$2006` | refused | **allowed** |
+| `ppu.data` | `$2007` | **allowed** | **allowed** |
+| `mmc3.bank_select` | `$8000` | refused | **allowed** |
+| `mmc3.bank_data` | `$8001` | refused | **allowed** |
+| `mmc3.mirroring` | `$A000` | refused | **allowed** |
+| `mmc3.ram_protect` | `$A001` | refused | **allowed** |
+| `mmc3.irq_latch` | `$C000` | refused | **allowed** |
+| `mmc3.irq_reload` | `$C001` | refused | **allowed** |
+| `mmc3.irq_disable` | `$E000` | refused | **allowed** |
+| `mmc3.irq_enable` | `$E001` | refused | **allowed** |
+
+The thirteen that cannot be read are write-only ports. A read of one does
+not return the last value written: a PPU port returns whatever was last on
+the PPU's data bus, and an MMC3 port returns a byte of your own program,
+from the PRG bank the mapper has at that address. There is no value that
+makes such a read correct, so the compiler refuses it rather than warning
+about it. `ppu.status` is the mirror of that: `$2002` is a status port the
+CPU can only read, the PPU ignores a store to it completely, and a write is
+refused for the same reason.
+
+That includes the read or write a compound assignment makes for you.
+`ppu.mask += $18` reads `$2001` before it writes, and `ppu.status += 1`
+writes `$2002` after it reads; both are refused. Keep what you wrote in a
+variable of your own and write the whole value.</div>
+<p class="cost">The heading, the intro sentence, the second column and the last two paragraphs all replace
+what <code>raster-1t9</code> leaves behind. In particular its closing sentence &mdash; "Every one of the
+sixteen may still be written. This is only about reads." &mdash; goes away, because this bead makes it
+false.</p>
+</main>
