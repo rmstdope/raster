@@ -1,10 +1,10 @@
-use std::{fs, num::NonZeroU32, path::PathBuf};
+use std::num::NonZeroU32;
 
 use raster_emu::{render_after_frames, FRAME_HEIGHT, FRAME_WIDTH};
 use rasterc::compile_source;
 
 mod common;
-use common::demo_source;
+use common::{cycles_fixture, demo_source};
 
 fn pixel(pixels: &[u8], x: usize, y: usize) -> [u8; 4] {
     let offset = (y * FRAME_WIDTH + x) * 4;
@@ -82,16 +82,6 @@ fn renders_the_exact_nes_colour_the_source_names() {
     // asked what colour it emitted.
     assert_eq!(backdrop_entry("demo.nes", &demo), 0x12);
     assert_eq!(backdrop_entry("lighter.nes", &lighter), 0x21);
-}
-
-/// A `tests/cycles` fixture, read from the repository so a test can never drift from the source an
-/// author actually compiles.
-fn cycles_fixture(name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/cycles")
-        .join(name);
-    fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("{} is readable: {error}", path.display()))
 }
 
 /// Where the picture changes going down it, and to what: one entry per band, from the top.

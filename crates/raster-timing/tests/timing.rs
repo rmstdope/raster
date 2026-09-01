@@ -598,6 +598,27 @@ fn mmc3_irq_needs_rendering_enabled() {
     }
 }
 
+/// The rule the pre-frame check applies, exported so `raster-ir` can apply it to what a handler
+/// stores. Either rendering bit alone still runs the sprite pattern fetches the counter clocks on;
+/// the emphasis bits are not rendering and do not save a mask that clears both.
+#[test]
+fn either_half_of_rendering_keeps_the_counter_clocking() {
+    use raster_timing::mask_enables_rendering;
+
+    for mask in [0x1e, 0x0a, 0x14, 0x08, 0x10, 0x3e] {
+        assert!(
+            mask_enables_rendering(mask),
+            "${mask:02X} renders, so the PPU fetches and A12 moves"
+        );
+    }
+    for mask in [0x00, 0x06, 0x01, 0xe0] {
+        assert!(
+            !mask_enables_rendering(mask),
+            "${mask:02X} renders nothing at all"
+        );
+    }
+}
+
 /// With 8x16 sprites the sprite half comes from bit 0 of each tile index and `ppu.ctrl` bit 3 is
 /// ignored, so the A12 check has nothing to read. Refused by name rather than answered from a bit
 /// the PPU is not looking at — a diagnostic that quotes a value must not misdescribe it.

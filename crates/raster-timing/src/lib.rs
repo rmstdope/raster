@@ -712,6 +712,26 @@ pub enum Mmc3IrqError {
     ConditionalConfiguration { register: &'static str },
 }
 
+/// Whether a `ppu.mask` value leaves the PPU fetching, which is what clocks the MMC3 counter.
+///
+/// Either half of rendering counts. A rendering PPU runs its sprite pattern fetches at dots 257 to
+/// 320 whether or not sprites are composited, so a background-only program clocks the counter
+/// exactly as a full one does; what stops it is rendering nothing at all. This is the same test
+/// [`validate_mmc3_irq_frame`] applies to the configuration standing when the frame starts, exported
+/// so that `raster-ir` can apply it to what a handler stores without learning the bit numbers.
+pub const fn mask_enables_rendering(mask: u8) -> bool {
+    mask & PPU_MASK_RENDERING != 0
+}
+
+/// One register's value, or the reason it does not have one this can check.
+fn known(state: RegisterState, register: &'static str) -> Result<u8, Mmc3IrqError> {
+    match state {
+        RegisterState::Known(value) => Ok(value),
+        RegisterState::Unproven => Err(Mmc3IrqError::UnprovenConfiguration { register }),
+        RegisterState::Conditional => Err(Mmc3IrqError::ConditionalConfiguration { register }),
+    }
+}
+
 /// Check the hardware preconditions an MMC3 IRQ chain depends on.
 ///
 /// Rendering has to be on — either half of it. The counter clocks on filtered A12 rises, and A12
@@ -729,19 +749,10 @@ pub enum Mmc3IrqError {
 /// switching is unsupported. Spec section 7.3 asks for the CHR layout to be checked too; when a
 /// program can choose its own, this function needs it passed in and the sentence above stops being
 /// true on its own.
-/// One register's value, or the reason it does not have one this can check.
-fn known(state: RegisterState, register: &'static str) -> Result<u8, Mmc3IrqError> {
-    match state {
-        RegisterState::Known(value) => Ok(value),
-        RegisterState::Unproven => Err(Mmc3IrqError::UnprovenConfiguration { register }),
-        RegisterState::Conditional => Err(Mmc3IrqError::ConditionalConfiguration { register }),
-    }
-}
-
 pub fn validate_mmc3_irq_frame(ppu: &PpuConfiguration) -> Result<(), Mmc3IrqError> {
     let ctrl = known(ppu.ctrl, "ppu.ctrl")?;
     let mask = known(ppu.mask, "ppu.mask")?;
-    if mask & PPU_MASK_RENDERING == 0 {
+    if !mask_enables_rendering(mask) {
         return Err(Mmc3IrqError::RenderingDisabled { mask });
     }
     if ctrl & PPU_CTRL_TALL_SPRITES != 0 {

@@ -2,7 +2,7 @@ use raster_diag::Severity;
 use rasterc::compile_source;
 
 mod common;
-use common::demo_source;
+use common::{cycles_fixture, demo_source};
 
 #[test]
 fn compiles_the_demo_to_the_same_rom_as_m1() {
@@ -197,6 +197,183 @@ fn irq_frame_rejects_a_schedule_the_ppu_would_never_clock() {
         diagnostics[0].message,
         "`using irq` needs rendering enabled, and `ppu.mask = $06` enables neither the \
          background nor the sprites"
+    );
+}
+
+/// A handler that clears both rendering bits stops the counter that runs the chain, and after
+/// `main` halts there is no code left to start it again - so the frame shows one split and then
+/// freezes for ever. Refused at the store, in the words the author reads.
+#[test]
+fn an_irq_handler_that_turns_rendering_off_is_refused() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = $00 }\n}\n";
+    let diagnostics =
+        compile_source(source).expect_err("a handler that blanks the screen stops the chain");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler cannot turn rendering off"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "`ppu.mask = $00` clears both rendering bits"
+    );
+    assert_eq!(
+        diagnostics[0].notes,
+        [
+            "the MMC3 counter clocks on PPU fetches, so rendering off stops\n\
+             the chain, and no handler runs to start it again",
+            "use `using timed` if the frame needs to blank the picture\n\
+             part-way down",
+        ]
+    );
+    assert!(
+        diagnostics[0].span.is_some(),
+        "the diagnostic is source-spanned"
+    );
+}
+
+/// A named constant is folded at the store, so `ppu.mask = DARK` arrives at the check as
+/// `Value::Constant(0)` and is refused exactly as a literal is - with `$00` in the label, not the
+/// name. This is the whole reason the check walks the events rather than the source: were the
+/// folding to stop, the refusal would silently become the warning and the build would go green.
+#[test]
+fn a_blanking_mask_written_as_a_named_constant_is_refused_too() {
+    let source = "const DARK: u8 = $00\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = DARK }\n}\n";
+    let diagnostics = compile_source(source).expect_err("a folded constant is still a constant");
+
+    assert_eq!(diagnostics.len(), 1, "found {diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler cannot turn rendering off"
+    );
+    assert_eq!(
+        diagnostics[0].label, "`ppu.mask = $00` clears both rendering bits",
+        "the value it folded to, not the name the author typed"
+    );
+}
+
+/// One mistake, one error. An `every` body is lowered once and cloned per occurrence, so fourteen
+/// events share one span and one body; two blanking stores in one handler is still one handler that
+/// blanks the screen. Two *different* handlers are two mistakes, because the dedupe is on the span.
+#[test]
+fn a_blanking_irq_handler_is_refused_once_however_often_it_runs() {
+    let repeated = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                    \nframe bars using irq {\n\
+                    \n    every 8 scanlines from 96 to 200 { ppu.mask = $00 }\n}\n";
+    let diagnostics = compile_source(repeated).expect_err("the handler blanks the screen");
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "fourteen occurrences of one body are one mistake, found {diagnostics:?}"
+    );
+
+    let twice = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                 \nframe bars using irq {\n\
+                 \n    at scanline 60 {\n        ppu.mask = $00\n        ppu.mask = $06\n    }\n}\n";
+    let diagnostics = compile_source(twice).expect_err("the handler blanks the screen");
+    assert_eq!(diagnostics.len(), 1, "found {diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler cannot turn rendering off"
+    );
+    assert_eq!(
+        diagnostics[0].label, "`ppu.mask = $00` clears both rendering bits",
+        "the first blanking store, not the last"
+    );
+
+    let two_handlers = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                        \nframe bars using irq {\n    at scanline 60 { ppu.mask = $00 }\n\
+                        \n    at scanline 120 { ppu.mask = $06 }\n}\n";
+    let diagnostics = compile_source(two_handlers).expect_err("both handlers blank the screen");
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "two handlers are two mistakes, found {diagnostics:?}"
+    );
+}
+
+/// A mask the compiler cannot read may or may not clear the rendering bits, and a computed mask is
+/// how a fade or a brightness ramp is written - so it is one warning per frame and the build
+/// succeeds. Three handlers rather than one is the assertion that matters: one would pass with
+/// per-handler reporting.
+#[test]
+fn an_irq_frame_whose_mask_is_not_a_constant_warns_once() {
+    let source = "var level: u8 = $1e\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = level }\n\
+                  \n    at scanline 120 { ppu.mask = level }\n\
+                  \n    at scanline 180 { ppu.mask = level }\n}\n";
+    let rom = compile_source(source).expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1, "one per frame, not one per handler");
+    let warning = &rom.warnings[0];
+    assert_eq!(warning.severity, Severity::Warning);
+    assert_eq!(
+        warning.message,
+        "this `irq` frame writes a `ppu.mask` the compiler cannot read"
+    );
+    assert_eq!(
+        warning.label,
+        "a handler stores a value that is not a constant"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "if it clears both rendering bits the MMC3 counter stops,\n\
+             and no handler runs to start it again",
+            "keep bits 3 and 4 set in every value any handler stores",
+        ]
+    );
+    assert!(warning.span.is_some(), "the warning is source-spanned");
+}
+
+/// One frame can hold both faults, and both are printed - warnings before errors, which is what
+/// `compile_source` already does: the author who fixes the error is the author who needed the
+/// warning, and they only get one look at it.
+#[test]
+fn an_irq_frame_reports_its_unreadable_mask_beside_its_blanking_one() {
+    let source = "var level: u8 = $1e\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = $00 }\n\
+                  \n    at scanline 120 { ppu.mask = level }\n}\n";
+    let diagnostics = compile_source(source).expect_err("the first handler blanks the screen");
+
+    assert_eq!(diagnostics.len(), 2, "found {diagnostics:?}");
+    assert_eq!(diagnostics[0].severity, Severity::Warning);
+    assert_eq!(
+        diagnostics[0].message,
+        "this `irq` frame writes a `ppu.mask` the compiler cannot read"
+    );
+    assert_eq!(diagnostics[1].severity, Severity::Error);
+    assert_eq!(
+        diagnostics[1].message,
+        "an `irq` handler cannot turn rendering off"
+    );
+}
+
+/// The two `irq` fixtures this repository ships keep saying what they said. `irq-colour-bars.raster`
+/// stores `$3e`, `$5e` and `$1e` - all constants keeping bits 3 and 4 set - so it must be silent.
+/// `irq-hblank-window.raster` stores four variables on purpose, because it exists to build the
+/// widest handler body the language can express and a `const` would fold to a cheaper instruction;
+/// its one warning is correct, and the fixture must not be changed to silence it.
+#[test]
+fn the_shipping_irq_fixtures_keep_their_diagnostics() {
+    let bars = compile_source(&cycles_fixture("irq-colour-bars.raster"))
+        .expect("the shipping fixture compiles");
+    assert_eq!(
+        bars.warnings.len(),
+        0,
+        "every mask it stores is a constant that renders: {:?}",
+        bars.warnings
+    );
+
+    let window = compile_source(&cycles_fixture("irq-hblank-window.raster"))
+        .expect("the shipping fixture compiles");
+    assert_eq!(window.warnings.len(), 1, "found {:?}", window.warnings);
+    assert_eq!(
+        window.warnings[0].message,
+        "this `irq` frame writes a `ppu.mask` the compiler cannot read"
     );
 }
 
