@@ -1,0 +1,184 @@
+<title>raster-xeo — Writing a read-only register</title>
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 66rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:54em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  h3 { font-size:.92rem; margin:1.4rem 0 .3rem; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:58em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto;
+         margin:.5rem 0 .5rem; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:58em; }
+  .silent { border-left:3px solid #8fd694; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#3f6b46; max-width:58em; }
+  table { border-collapse:collapse; font-size:.88rem; margin:.6rem 0 0; }
+  th,td { text-align:left; padding:.28rem .9rem .28rem 0; border-bottom:1px solid #e0e2ea; vertical-align:top; }
+  th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:.74rem;}
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background:#e9ebf1; padding:.1em .35em; border-radius:3px;}
+  .pick { font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em; padding:.3rem .45rem; border-radius:4px;
+          background:#dde6f5; color:#2c4a7c; margin-right:.4rem; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost, th { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .silent { color:#8fd694; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    th,td { border-color:#242733; }
+    code { background:#1e2029; color:#c9cddb; }
+    .pick { background:#1c2b45; color:#9dc0f0; }
+  }
+</style>
+<main>
+<span class="tag">AGREED &middot; raster-xeo</span>
+<h1>Writing <code>ppu.status</code> is refused</h1>
+<p class="sub">What the navigator chose, over two rounds. <code>ppu.status</code> is <code>$2002</code>, the
+one read-only port among the sixteen named registers: the PPU discards a store to it completely. Today
+rasterc accepts <code>ppu.status = 0</code> and emits <code>STA $2002</code> &mdash; three bytes and four
+cycles that do nothing, which is not nothing inside a timed block. This page is the rule and the states;
+the wording page beside it is every string.</p>
+
+<h2>What happened before this bead</h2>
+<div class="src">main {
+    ppu.mask = $1E
+    ppu.status = 0
+}</div>
+<div class="term"><span class="ok"> Compiled </span> demo.raster -&gt; demo.nes
+<span class="g">   mapper </span> MMC3 (4), NTSC
+<span class="g">    fixed </span> $E000-$FFFF, 145 of 8186 bytes used
+<span class="g">    yours </span> 13 bytes</div>
+<p class="cost">Real output, run before the interview: exit 0, a ROM written, and three of those thirteen
+bytes discarded by the hardware.</p>
+
+<h2 style="color:#2c7a4a">Chosen &middot; refuse it, a compile error</h2>
+<div class="term"><span class="e">error: `ppu.status` cannot be written</span>
+ <span class="g">--&gt; demo.raster:3:5</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     ppu.status = 0
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> $2002 is a read-only port
+  <span class="g">= note:</span> writing $2002 changes nothing on the PPU: it is a status
+          port, and the CPU can only read it
+  <span class="g">= note:</span> there is no value that makes this store do something;
+          delete the line
+
+<span class="e">error: could not compile demo.raster (1 error)</span></div>
+<p class="cost">The build fails, no ROM is written, exit code 1. The write is wrong for every value, so no
+working program breaks; and it matches the rule <code>raster-1t9</code> set for reads, so the register
+table answers both directions the same way and an author learns one rule instead of two.</p>
+<p class="note"><strong>Rejected &mdash; warn and build anyway.</strong> A dead store is harmless in a way a
+dead read is not, and nobody's build would break. But the four cycles are not harmless inside a timed
+block, which is the thing this compiler exists to get right; a warning that is always correct is one the
+author should never have been allowed to scroll past; and it would split the register table's answer,
+refusing reads and warning about writes.</p>
+<p class="note"><strong>Rejected &mdash; say nothing, document it.</strong> No new code and no false
+positive ever. But &sect;9.1 already promises the compiler warns when a sequence violates a hardware
+requirement it can see, and it can see this one from the register table it already has.</p>
+
+<h2>The carets cover the destination</h2>
+<p class="note">On <code>ppu.status += 1</code> there is no <code>=</code> in the source to point at, so
+the refusal carries a note saying which operator wrote. Same shape <code>raster-1t9</code> chose for the
+read a compound assignment makes.</p>
+<div class="term"><span class="e">error: `ppu.status` cannot be written</span>
+ <span class="g">--&gt; demo.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.status += 1
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> $2002 is a read-only port
+  <span class="g">= note:</span> `+=` writes its destination, so this writes $2002
+  <span class="g">= note:</span> writing $2002 changes nothing on the PPU: it is a status
+          port, and the CPU can only read it
+  <span class="g">= note:</span> there is no value that makes this store do something;
+          delete the line</div>
+<p class="cost">The note says only that the operator writes. It does not mention the read &mdash; the read
+of <code>$2002</code> is legal and stays legal, and nothing here should imply otherwise.
+<strong>Rejected:</strong> "`+=` writes its destination after it reads", the exact mirror of the read
+refusal's note; true, not the point, and it invites the author to wonder about a read that is fine.</p>
+
+<h2 style="color:#2c7a4a">Chosen &middot; a bad write and a bad read on one line are two errors</h2>
+<div class="term"><span class="e">error: `ppu.status` cannot be written</span>
+ <span class="g">--&gt; demo.raster:2:5</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.status = ppu.mask
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> $2002 is a read-only port
+  <span class="g">= note:</span> writing $2002 changes nothing on the PPU: it is a status
+          port, and the CPU can only read it
+  <span class="g">= note:</span> there is no value that makes this store do something;
+          delete the line
+
+<span class="e">error: `ppu.mask` cannot be read</span>
+ <span class="g">--&gt; demo.raster:2:18</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.status = ppu.mask
+  <span class="g">|</span>                  <span class="e">^^^^^^^^</span> $2001 is a write-only port
+  <span class="g">= note:</span> reading $2001 returns whatever was last on the PPU's data bus,
+          not the last value written
+  <span class="g">= note:</span> keep what you wrote in a variable of your own
+          and write the whole value
+
+<span class="e">error: could not compile demo.raster (2 errors)</span></div>
+<p class="cost">Two independent mistakes on one line: fixing one does not fix the other, and the
+right-hand side may well survive into whatever the author writes instead. So the refused write still
+lowers its right-hand side, and the author sees both in one build rather than two.
+<strong>Rejected:</strong> reporting the write alone, on the argument that the statement is being deleted
+anyway &mdash; which is what makes the write-only error suppress the bank-select <em>warning</em> in
+<code>raster-1t9</code>. The difference is that these are two errors of equal standing.</p>
+
+<h2>Several of them, and what must stay silent</h2>
+<p class="note">Every occurrence is reported, in source order, with its full notes each time. No
+deduplication, no "and 1 more" &mdash; the existing behaviour of every other refusal in the compiler.</p>
+<div class="src">main {
+    var s: u8 = ppu.status      // a read of $2002 -- legal, and stays legal
+    ppu.mask = $1E              // a write-only port, written -- always fine
+    ppu.oam_data = $20          // $2004 reads and writes -- fine
+    ppu.data = $0F              // $2007 reads and writes -- fine
+}</div>
+<p class="silent">Exit 0, no stderr at all, a ROM written. If any of these four lines goes red, the check
+has been attached to the wrong thing. Reading <code>ppu.status</code> in particular must stay silent: its
+side effects &mdash; clearing the vblank flag and the <code>$2005</code>/<code>$2006</code> latch &mdash;
+are <code>raster-bm1</code>, a separate ranked bead, not this one.</p>
+<p class="note">A program that compiled yesterday and fails today gets <strong>no special framing</strong>
+&mdash; it is an ordinary error, exactly as <code>raster-1t9</code>'s regressions are.
+<strong>Rejected:</strong> calling the change out in the build output.</p>
+
+<h2>Spec &sect;9.5</h2>
+<p class="note"><code>raster-1t9</code> adds &sect;9.5 with a one-column table and closes it "Every one of
+the sixteen may still be written. This is only about reads." &mdash; a sentence this bead makes false. The
+table gains a second column and the section is renamed <em>"Which registers read and which accept
+writes"</em>; the wording page carries the section in full.
+<strong>Rejected:</strong> keeping the one-column table and naming the exception only in prose &mdash; less
+ink, but a reader scanning the table for <code>mmc3.bank_data</code> would have to read underneath it to
+learn the register can be written.</p>
+<table>
+<tr><th>Register</th><th>Address</th><th>A read of it</th><th>A write of it</th></tr>
+<tr><td><code>ppu.ctrl</code></td><td><code>$2000</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>ppu.mask</code></td><td><code>$2001</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>ppu.status</code></td><td><code>$2002</code></td><td><strong>allowed</strong></td><td>refused</td></tr>
+<tr><td><code>ppu.oam_addr</code></td><td><code>$2003</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>ppu.oam_data</code></td><td><code>$2004</code></td><td><strong>allowed</strong></td><td><strong>allowed</strong></td></tr>
+<tr><td><code>ppu.scroll</code></td><td><code>$2005</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>ppu.addr</code></td><td><code>$2006</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>ppu.data</code></td><td><code>$2007</code></td><td><strong>allowed</strong></td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.bank_select</code></td><td><code>$8000</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.bank_data</code></td><td><code>$8001</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.mirroring</code></td><td><code>$A000</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.ram_protect</code></td><td><code>$A001</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.irq_latch</code></td><td><code>$C000</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.irq_reload</code></td><td><code>$C001</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.irq_disable</code></td><td><code>$E000</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+<tr><td><code>mmc3.irq_enable</code></td><td><code>$E001</code></td><td>refused</td><td><strong>allowed</strong></td></tr>
+</table>
+</main>
