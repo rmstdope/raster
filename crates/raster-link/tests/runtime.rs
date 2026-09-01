@@ -146,3 +146,21 @@ fn ships_embedded_data_in_the_linked_rom() {
     assert_eq!(bank[body_start + 7], 0x40); // the runtime's RTI, after the data
     assert_eq!(rom.code_len, body_start + 8);
 }
+
+#[test]
+fn reset_leaves_r7_selected_for_the_lowering_pass() {
+    let last_select = PROLOGUE
+        .windows(5)
+        .filter(|window| {
+            window[0] == 0xa9 && window[2] == 0x8d && window[3] == 0x00 && window[4] == 0x80
+        })
+        .next_back()
+        .expect("the reset prologue selects bank registers");
+
+    assert_eq!(
+        last_select[1], 0x07,
+        "`raster-ir` assumes a `mmc3.bank_data` write with no select before it lands on R7, \
+         because R7 is what reset selected last. Changing the prologue's last bank select \
+         means changing `RESET_SELECTED_REGISTER` in `crates/raster-ir/src/lib.rs` with it."
+    );
+}

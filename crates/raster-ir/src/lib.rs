@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use raster_diag::Refusal;
 use raster_sema::TypedProgram;
@@ -288,6 +288,76 @@ const MMC3_PRG_MODE: u8 = 0b0100_0000;
 /// Bit 7 of an MMC3 bank select: CHR A12 inversion.
 const MMC3_CHR_INVERSION: u8 = 0b1000_0000;
 
+/// Bits 0-2 of a bank select name the register. Bits 6 and 7 are the mode bits
+/// `bank_select_warning` judges and say nothing about which register is named:
+/// `$46` selects R6 *and* changes the PRG mode, and earns both warnings.
+const MMC3_BANK_REGISTER: u8 = 0b0000_0111;
+
+/// The register reset leaves selected. The MMC3 table in
+/// `crates/raster-link/src/runtime.rs` ends `(0x07, MMC3_BANK_SELECT)` followed
+/// by a bank data write, so R7 is what a `mmc3.bank_data` with no select before
+/// it lands on. `raster-ir` cannot depend on `raster-link` - the dependency runs
+/// the other way - so this is pinned instead by
+/// `reset_leaves_r7_selected_for_the_lowering_pass` in
+/// `crates/raster-link/tests/runtime.rs`.
+const RESET_SELECTED_REGISTER: u8 = 7;
+
+/// Which MMC3 bank register the next `mmc3.bank_data` write lands on, at the
+/// point lowering has reached.
+///
+/// Three variants because there are three things to say to an author, not
+/// because the lattice needs three: `ResetLeftR7` and `Known(7)` are the same
+/// register and a different sentence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BankSelection {
+    /// Nothing in the source has selected a register yet. Reset's last bank
+    /// select was `$07`, so R7 is selected. Only `main` starts here.
+    ResetLeftR7,
+    /// Bits 0-2 of the last bank select rasterc could fold: 0 through 7.
+    Known(u8),
+    /// A select rasterc could not fold, two branches that disagree, a loop body
+    /// that can select, a call that can reach a select, or the first statement
+    /// of a body any caller or interrupt can reach.
+    Unknown(Unseen),
+}
+
+/// Why the selection is unknown, which is the only thing that varies between
+/// the three `cannot tell` labels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Unseen {
+    /// Something in this body: a computed select, a branch join, a loop, a call.
+    InThisBody,
+    /// The first statement of a `fn`, which any caller can reach.
+    FunctionEntry,
+    /// The first statement of a `frame` handler, which interrupts `main`.
+    FrameEntry,
+}
+
+impl BankSelection {
+    /// The selection true of both paths reaching a join. Equal selections
+    /// survive; anything else is unknown from here on.
+    ///
+    /// `ResetLeftR7` and `Known(RESET_SELECTED_REGISTER)` name the same
+    /// register and differ only in which sentence the author is owed, so they
+    /// join to the one that is true of both paths: R7 was selected, and it was
+    /// not only reset that selected it. Without this, an `if` that selects R7
+    /// explicitly would fall to `Unknown` against a path that never selected
+    /// at all, and the author would be told rasterc cannot tell when it can.
+    fn join(self, other: Self) -> Self {
+        let named = |selection| match selection {
+            Self::ResetLeftR7 => Self::Known(RESET_SELECTED_REGISTER),
+            other => other,
+        };
+        if self == other {
+            self
+        } else if named(self) == named(other) {
+            named(self)
+        } else {
+            Self::Unknown(Unseen::InThisBody)
+        }
+    }
+}
+
 const BANK_SELECT_MODE_NOTE: &str = "bits 6 and 7 take effect from whichever bank select was\n\
                                      written last, not from the bank data that follows";
 
@@ -339,11 +409,83 @@ fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
     }
 }
 
+/// The warning a write to `mmc3.bank_data` earns, if it earns one.
+///
+/// `None` for R0-R5. Those are the CHR windows: repointing one is the ordinary
+/// use of these registers and the thing the reset map is built to survive, so
+/// warning on them would fire on every correct CHR animation, on every build.
+fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarning> {
+    const RESET_MAP_NOTE: &str = "reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the\n\
+                                  bytes at ";
+    const NOT_SUPPORTED_NOTE: &str =
+        "PRG bank switching is not supported yet: banks 0 to 2 hold $FF,\n\
+                                      and bank 3 is a second view of the fixed bank at $E000";
+    let repoints = |window: &str, label: &str, second_note: &str| LowerWarning {
+        message: format!("this write repoints the PRG window at {window}"),
+        label: label.to_owned(),
+        notes: vec![
+            format!("{RESET_MAP_NOTE}{window} are not the ones it mapped from here on"),
+            second_note.to_owned(),
+        ],
+        span,
+    };
+    match selection {
+        BankSelection::Known(0..=5) => None,
+        BankSelection::Known(6) => Some(repoints(
+            "$8000",
+            "R6 is selected, so this replaces $8000-$9FFF",
+            NOT_SUPPORTED_NOTE,
+        )),
+        // R7, and nothing else: every `Known` is masked with
+        // `MMC3_BANK_REGISTER`, so 8 and above cannot occur.
+        BankSelection::Known(_) => Some(repoints(
+            "$A000",
+            "R7 is selected, so this replaces $A000-$BFFF",
+            NOT_SUPPORTED_NOTE,
+        )),
+        BankSelection::ResetLeftR7 => Some(repoints(
+            "$A000",
+            "nothing selects a register before this, and reset selected R7 last",
+            "write `mmc3.bank_select` with 0 to 5 first to point this at a CHR window",
+        )),
+        BankSelection::Unknown(unseen) => Some(LowerWarning {
+            message: "rasterc cannot tell which bank register this write lands on".to_owned(),
+            label: match unseen {
+                Unseen::InThisBody => "the last bank select before this is not one rasterc can see",
+                Unseen::FunctionEntry => "this function can be called with any register selected",
+                Unseen::FrameEntry => "a frame handler runs with any register selected",
+            }
+            .to_owned(),
+            notes: vec![
+                "R6 and R7 are the two 8 KiB PRG windows; a write landing on\n\
+                 either one repoints $8000 or $A000"
+                    .to_owned(),
+                match unseen {
+                    Unseen::InThisBody => {
+                        "selecting with a literal 0 to 5 immediately before the write\n\
+                         keeps the map reset chose"
+                    }
+                    Unseen::FunctionEntry => {
+                        "selecting with a literal 0 to 5 in this function, before the\n\
+                         write, keeps the map reset chose"
+                    }
+                    Unseen::FrameEntry => {
+                        "selecting with a literal 0 to 5 in the handler, before the\n\
+                         write, keeps the map reset chose"
+                    }
+                }
+                .to_owned(),
+            ],
+            span,
+        }),
+    }
+}
 pub fn lower(typed: &TypedProgram) -> Result<Program, LowerFailure> {
     let mut lowerer = Lowerer::new();
     lowerer.predeclare_labels(&typed.program);
     lowerer.predeclare_globals(&typed.program);
     lowerer.reject_recursive_calls(&typed.program);
+    lowerer.selects_bank = functions_that_select(&typed.program);
     lowerer.lower_program(&typed.program);
     if lowerer.errors.is_empty() {
         lowerer.program.warnings = lowerer.warnings;
@@ -377,6 +519,14 @@ struct Lowerer {
     next_place: u32,
     next_label: u32,
     main_label: Option<(Label, Label)>,
+    /// Which bank register the next `mmc3.bank_data` write lands on. Reset at
+    /// the top of every entry point, so the order `lower_program` happens to
+    /// visit items in does not matter.
+    selection: BankSelection,
+    /// Every function that can reach a `mmc3.bank_select` write, directly or
+    /// through a call. A call to one of these makes `selection` unknown; a call
+    /// to anything else leaves it alone.
+    selects_bank: BTreeSet<String>,
 }
 
 impl Lowerer {
@@ -391,6 +541,8 @@ impl Lowerer {
             next_place: 0,
             next_label: 0,
             main_label: None,
+            selection: BankSelection::Unknown(Unseen::InThisBody),
+            selects_bank: BTreeSet::new(),
         }
     }
 
@@ -648,6 +800,7 @@ impl Lowerer {
     /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
     fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
         self.enter_scope();
+        self.selection = BankSelection::Unknown(Unseen::FrameEntry);
         let (statements, _) = self.lower_statements(body);
         self.leave_scope();
         statements
@@ -737,6 +890,7 @@ impl Lowerer {
             self.bind(&parameter.name.value, Binding::Place(place));
             parameters.push(place);
         }
+        self.selection = BankSelection::Unknown(Unseen::FunctionEntry);
         let (statements, always_returns) = self.lower_statements(&function.body);
         if function_returns_u8(function) && !always_returns {
             self.error(
@@ -759,6 +913,7 @@ impl Lowerer {
             return;
         };
         self.enter_scope();
+        self.selection = BankSelection::ResetLeftR7;
         let (statements, _) = self.lower_statements(block);
         self.leave_scope();
         self.program.main = Some(Main {
@@ -812,9 +967,14 @@ impl Lowerer {
             } => self.lower_for(binding, range, step.as_ref(), body, output),
             SyntaxStatement::Loop(block) => {
                 self.not_in_this_release(statement.span, "`loop` is not supported yet");
+                let entry_selection = self.selection;
+                if block_selects_bank(block, &self.selects_bank) {
+                    self.selection = BankSelection::Unknown(Unseen::InThisBody);
+                }
                 self.enter_scope();
                 let _ = self.lower_statements(block);
                 self.leave_scope();
+                self.selection = entry_selection.join(self.selection);
                 false
             }
             SyntaxStatement::Cycles { spec, label, body } => {
@@ -939,11 +1099,17 @@ impl Lowerer {
             condition,
             if_false: otherwise,
         });
+        let entry_selection = self.selection;
         self.enter_scope();
         let (then_statements, then_always_returns) = self.lower_statements(then_body);
         output.extend(then_statements);
         self.leave_scope();
-        if let Some(else_body) = else_body {
+        let then_selection = self.selection;
+        // The else-arm starts where the then-arm did, and when there is no
+        // `else` its exit *is* the entry selection: the path that skips the
+        // branch changes nothing.
+        self.selection = entry_selection;
+        let returns = if let Some(else_body) = else_body {
             let end = self.fresh_label();
             output.push(Statement::Jump { target: end });
             output.push(Statement::Label(otherwise));
@@ -956,7 +1122,9 @@ impl Lowerer {
         } else {
             output.push(Statement::Label(otherwise));
             false
-        }
+        };
+        self.selection = then_selection.join(self.selection);
+        returns
     }
 
     fn lower_while(
@@ -972,10 +1140,16 @@ impl Lowerer {
             condition: self.lower_condition(condition),
             if_false: end,
         });
+        let entry_selection = self.selection;
+        if block_selects_bank(body, &self.selects_bank) {
+            self.selection = BankSelection::Unknown(Unseen::InThisBody);
+        }
         self.enter_scope();
         let (body_statements, _) = self.lower_statements(body);
         output.extend(body_statements);
         self.leave_scope();
+        // The body may run zero times, so the exit must be true of both.
+        self.selection = entry_selection.join(self.selection);
         output.push(Statement::Jump { target: start });
         output.push(Statement::Label(end));
     }
@@ -1037,6 +1211,11 @@ impl Lowerer {
             ),
             if_false: loop_end,
         });
+        if block_selects_bank(body, &self.selects_bank) {
+            self.selection = BankSelection::Unknown(Unseen::InThisBody);
+        }
+        // No join afterwards: `lower_for` has already refused an empty range,
+        // so the body always runs and the exit is the body's exit.
         let (body_statements, body_always_returns) = self.lower_statements(body);
         output.extend(body_statements);
         output.push(Statement::Assign {
@@ -1098,6 +1277,15 @@ impl Lowerer {
                 };
                 if destination == Destination::Register(Register::Mmc3BankSelect) {
                     if let Some(warning) = bank_select_warning(&value, expression.span) {
+                        self.warnings.push(warning);
+                    }
+                    self.selection = match value {
+                        Value::Constant(bits) => BankSelection::Known(bits & MMC3_BANK_REGISTER),
+                        _ => BankSelection::Unknown(Unseen::InThisBody),
+                    };
+                }
+                if destination == Destination::Register(Register::Mmc3BankData) {
+                    if let Some(warning) = bank_data_warning(self.selection, expression.span) {
                         self.warnings.push(warning);
                     }
                 }
@@ -1279,6 +1467,11 @@ impl Lowerer {
                     self.error(name.span, format!("unknown function `{}`", name.value));
                     return Value::Constant(0);
                 };
+                // The one site every call passes through, statement or
+                // expression: what the callee selected is not visible here.
+                if self.selects_bank.contains(&name.value) {
+                    self.selection = BankSelection::Unknown(Unseen::InThisBody);
+                }
                 let arguments: Vec<_> = arguments
                     .iter()
                     .map(|argument| self.lower_value(argument))
@@ -1526,6 +1719,36 @@ enum VisitState {
     Visited,
 }
 
+/// Every function that can reach a `mmc3.bank_select` write.
+///
+/// A fixed point rather than a recursive walk: `reject_recursive_calls` records
+/// recursion as an *error* and `lower_program` runs regardless, so the call
+/// graph reaching here may still contain a cycle. Each pass either adds a name
+/// or stops, so this terminates in at most one pass per function.
+fn functions_that_select(syntax: &SyntaxProgram) -> BTreeSet<String> {
+    let bodies: Vec<(&str, &Block)> = syntax
+        .items
+        .iter()
+        .filter_map(|item| match &item.value {
+            Item::Function(function) => Some((function.name.value.as_str(), &function.body)),
+            _ => None,
+        })
+        .collect();
+    let mut selects = BTreeSet::new();
+    loop {
+        let mut grew = false;
+        for (name, body) in &bodies {
+            if !selects.contains(*name) && block_selects_bank(body, &selects) {
+                selects.insert((*name).to_owned());
+                grew = true;
+            }
+        }
+        if !grew {
+            return selects;
+        }
+    }
+}
+
 fn function_call_graph(syntax: &SyntaxProgram) -> BTreeMap<String, Vec<FunctionCall>> {
     syntax
         .items
@@ -1539,6 +1762,83 @@ fn function_call_graph(syntax: &SyntaxProgram) -> BTreeMap<String, Vec<FunctionC
             _ => None,
         })
         .collect()
+}
+
+/// Whether this block can reach a write to `mmc3.bank_select` - directly, or
+/// through a call to a function in `via`.
+///
+/// One walker serves two callers. It fills `Lowerer::selects_bank` at the fixed
+/// point below, and it answers the loop-body question in `lower_while`,
+/// `lower_for` and the `loop` arm: lowering walks a body once, but a loop runs
+/// it many times, so a body that can select must be judged with the selection
+/// already unknown or the second iteration is judged against the first
+/// iteration's answer.
+fn block_selects_bank(block: &Block, via: &BTreeSet<String>) -> bool {
+    let mut calls = Vec::new();
+    collect_calls_in_block(block, &mut calls);
+    calls.iter().any(|call| via.contains(&call.target)) || block_assigns_bank_select(block)
+}
+
+/// Whether any statement in this block assigns to `mmc3.bank_select`.
+fn block_assigns_bank_select(block: &Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| statement_assigns_bank_select(&statement.value))
+}
+
+fn statement_assigns_bank_select(statement: &SyntaxStatement) -> bool {
+    match statement {
+        // An initializer is an expression and cannot assign; only a
+        // declaration's body can hold statements.
+        SyntaxStatement::Declaration(declaration) => declaration
+            .body
+            .as_ref()
+            .is_some_and(block_assigns_bank_select),
+        SyntaxStatement::Block(block) | SyntaxStatement::Loop(block) => {
+            block_assigns_bank_select(block)
+        }
+        SyntaxStatement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            block_assigns_bank_select(then_body)
+                || else_body.as_ref().is_some_and(block_assigns_bank_select)
+        }
+        SyntaxStatement::While { body, .. }
+        | SyntaxStatement::For { body, .. }
+        | SyntaxStatement::Cycles { body, .. } => block_assigns_bank_select(body),
+        SyntaxStatement::Expression(expression) => expression_assigns_bank_select(expression),
+        SyntaxStatement::Wait(_)
+        | SyntaxStatement::Sync(_)
+        | SyntaxStatement::Return(_)
+        | SyntaxStatement::Break
+        | SyntaxStatement::Continue => false,
+    }
+}
+
+fn expression_assigns_bank_select(expression: &Spanned<SyntaxExpression>) -> bool {
+    let SyntaxExpression::Infix { left, operator, .. } = &expression.value else {
+        return false;
+    };
+    if !matches!(
+        operator.value,
+        Operator::Assign
+            | Operator::PlusEqual
+            | Operator::MinusEqual
+            | Operator::StarEqual
+            | Operator::SlashEqual
+    ) {
+        return false;
+    }
+    let SyntaxExpression::Member { base, member } = &left.value else {
+        return false;
+    };
+    let SyntaxExpression::Name(name) = &base.value else {
+        return false;
+    };
+    name.value == "mmc3" && member.value == "bank_select"
 }
 
 fn collect_calls_in_block(block: &Block, calls: &mut Vec<FunctionCall>) {
