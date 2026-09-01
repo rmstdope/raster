@@ -312,3 +312,36 @@ fn a_link_failure_still_reports_its_warnings() {
         "the program does not fit the MMC3 fixed bank"
     );
 }
+
+/// The byte count the bank refusal leads with, parsed out of its first note.
+fn reported_size(source: &str) -> usize {
+    let diagnostics = compile_source(source).expect_err("the fixed bank is finite");
+    let note = &diagnostics
+        .iter()
+        .find(|d| d.message == "the program does not fit the MMC3 fixed bank")
+        .expect("the bank refusal")
+        .notes[0];
+    note.split_whitespace().next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn the_refusal_figure_grows_with_the_program_after_the_overflow_point() {
+    // Every `if` lays down a label, and the refusal used to fire at the first one
+    // past the limit - so fifty-nine of these sixty blocks went uncounted and the
+    // author was told to delete far less than they had to.
+    let stores = "    ppu.mask = 1\n".repeat(1700);
+    let plain = format!("main {{\n{stores}}}\n");
+    let branchy = format!(
+        "main {{\n{stores}{}}}\n",
+        "    if 1 == 1 { ppu.mask = 1 }\n".repeat(60)
+    );
+
+    // `saturating_sub`, so a regression that made the branchy program report
+    // *fewer* bytes still fails with the message below rather than with
+    // `attempt to subtract with overflow`.
+    let grew = reported_size(&branchy).saturating_sub(reported_size(&plain));
+    assert!(
+        grew >= 600,
+        "sixty `if` blocks after the overflow point moved the reported size by {grew} bytes"
+    );
+}
