@@ -528,11 +528,16 @@ fn return_inside_a_frame_handler_is_refused_like_any_other_timed_block() {
 /// failure this bead exists to close.
 ///
 /// This corpus is the counterpart of the "rasterc today" column in section 6.3 of
-/// docs/raster-language-spec.md: one fixture per construct that column names. A row added or
-/// removed here is an edit to that column, and a construct this test stops covering is that
-/// column going stale. Nothing enforces the tie but this sentence — a machine-readable list in
-/// the spec was considered and declined, because it puts a block of construct names in front of
-/// an author.
+/// docs/raster-language-spec.md: one fixture per refusal `raster-sema` raises by name inside a
+/// timed block. Per refusal rather than per operator on purpose — `*`, `/` and `%` share one arm
+/// and one message here, as do `<<` and `>>`, so a row each would exercise the same code twice.
+/// Rule 4's other half, the refusal a cycle-annotated function meets when it is lowered, is not
+/// raised in this crate and is pinned by
+/// `a_cycle_annotated_function_that_returns_still_names_the_real_refusal` in
+/// crates/rasterc/tests/compile.rs. A row added or removed here is an edit to that column, and a
+/// construct this test stops covering is that column going stale. Nothing enforces the tie but
+/// this sentence — a machine-readable list in the spec was considered and declined, because it
+/// puts a block of construct names in front of an author.
 #[test]
 fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
     use raster_diag::Refusal::{Rejected, TimedRegionCost};
