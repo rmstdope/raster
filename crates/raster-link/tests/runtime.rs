@@ -177,3 +177,28 @@ fn reset_leaves_r7_selected_for_the_lowering_pass() {
          means changing `RESET_SELECTED_REGISTER` in `crates/raster-ir/src/lib.rs` with it."
     );
 }
+
+#[test]
+fn the_nmi_vector_is_always_the_runtimes_own_handler() {
+    // `Some(Label(0))` is the case that matters: a program with a `frame ... using
+    // irq` gets its own `$FFFE`, and `$FFFA` must stay on the runtime's `RTI` even
+    // then. `points_nmi_and_irq_at_an_rti_after_the_program` covers only `None`,
+    // where the two vectors are trivially the same address.
+    for irq in [None, Some(Label(0))] {
+        let rom =
+            link_mmc3_program(&one_instruction_body(), Label(0), irq, true).expect("the body links");
+        let offset = usize::from(rom.vectors.nmi - MMC3_FIXED_BANK_START);
+        assert_eq!(
+            fixed_bank(&rom.image)[offset],
+            0x40, // RTI
+            "$FFFA resolved to ${:04x}, where the byte is not the runtime's `RTI`.\n\n\
+             NMI is the one interrupt the I flag cannot mask, so a program can take one at\n\
+             any point in `main` by setting bit 7 of `ppu.ctrl`. That is safe today only\n\
+             because $FFFA runs none of the program's own code. Pointing it anywhere else\n\
+             means a handler can run between two of `main`'s statements, which spec\n\
+             section 9.4 says cannot happen — and which rasterc's MMC3 bank tracking\n\
+             relies on. See `nothing_unmasks_irqs_before_main_has_run` in raster-codegen.",
+            rom.vectors.nmi,
+        );
+    }
+}
