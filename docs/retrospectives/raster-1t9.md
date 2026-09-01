@@ -130,3 +130,48 @@ prescribe the blocking heartbeat loop from *Waiting, without ending your run* ex
 way it does for CI.
 
 **Seen before.** `raster-fu0`, `raster-tf5.7`, `raster-jv6`.
+
+## I committed and pushed this file to `main` directly, because a `cd` had not stuck
+
+**What happened.** This retrospective's first version was written, committed and pushed **straight to
+`main`**, unreviewed and without CI. `git push --force-with-lease` answered `4b3ec5d..fd1e9d9
+main -> main`, which is how I found out.
+
+The cause was mundane: `implement-bead` prescribes writing the state file with
+`.claude/cerebro/scripts/agent-state ...`, a path relative to the repository root, so I ran
+`cd /Users/henrikku/repos/raster && .claude/cerebro/scripts/agent-state Rogue ... --phase merge`.
+The shell keeps its directory between calls, so every later command — the heredoc that wrote the
+file, `git add -A`, `git commit`, `git push` — ran in the root checkout, on `main`, not in the
+worktree.
+
+Nothing was lost and no code reached `main`: the commit is this docs file alone, whose content was
+correct and whose destination was always `main`. The branch's own work was still uncommitted in the
+worktree and was committed there afterwards. `main`'s history was left alone rather than rewritten or
+reverted — force-pushing a shared `main` other agents have fetched, or adding a second unreviewed
+commit to undo the first, are both worse than the thing they would fix. It is disclosed in PR #43 and
+in the closing message instead.
+
+**Why.** Established. `implement-bead`'s *Telling the fleet view what you are doing* gives every
+`agent-state` call as a root-relative path, and its state-file table places one of those calls
+(`--phase merge`) immediately before the retrospective section — so following both in order puts a
+`cd` to the repository root directly in front of the one part of the run that writes and commits a
+tracked file. The skill's own *Workspace* section warns "Check `pwd` before any git command … one
+`cd` into another agent's worktree leaves every later command there", which is this hazard named for
+a different directory; I had read it, and still walked into it from the other side.
+
+**Cost.** About fifteen minutes to diagnose and re-establish where each commit actually was, one
+unreviewed commit permanently on `main`, and a disclosure that should not have been necessary. It
+came within one command of being much worse: the same stray directory had already made me run
+`git rebase origin/main` on `main` earlier in this run, which was harmless only because `main` was
+up to date at that moment.
+
+**Prevent by.** Two concrete changes, both in `implement-bead`. First, the state-file table should
+give the call as `.cerebro/worktrees/<id>`-safe — either an absolute path
+(`<repo>/.claude/cerebro/scripts/agent-state`) or a `git -C <repo>`-style invocation — so writing
+state never requires leaving the worktree. Second, the *Retrospective* and *Merging* sections should
+open with the same `pwd` check *Workspace* already prescribes, since both write to a tracked file and
+both sit downstream of a state write. A guard hook that refuses a commit on `main` in this repository
+would catch the whole class, and is the navigator's to decide.
+
+**Seen before.** None found — `docs/retrospectives/` has no entry about a `cd` outliving the command
+that needed it, and none about a commit reaching `main` outside a PR.
