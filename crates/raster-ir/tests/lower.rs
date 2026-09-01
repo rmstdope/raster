@@ -659,10 +659,13 @@ fn a_bank_data_write_after_an_unfoldable_select_warns_softly() {
 }
 
 #[test]
-fn a_compound_bank_select_leaves_the_selection_unknown() {
-    // `mmc3.bank_select += 1` builds a `Value::Binary` unconditionally, so it
-    // can never fold however plain it reads.
-    let program = lower_source("main { mmc3.bank_select += 1\n mmc3.bank_data = 2 }");
+fn a_bank_select_rasterc_cannot_fold_leaves_the_selection_unknown() {
+    // `binary` builds a `Value::Binary` unconditionally, so a selection rasterc
+    // could fold by eye is not a constant to it. This used to be shown with
+    // `mmc3.bank_select += 1`, which `raster-1t9` now refuses outright for
+    // reading $8000; a plain assignment of a binary expression is the same
+    // unfoldable selection and makes the same point.
+    let program = lower_source("main { mmc3.bank_select = 6 | 1\n mmc3.bank_data = 2 }");
 
     assert_eq!(program.warnings.len(), 2);
     assert_eq!(
@@ -1028,4 +1031,31 @@ fn a_compound_assignment_to_anything_that_reads_is_untouched() {
 
     let readable = lower_source("main {\n    ppu.data += 1\n}\n");
     assert!(readable.main.is_some());
+}
+
+#[test]
+fn a_bank_select_whose_value_was_refused_leaves_the_selection_unknown() {
+    // The refused read lowers to a `Value::Constant(0)` placeholder, which is
+    // not a byte the author wrote and must not be read as one: taken at face
+    // value it would say R0 is selected and the `mmc3.bank_data` write below
+    // would warn about nothing. Skipping the update instead would leave the
+    // selection at whatever preceded it, which is just as untrue. rasterc
+    // genuinely cannot see this select, so the selection is unknown.
+    let source = "main {\n    mmc3.bank_select = ppu.mask\n    mmc3.bank_data = 2\n}\n";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("$2001 does not read back");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(failure.errors[0].message, "`ppu.mask` cannot be read");
+    // The bank-select warning is suppressed by Q7 — it is about the value, and
+    // the value is a placeholder. The bank-data warning is not: it is about
+    // which register is selected, which is a fact about the statements before
+    // it and stays true and actionable once the read is fixed.
+    assert_eq!(failure.warnings.len(), 1);
+    assert_eq!(
+        failure.warnings[0].label,
+        "the last bank select before this is not one rasterc can see"
+    );
 }

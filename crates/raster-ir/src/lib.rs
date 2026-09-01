@@ -1524,14 +1524,25 @@ impl Lowerer {
                     }
                     _ => unreachable!("assignment operator was checked above"),
                 };
-                if destination == Destination::Register(Register::Mmc3BankSelect)
-                    && self.errors.len() == errors_before
-                {
-                    if let Some(warning) = bank_select_warning(&value, expression.span) {
-                        self.warnings.push(warning);
+                // Whether lowering this statement's own value refused something —
+                // a read of a write-only register, say. Q7 of `raster-1t9`: one
+                // fault, one message, so the bank-select warning below stands
+                // aside, because it is about a value that is now a placeholder.
+                // The bank-data warning does not, because it is about which
+                // register is selected, which is a fact about the statements
+                // before it and stays true once the read is fixed.
+                let refused = self.errors.len() != errors_before;
+                if destination == Destination::Register(Register::Mmc3BankSelect) {
+                    if !refused {
+                        if let Some(warning) = bank_select_warning(&value, expression.span) {
+                            self.warnings.push(warning);
+                        }
                     }
                     self.selection = match value {
-                        Value::Constant(bits) => BankSelection::known(bits),
+                        // A refused value lowers to a `Constant(0)` placeholder
+                        // rather than to a byte the author wrote, so it is not
+                        // a selection rasterc has seen.
+                        Value::Constant(bits) if !refused => BankSelection::known(bits),
                         _ => BankSelection::Unknown(Unseen::InThisBody),
                     };
                 }
