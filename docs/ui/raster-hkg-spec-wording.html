@@ -1,0 +1,113 @@
+<!doctype html>
+<title>raster-hkg — the specification text</title>
+<meta charset="utf-8">
+<style>
+:root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+* { box-sizing: border-box; }
+body { margin:0; background:#f6f6f8; color:#22242c;
+       font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+.sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+     letter-spacing:.09em; color:#666b7a; font-weight:600; }
+.note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+.term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre; overflow-x:auto; border:1px solid #000; }
+.term .e { color: var(--red); font-weight:700; }
+.term .w { color: var(--yel); font-weight:700; }
+.term .g { color: var(--dim); }
+.term .c { color: var(--cyan); }
+.term .ok { color: var(--grn); }
+.src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+       font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto;
+       margin:.5rem 0 .5rem; }
+.tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+       padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+.cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+.silent { border-left:3px solid #8fd694; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#3f6b46; max-width:56em; }
+.bad { border-left:3px solid #ff6b6b; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#8c3535; max-width:56em; }
+table { border-collapse:collapse; margin:.6rem 0 0; font-size:.9rem; }
+th,td { text-align:left; padding:.35rem .9rem .35rem 0; border-bottom:1px solid #dfe1e9; vertical-align:top; }
+th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:.78rem; }
+code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#eceef4; padding:.08em .3em; border-radius:3px; }
+.nav { font-size:.85rem; color:#666b7a; margin:0 0 1.4rem; }
+.nav a { color:#3a6ea8; }
+@media (prefers-color-scheme: dark) {
+  body { background:#0d0e13; color:#d8dae4; }
+  .sub, h2, .note, .cost, .nav, th { color:#8b90a2; }
+  .tag { background:#1e2029; color:#a8adc0; }
+  .cost { border-color:#2a2d3a; }
+  .silent { color:#8fd694; }
+  .bad { color:#ff9b9b; }
+  .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  code { background:#171922; color:#c9cddb; }
+  th,td { border-color:#262a36; }
+  .nav a { color:#6fb0e8; }
+}
+</style>
+<main>
+<h1>raster-mb1 &mdash; nothing interrupts <code>main</code>, and what pins it</h1>
+<p class="sub">Agreed with the navigator over two rounds. The bead was filed as a warning: a
+<h1>raster-hkg &mdash; the specification text, as it ships</h1>
+<p class="sub">Agreed with the navigator. Two edits: a clause in &sect;9.4 on the sentence that reads as a
+green light, and a paragraph of its own at the end of &sect;7.1, where the execution model of a frame
+lives. Both are quoted below exactly as they go into
+<code>docs/raster-language-spec.md</code> &mdash; em dashes and all, at the file's own 79-column wrap.</p>
+
+<h2>1 &middot; &sect;9.4 &mdash; today</h2>
+<div class="src">Nothing runs between two of `main`'s statements. Reset masks IRQs with `SEI`
+before your program starts, and the `CLI` that arms an IRQ chain is emitted
+after `main`'s last statement &mdash; a `timed` frame arms no interrupt at all. NMI
+is the one interrupt the flag cannot mask, and `$FFFA` points at an `RTI` in
+the runtime for every program this release builds, so enabling NMI through
+`ppu.ctrl` runs none of your code. A `mmc3.bank_select` and the `mmc3.bank_data`
+write that follows it are therefore always consecutive.</div>
+<p class="cost">Every word is true, and true of what &sect;9.4 is about: no handler of the author's lands
+between a bank select and its bank data. Read from a timed frame it says enabling NMI is harmless.</p>
+
+<h2>2 &middot; &sect;9.4 &mdash; as it ships</h2>
+<div class="src">Nothing runs between two of `main`'s statements. Reset masks IRQs with `SEI`
+before your program starts, and the `CLI` that arms an IRQ chain is emitted
+after `main`'s last statement &mdash; a `timed` frame arms no interrupt at all. NMI
+is the one interrupt the flag cannot mask, and `$FFFA` points at an `RTI` in
+the runtime for every program this release builds, so enabling NMI through
+`ppu.ctrl` runs none of your code &mdash; though it still spends thirteen cycles of
+every frame, which a `frame ... using timed` cannot spare (section 7.1). A
+`mmc3.bank_select` and the `mmc3.bank_data` write that follows it are therefore
+always consecutive.</div>
+<p class="cost">A clause on the claim it corrects, chosen over a sentence of its own after it. Nothing
+else in the paragraph moves, and the trailing bank-select sentence stays where it is.</p>
+
+<h2>3 &middot; &sect;7.1 &mdash; the new paragraph</h2>
+<p class="note">At the <b>end</b> of &sect;7.1, after the existing
+&ldquo;<b>rasterc today:</b> one <code>frame</code> per program&hellip;&rdquo; note and before the
+<code>### 7.2</code> heading. Not between the strategy table and that note, which would leave it reading
+as this paragraph's own.</p>
+<div class="src">**A `timed` schedule is spent, not measured.** The loop synchronizes once, on
+the way in, and every position after it is a count of cycles forward from that
+one moment. Nothing polls the PPU again, so nothing recovers a cycle the
+schedule did not spend itself. An NMI costs thirteen &mdash; seven to enter, six for
+the `RTI` &mdash; once per frame, out of cycles the schedule had already allocated,
+so the picture drifts by that much every frame and never comes back. A program
+that declares a `timed` frame must leave NMI off. `using irq` carries no such
+restriction: an IRQ chain re-synchronizes on every scanline it fires.
+
+**rasterc today:** warned about, not refused. rasterc reads what `ppu.ctrl`
+holds when the frame starts and what its handlers write to it, and warns where
+bit 7 is set or where it cannot see the value. The ROM is still written.</div>
+<p class="cost">The <b>rasterc today:</b> line names what is inspected, chosen over a shorter one that
+left the boundary of the check off the page. A second such line in &sect;7.1 is deliberate: each attaches
+to its own paragraph.</p>
+
+<h2>4 &middot; What does not change</h2>
+<table>
+<tr><th>Place</th><th>Why it stays</th></tr>
+<tr><td>&sect;13's complete example, <code>ppu.ctrl = $88  // NMI on</code></td><td>a <code>using irq</code> program with <code>wait vblank</code> in <code>main</code>'s loop &mdash; NMI is correct there</td></tr>
+<tr><td>&sect;6.6, on NMI entry jitter</td><td>a caveat there was offered and not taken: &sect;6.6 is about code entered <i>from</i> an NMI, and &sect;7.1 is where a frame's rules belong</td></tr>
+<tr><td>&sect;6.3 rule 5, &ldquo;No interrupts, unless declared&rdquo;</td><td>about the <code>php</code>/<code>sei</code>/<code>plp</code> bracket, a different mechanism, and accurate as it stands</td></tr>
+<tr><td>&sect;7.1's <code>using timed</code> table row</td><td>&ldquo;Costs the whole frame's CPU time&rdquo; is still right; the new paragraph sits below the table</td></tr>
+<tr><td>&sect;7.1's <code>using irq</code> row, marked <b>not built</b></td><td>stale &mdash; <code>using irq</code> builds today &mdash; but not this bead's to fix; filed separately</td></tr>
+</table>
+</main>
