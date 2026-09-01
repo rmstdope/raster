@@ -1,0 +1,171 @@
+<!doctype html>
+<title>raster-bm1 — the agreed wording for a $2002 read</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:54em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .rule { background:#e8f0fb; border:1px solid #c5d8f2; border-radius:8px; padding:.9rem 1.1rem;
+          margin:.4rem 0 1.2rem; max-width:56em; font-size:.95rem; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .silent { color:#2f7a45; font-size:.9rem; font-weight:600; margin:.5rem 0 0; }
+  .loud { color:#a8571b; font-size:.9rem; font-weight:600; margin:.5rem 0 0; }
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:1rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+  table { border-collapse:collapse; margin:.6rem 0 0; font-size:.9rem; }
+  th,td { border:1px solid #d9dce6; padding:.35rem .7rem; text-align:left; }
+  th { background:#eceef4; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost { color:#8b90a2; }
+    .rule { background:#161c28; border-color:#26324a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    .silent { color:#7cc493; } .loud { color:#e0a35f; }
+    th { background:#171922; } th,td { border-color:#262a36; }
+  }
+</style>
+<main>
+<h1>The agreed wording &mdash; every string as it ships</h1>
+<p class="sub">Wording&nbsp;B, &ldquo;name what goes wrong&rdquo;: the first line is about the author's program and
+the hardware arrives in the notes. Rendered as rasterc really prints it, note wrapping included. Nothing here is
+paraphrased &mdash; these are the strings.</p>
+
+<h2>1 &middot; The latch, a <code>ppu.status</code> read, an address pair</h2>
+<div class="term"><span class="w">warning: this `ppu.status` read leaves your `ppu.addr` pair half written</span>
+ <span class="g">--&gt; palette.raster:3:17</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     var s: u8 = ppu.status
+  <span class="g">|</span>                 <span class="w">^^^^^^^^^^</span> the `ppu.addr` write below this becomes a second high byte
+  <span class="g">= note:</span> $2005 and $2006 share one write latch, and reading $2002 puts
+          it back to expecting a high byte
+  <span class="g">= note:</span> the PPU never sees the low byte, so it reads and writes at an
+          address you did not ask for
+  <span class="g">= note:</span> read `ppu.status` above the pair or below it, not inside it</div>
+
+<h2>2 &middot; The latch, a <code>ppu.status</code> read, a scroll pair</h2>
+<div class="term"><span class="w">warning: this `ppu.status` read leaves your `ppu.scroll` pair half written</span>
+ <span class="g">--&gt; split.raster:3:17</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     var s: u8 = ppu.status
+  <span class="g">|</span>                 <span class="w">^^^^^^^^^^</span> the `ppu.scroll` write below this becomes a second X scroll
+  <span class="g">= note:</span> $2005 and $2006 share one write latch, and reading $2002 puts
+          it back to expecting an X scroll
+  <span class="g">= note:</span> the PPU never sees the Y scroll, so the picture scrolls
+          somewhere you did not ask for
+  <span class="g">= note:</span> read `ppu.status` above the pair or below it, not inside it</div>
+
+<h2>3 &middot; The latch, <code>sync exact</code>, an address pair</h2>
+<div class="term"><span class="w">warning: `sync exact` leaves your `ppu.addr` pair half written</span>
+ <span class="g">--&gt; palette.raster:3:5</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     sync exact
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^</span> `sync exact` polls $2002, and that resets the latch mid-pair
+  <span class="g">= note:</span> $2005 and $2006 share one write latch, and reading $2002 puts
+          it back to expecting a high byte
+  <span class="g">= note:</span> the PPU never sees the low byte, so it reads and writes at an
+          address you did not ask for
+  <span class="g">= note:</span> put `sync exact` above the pair or below it, not inside it</div>
+<p class="note">On a scroll pair the same message, with <code>ppu.scroll</code> in the message and the two
+scroll notes from section&nbsp;2.</p>
+
+<h2>4 &middot; The flag</h2>
+<div class="term"><span class="w">warning: this `ppu.status` read costs you a frame at the `sync exact` below</span>
+ <span class="g">--&gt; split.raster:2:17</span>
+  <span class="g">|</span>
+<span class="g">2 |</span>     var s: u8 = ppu.status
+  <span class="g">|</span>                 <span class="w">^^^^^^^^^^</span> reading $2002 clears the vblank flag the poll is waiting for
+  <span class="g">= note:</span> the flag is set once a frame, and any read of $2002 clears it,
+          whoever does the reading
+  <span class="g">= note:</span> `sync exact` therefore waits for the next frame rather than
+          this one
+  <span class="g">= note:</span> put `sync exact` first, and read `ppu.status` after it</div>
+
+<h2>5 &middot; Both rules on one read, latch first</h2>
+<div class="term"><span class="w">warning: this `ppu.status` read leaves your `ppu.addr` pair half written</span>
+ <span class="g">--&gt; both.raster:3:17</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     var s: u8 = ppu.status
+  <span class="g">|</span>                 <span class="w">^^^^^^^^^^</span> the `ppu.addr` write below this becomes a second high byte
+  <span class="g">= note:</span> $2005 and $2006 share one write latch, and reading $2002 puts
+          it back to expecting a high byte
+  <span class="g">= note:</span> the PPU never sees the low byte, so it reads and writes at an
+          address you did not ask for
+  <span class="g">= note:</span> read `ppu.status` above the pair or below it, not inside it
+
+<span class="w">warning: this `ppu.status` read costs you a frame at the `sync exact` below</span>
+ <span class="g">--&gt; both.raster:3:17</span>
+  <span class="g">|</span>
+<span class="g">3 |</span>     var s: u8 = ppu.status
+  <span class="g">|</span>                 <span class="w">^^^^^^^^^^</span> reading $2002 clears the vblank flag the poll is waiting for
+  <span class="g">= note:</span> the flag is set once a frame, and any read of $2002 clears it,
+          whoever does the reading
+  <span class="g">= note:</span> `sync exact` therefore waits for the next frame rather than
+          this one
+  <span class="g">= note:</span> put `sync exact` first, and read `ppu.status` after it
+
+ <span class="ok">Compiled</span>  both.raster -&gt; both.nes
+ <span class="g">warnings</span>  2</div>
+
+<h2>6 &middot; The strings, as constants</h2>
+<p class="note"><code>{opener}</code> is <code>Register::name()</code> of the register that opened the pair, so
+it is <code>ppu.addr</code> or <code>ppu.scroll</code> and nothing else. <code>\n</code> is a rendered line
+break inside one note and must not be re-wrapped.</p>
+<div class="src"><strong>Rule 1, the latch &mdash; a ppu.status read</strong>
+message  this `ppu.status` read leaves your `{opener}` pair half written
+note 3   read `ppu.status` above the pair or below it, not inside it
+
+<strong>Rule 1, the latch &mdash; sync exact</strong>
+message  `sync exact` leaves your `{opener}` pair half written
+label    `sync exact` polls $2002, and that resets the latch mid-pair
+note 3   put `sync exact` above the pair or below it, not inside it
+
+<strong>Rule 1 &mdash; the parts that depend on which register opened the pair</strong>
+ppu.addr    label   the `ppu.addr` write below this becomes a second high byte
+ppu.addr    note 1  $2005 and $2006 share one write latch, and reading $2002 puts\n
+                    it back to expecting a high byte
+ppu.addr    note 2  the PPU never sees the low byte, so it reads and writes at an\n
+                    address you did not ask for
+
+ppu.scroll  label   the `ppu.scroll` write below this becomes a second X scroll
+ppu.scroll  note 1  $2005 and $2006 share one write latch, and reading $2002 puts\n
+                    it back to expecting an X scroll
+ppu.scroll  note 2  the PPU never sees the Y scroll, so the picture scrolls\n
+                    somewhere you did not ask for
+
+<strong>Rule 2, the flag</strong>
+message  this `ppu.status` read costs you a frame at the `sync exact` below
+label    reading $2002 clears the vblank flag the poll is waiting for
+note 1   the flag is set once a frame, and any read of $2002 clears it,\n
+         whoever does the reading
+note 2   `sync exact` therefore waits for the next frame rather than\n
+         this one
+note 3   put `sync exact` first, and read `ppu.status` after it</div>
+<p class="note">The <code>sync exact</code> message's label is one constant; only the two register-specific notes
+and the <code>ppu.status</code> label vary. Note&nbsp;3 differs between the two rule-1 messages because the thing
+being moved differs.</p>
+
+<h2>7 &middot; The spec, &sect;9.5</h2>
+<p class="note">A paragraph after the table, beside <code>ppu.status</code>'s <strong>allowed</strong> row.
+&sect;9.1 is left alone, and &sect;9.5 says nothing about how to wait for vblank &mdash; &sect;6.5 owns that.</p>
+<div class="src">`ppu.status` reads back, and reading it changes the PPU. A $2002 read
+clears the vblank flag, and it resets the write latch that $2005 and
+$2006 share, so the next write to either is taken as a first write.
+rasterc warns when a read lands between the two halves of a `ppu.addr`
+or `ppu.scroll` pair, and when it takes the flag a `sync exact` on the
+next line is about to wait for. `sync exact` polls $2002 itself, so it
+breaks a half-written pair in the same way and warns in the same way.</div>
+</main>
