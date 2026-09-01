@@ -97,6 +97,10 @@ const JMP_INDIRECT: u8 = 0x6c;
 /// of the `STA $00` the padding filler writes. A 6502 reads an indirect jump's high byte from the
 /// same page as its low byte, so a vector must never straddle a page boundary; this one cannot.
 const IRQ_DISPATCH_VECTOR: u8 = 0x0e;
+// Said above and enforced here: lowering `FIRST_ZERO_PAGE_ADDRESS` would hand the program's first
+// variable the vector's low byte and corrupt every dispatch, which is not a failure a test would
+// read as its own cause. A `const` assertion makes it a red build instead.
+const _: () = assert!(IRQ_DISPATCH_VECTOR + 1 < FIRST_ZERO_PAGE_ADDRESS);
 
 /// `LDX #$00` sets 256 iterations, because the first `DEX` wraps it to 255.
 fn iteration_operand(iterations: u32) -> u16 {

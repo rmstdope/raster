@@ -3,7 +3,7 @@ use raster_6502::{
     Instruction,
 };
 use raster_link::{
-    link_mmc3_program, mmc3_reset_runtime_bytes, FixedBankItem, InterruptVectors, Label,
+    link_mmc3_program, mmc3_reset_runtime_bytes, FixedBankItem, InterruptVectors, Label, LinkError,
     RelocatableProgram, Relocation, RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
     MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
 };
@@ -148,4 +148,14 @@ fn ships_embedded_data_in_the_linked_rom() {
     );
     assert_eq!(bank[body_start + 7], 0x40); // the runtime's RTI, after the data
     assert_eq!(rom.code_len, body_start + 8);
+}
+
+/// The linker resolves the IRQ entry through the same label table as everything else, so a label
+/// codegen never defined has to be a refusal rather than a vector pointing at address zero.
+#[test]
+fn an_irq_entry_that_was_never_defined_is_refused() {
+    assert_eq!(
+        link_mmc3_program(&one_instruction_body(), Label(0), Some(Label(9)), true),
+        Err(LinkError::UndefinedLabel { label: Label(9) })
+    );
 }

@@ -274,6 +274,45 @@ fn irq_frame_rejects_a_ppu_configuration_it_cannot_prove() {
     );
 }
 
+/// A register written on one path and not another is not a configuration the compiler can read,
+/// whichever arm the author happened to write first. Taking the textually last store made the two
+/// programs below disagree: one refused, the other accepted with `ppu.mask = $00` reaching the
+/// hardware on a path the check never saw — the silent failure `using irq` exists to prevent.
+#[test]
+fn irq_frame_rejects_a_ppu_register_written_on_only_some_paths() {
+    for arms in [
+        "if paused == 1 { ppu.mask = $1e } else { ppu.mask = $00 }",
+        "if paused == 1 { ppu.mask = $00 } else { ppu.mask = $1e }",
+    ] {
+        let source = format!(
+            "var paused: u8 = 0\n\nmain {{\n    ppu.ctrl = $08\n    {arms}\n}}\n\
+             \nframe bars using irq {{\n    at scanline 60 {{ ppu.data = $12 }}\n}}\n"
+        );
+        let diagnostics =
+            compile_source(&source).expect_err("a mask written on only some paths cannot be read");
+
+        assert_eq!(
+            diagnostics[0].message,
+            "`using irq` needs a constant `ppu.mask` before the frame, and this program writes it \
+             on some paths and not others",
+            "the arms written as `{arms}`"
+        );
+    }
+}
+
+/// The refusal above is about a *conditional* store, not about a program that has a branch in it.
+/// A configuration written after the branch has joined is as provable as one in straight-line code,
+/// and refusing it would turn away most real programs.
+#[test]
+fn irq_frame_accepts_a_ppu_configuration_written_after_a_branch() {
+    let source = "var paused: u8 = 0\n\nmain {\n    if paused == 1 { ppu.addr = $00 }\n\
+                  \n    while paused == 1 { ppu.addr = $00 }\n\
+                  \n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.data = $12 }\n}\n";
+
+    compile_source(source).expect("a configuration written after the branches is provable");
+}
+
 /// A `ppu.ctrl` written by a function `main` calls is as good as one written in `main`: the
 /// configuration is read through the calls in the order they run.
 #[test]
@@ -468,6 +507,53 @@ fn a_single_event_irq_chain_wraps_onto_itself() {
         u16::from_le_bytes([emitted[21], emitted[25]]),
         handler,
         "the only handler chains to itself"
+    );
+}
+
+/// The latch-0 edge, which no other case reaches: an event on the very first visible scanline is
+/// one A12 rise from the pre-render line the arming reloads on, and the MMC3 reloads to zero and
+/// asserts on that same rise. A latch of anything but 0 here would put the first bar a scanline
+/// late, every frame.
+#[test]
+fn an_irq_event_on_the_first_visible_scanline_arms_with_a_latch_of_zero() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 0 { ppu.data = $12 }\n}\n";
+    let image = compile_source(source).expect("the fixture compiles").image;
+
+    let armed = image
+        .windows(8)
+        .position(|window| {
+            window[0] == 0xa9
+                && window[2..4] == [0x85, 0x0e]
+                && window[4] == 0xa9
+                && window[6..8] == [0x85, 0x0f]
+        })
+        .expect("the frame loop points the dispatch vector at its first handler");
+    assert_eq!(
+        &image[armed + 8..armed + 8 + 11],
+        &[0xa9, 0, 0x8d, 0x00, 0xc0, 0x8d, 0x01, 0xc0, 0x8d, 0x01, 0xe0],
+        "an event on scanline 0 is armed with a latch of 0"
+    );
+}
+
+/// A `using irq` frame with no events has no handler to dispatch to, so `$FFFE` must fall back to
+/// the runtime's own `RTI` rather than to whatever the chain would otherwise have pointed at. An
+/// IRQ vector left dangling here is a console that jumps into the middle of the program.
+#[test]
+fn an_irq_frame_with_no_events_leaves_the_interrupt_vector_on_the_runtime() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n}\n";
+    let rom = compile_source(source).expect("a frame with no events compiles");
+
+    assert_eq!(
+        rom.vectors.irq, rom.vectors.nmi,
+        "with no handlers, `$FFFE` is the runtime's bare interrupt handler"
+    );
+    let offset = fixed_bank_offset(rom.vectors.irq);
+    assert_eq!(
+        &rom.image[offset..offset + 1],
+        &[0x40],
+        "and it is an `RTI`"
     );
 }
 

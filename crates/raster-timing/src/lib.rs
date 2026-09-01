@@ -484,8 +484,11 @@ pub const MAX_IRQ_DELTA_SCANLINES: u16 = 256;
 /// section 7.3 says the compiler carries for the author.
 ///
 /// `scanlines` is a real distance between two events, so it is at least one and at most
-/// [`MAX_IRQ_DELTA_SCANLINES`]; a schedule that asks for more is refused by
-/// [`validate_mmc3_irq_frame`] before anything reaches here.
+/// [`MAX_IRQ_DELTA_SCANLINES`]. Nothing in this crate enforces that — what bounds it is a crate
+/// away, in `raster-ir`: an event's scanline is refused unless it is a visible one (0 to 239), and
+/// two events on the same scanline are refused as well, so no delta a chain can ask for exceeds
+/// 241. The `debug_assert!` below is the guard for a caller that stops being true of, and the
+/// `clamp` keeps a release build from producing a latch out of thin air.
 pub fn mmc3_latch_for_delta(scanlines: u16) -> u8 {
     debug_assert!(
         (1..=MAX_IRQ_DELTA_SCANLINES).contains(&scanlines),
@@ -558,6 +561,9 @@ pub enum RegisterState {
     Known(u8),
     /// The last store was not a constant, so nothing here can be decided from it.
     Unproven,
+    /// The register is written on some paths through the program and not others, so there is no
+    /// single value to check — whichever arm the author wrote first.
+    Conditional,
 }
 
 /// The PPU configuration a `frame ... using irq` inherits from the program that set it up.
@@ -582,6 +588,8 @@ pub enum Mmc3IrqError {
     PatternTablesShareHalf { ctrl: u8 },
     /// The program's last store to this register was not a constant, so the check cannot be made.
     UnprovenConfiguration { register: &'static str },
+    /// The register is written under a branch, so the program has no one configuration to check.
+    ConditionalConfiguration { register: &'static str },
 }
 
 /// Check the hardware preconditions an MMC3 IRQ chain depends on.
@@ -594,17 +602,25 @@ pub enum Mmc3IrqError {
 ///
 /// 8x16 sprites are refused rather than judged: in that mode the hardware ignores the sprite-half
 /// bit and takes the half from bit 0 of each tile index, which is not in a register this can read.
+///
+/// `ppu.ctrl` is the whole of what decides the two halves *today*, and that is a fact about the
+/// reset runtime rather than about the MMC3: it programs CHR mode 0 with R0-R5 as 0, 2, 4, 5, 6, 7,
+/// a flat 8 KiB map with no A12 inversion, and nothing else can change it while PRG/CHR bank
+/// switching is unsupported. Spec section 7.3 asks for the CHR layout to be checked too; when a
+/// program can choose its own, this function needs it passed in and the sentence above stops being
+/// true on its own.
+/// One register's value, or the reason it does not have one this can check.
+fn known(state: RegisterState, register: &'static str) -> Result<u8, Mmc3IrqError> {
+    match state {
+        RegisterState::Known(value) => Ok(value),
+        RegisterState::Unproven => Err(Mmc3IrqError::UnprovenConfiguration { register }),
+        RegisterState::Conditional => Err(Mmc3IrqError::ConditionalConfiguration { register }),
+    }
+}
+
 pub fn validate_mmc3_irq_frame(ppu: &PpuConfiguration) -> Result<(), Mmc3IrqError> {
-    let RegisterState::Known(ctrl) = ppu.ctrl else {
-        return Err(Mmc3IrqError::UnprovenConfiguration {
-            register: "ppu.ctrl",
-        });
-    };
-    let RegisterState::Known(mask) = ppu.mask else {
-        return Err(Mmc3IrqError::UnprovenConfiguration {
-            register: "ppu.mask",
-        });
-    };
+    let ctrl = known(ppu.ctrl, "ppu.ctrl")?;
+    let mask = known(ppu.mask, "ppu.mask")?;
     if mask & PPU_MASK_RENDERING == 0 {
         return Err(Mmc3IrqError::RenderingDisabled { mask });
     }

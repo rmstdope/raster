@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use raster_diag::Refusal;
 use raster_sema::TypedProgram;
@@ -717,6 +717,7 @@ impl Lowerer {
             &functions,
             &mut visiting,
             &mut configuration,
+            false,
         );
         if let Some(main) = &self.program.main {
             collect_ppu_stores(
@@ -724,6 +725,7 @@ impl Lowerer {
                 &functions,
                 &mut visiting,
                 &mut configuration,
+                false,
             );
         }
         configuration
@@ -1814,21 +1816,32 @@ fn destination_value(destination: Destination) -> Value {
 /// `visiting` is the call stack: `reject_recursive_calls` has already refused a recursive program,
 /// and this walk only runs on one with no errors, so the guard is what makes the recursion provably
 /// finite rather than merely finite in practice.
+///
+/// `conditional` says whether these statements are themselves reached only on some paths — see
+/// [`Conditionally`] for how a store under a branch is told from one after it. Taking the
+/// *textually* last store instead made `if c { mask = $1e } else { mask = $00 }` and the same two
+/// arms swapped disagree with each other, and let the second of them compile a ROM that turns
+/// rendering off on a path the check never looked at.
 fn collect_ppu_stores(
     statements: &[Statement],
     functions: &BTreeMap<Label, &Function>,
     visiting: &mut Vec<Label>,
     configuration: &mut PpuConfiguration,
+    conditional: bool,
 ) {
+    let mut reached = Conditionally::new(conditional);
     for statement in statements {
+        reached.before(statement);
+        let conditional = reached.here();
         match statement {
             Statement::Assign { destination, value } => {
                 // The value runs before the store, calls in it included.
-                collect_value_stores(value, functions, visiting, configuration);
+                collect_value_stores(value, functions, visiting, configuration, conditional);
                 let Destination::Register(register) = destination else {
                     continue;
                 };
                 let state = match value {
+                    _ if conditional => RegisterState::Conditional,
                     Value::Constant(value) => RegisterState::Known(*value),
                     _ => RegisterState::Unproven,
                 };
@@ -1842,22 +1855,81 @@ fn collect_ppu_stores(
                 target, arguments, ..
             } => {
                 for argument in arguments {
-                    collect_value_stores(argument, functions, visiting, configuration);
+                    collect_value_stores(argument, functions, visiting, configuration, conditional);
                 }
-                enter_function(*target, functions, visiting, configuration);
+                enter_function(*target, functions, visiting, configuration, conditional);
             }
             Statement::Branch { condition, .. } => {
-                collect_value_stores(&condition.left, functions, visiting, configuration);
-                collect_value_stores(&condition.right, functions, visiting, configuration);
+                collect_value_stores(
+                    &condition.left,
+                    functions,
+                    visiting,
+                    configuration,
+                    conditional,
+                );
+                collect_value_stores(
+                    &condition.right,
+                    functions,
+                    visiting,
+                    configuration,
+                    conditional,
+                );
             }
             Statement::Return(Some(value)) => {
-                collect_value_stores(value, functions, visiting, configuration)
+                collect_value_stores(value, functions, visiting, configuration, conditional)
             }
             Statement::Timed { body, .. } => {
-                collect_ppu_stores(body, functions, visiting, configuration)
+                collect_ppu_stores(body, functions, visiting, configuration, conditional)
             }
             _ => {}
         }
+    }
+}
+
+/// Which statements of a flattened body run every time it runs, and which run only on some paths.
+///
+/// The IR is flat, so an `if` is a `Branch` to a label further down and an `else` adds a `Jump` over
+/// the first arm. A statement is conditional exactly while some *forward* jump is outstanding — one
+/// whose label has not been passed yet, which is the jump that could have skipped over here. A
+/// backward jump is a loop's own edge and skips nothing, so it is not counted; without that, every
+/// statement after the first `while` would read as conditional and a configuration written after
+/// the loop would be refused.
+struct Conditionally {
+    enclosing: bool,
+    seen: BTreeSet<Label>,
+    outstanding: BTreeSet<Label>,
+}
+
+impl Conditionally {
+    fn new(enclosing: bool) -> Self {
+        Self {
+            enclosing,
+            seen: BTreeSet::new(),
+            outstanding: BTreeSet::new(),
+        }
+    }
+
+    /// Take account of `statement` before it is walked.
+    fn before(&mut self, statement: &Statement) {
+        match statement {
+            Statement::Label(label) => {
+                self.seen.insert(*label);
+                self.outstanding.remove(label);
+            }
+            Statement::Branch { if_false, .. } => self.forward(*if_false),
+            Statement::Jump { target } => self.forward(*target),
+            _ => {}
+        }
+    }
+
+    fn forward(&mut self, target: Label) {
+        if !self.seen.contains(&target) {
+            self.outstanding.insert(target);
+        }
+    }
+
+    fn here(&self) -> bool {
+        self.enclosing || !self.outstanding.is_empty()
     }
 }
 
@@ -1869,23 +1941,24 @@ fn collect_value_stores(
     functions: &BTreeMap<Label, &Function>,
     visiting: &mut Vec<Label>,
     configuration: &mut PpuConfiguration,
+    conditional: bool,
 ) {
     match value {
         Value::Constant(_) | Value::Place(_) | Value::Register(_) => {}
         Value::Unary { operand, .. } => {
-            collect_value_stores(operand, functions, visiting, configuration)
+            collect_value_stores(operand, functions, visiting, configuration, conditional)
         }
         Value::Binary { left, right, .. } => {
-            collect_value_stores(left, functions, visiting, configuration);
-            collect_value_stores(right, functions, visiting, configuration);
+            collect_value_stores(left, functions, visiting, configuration, conditional);
+            collect_value_stores(right, functions, visiting, configuration, conditional);
         }
         Value::Call {
             target, arguments, ..
         } => {
             for argument in arguments {
-                collect_value_stores(argument, functions, visiting, configuration);
+                collect_value_stores(argument, functions, visiting, configuration, conditional);
             }
-            enter_function(*target, functions, visiting, configuration);
+            enter_function(*target, functions, visiting, configuration, conditional);
         }
     }
 }
@@ -1896,6 +1969,7 @@ fn enter_function(
     functions: &BTreeMap<Label, &Function>,
     visiting: &mut Vec<Label>,
     configuration: &mut PpuConfiguration,
+    conditional: bool,
 ) {
     let Some(function) = functions.get(&target) else {
         return;
@@ -1904,7 +1978,13 @@ fn enter_function(
         return;
     }
     visiting.push(target);
-    collect_ppu_stores(&function.statements, functions, visiting, configuration);
+    collect_ppu_stores(
+        &function.statements,
+        functions,
+        visiting,
+        configuration,
+        conditional,
+    );
     visiting.pop();
 }
 
@@ -1936,6 +2016,10 @@ fn mmc3_irq_message(error: Mmc3IrqError) -> String {
         Mmc3IrqError::UnprovenConfiguration { register } => format!(
             "`using irq` needs a constant `{register}` before the frame, and this program's last \
              write to it is not one"
+        ),
+        Mmc3IrqError::ConditionalConfiguration { register } => format!(
+            "`using irq` needs a constant `{register}` before the frame, and this program writes \
+             it on some paths and not others"
         ),
     }
 }
