@@ -70,6 +70,7 @@ fn exact_budget_rejects_under_and_over_budget() {
         Err(TimingError::OverBudget {
             measured_cycles: 6,
             budget: 4,
+            oam_dma_cycles: 0,
         })
     );
 }
@@ -92,6 +93,7 @@ fn upper_bound_permits_a_cheaper_region_and_rejects_an_expensive_one() {
         Err(TimingError::OverBudget {
             measured_cycles: 6,
             budget: 5,
+            oam_dma_cycles: 0,
         })
     );
 }
@@ -224,6 +226,7 @@ fn a_padded_block_over_its_budget_is_rejected_rather_than_shortened() {
         Err(TimingError::OverBudget {
             measured_cycles: 6,
             budget: 4,
+            oam_dma_cycles: 0,
         })
     );
 }
@@ -664,4 +667,47 @@ fn an_irq_handler_body_gets_what_is_left_of_the_scanline_it_interrupts() {
     );
 
     assert_eq!(IRQ_HANDLER_BODY_CYCLES, 9);
+}
+
+/// `STA $4014`, four cycles of instruction and a 514-cycle stall behind them.
+fn store_dma_port() -> Instruction {
+    Instruction {
+        opcode: 0x8d,
+        mode: AddressingMode::Absolute,
+        operand: Some(0x4014),
+    }
+}
+
+#[test]
+fn a_store_to_the_dma_port_is_charged_its_worst_case_stall() {
+    let dma = store_dma_port();
+    let ctrl = Instruction {
+        opcode: 0x8d,
+        mode: AddressingMode::Absolute,
+        operand: Some(0x2000),
+    };
+
+    assert_eq!(raster_timing::worst_case_cycles(&[dma]), 4 + 514);
+    // A store to any other absolute address is the instruction and nothing else.
+    assert_eq!(raster_timing::worst_case_cycles(&[ctrl]), 4);
+    // Two DMAs are two stalls: the charge accumulates rather than saturating.
+    assert_eq!(raster_timing::worst_case_cycles(&[dma, dma]), 2 * (4 + 514));
+}
+
+#[test]
+fn stx_and_sty_to_the_dma_port_start_a_dma_too() {
+    // Codegen emits only `STA` today. The rule is about the hardware, which
+    // starts a DMA on whatever writes the port.
+    for opcode in [0x8e, 0x8c] {
+        let store = Instruction {
+            opcode,
+            mode: AddressingMode::Absolute,
+            operand: Some(0x4014),
+        };
+        assert_eq!(
+            raster_timing::worst_case_cycles(&[store]),
+            4 + 514,
+            "opcode ${opcode:02x}"
+        );
+    }
 }

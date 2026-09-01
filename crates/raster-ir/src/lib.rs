@@ -43,6 +43,7 @@ pub enum Register {
     PpuScroll,
     PpuAddr,
     PpuData,
+    PpuOamDma,
     Mmc3BankSelect,
     Mmc3BankData,
     Mmc3Mirroring,
@@ -64,6 +65,7 @@ impl Register {
             Self::PpuScroll => 0x2005,
             Self::PpuAddr => 0x2006,
             Self::PpuData => 0x2007,
+            Self::PpuOamDma => raster_timing::OAM_DMA_PORT,
             Self::Mmc3BankSelect => 0x8000,
             Self::Mmc3BankData => 0x8001,
             Self::Mmc3Mirroring => 0xa000,
@@ -91,6 +93,7 @@ impl Register {
             Self::PpuScroll => "ppu.scroll",
             Self::PpuAddr => "ppu.addr",
             Self::PpuData => "ppu.data",
+            Self::PpuOamDma => "ppu.oam_dma",
             Self::Mmc3BankSelect => "mmc3.bank_select",
             Self::Mmc3BankData => "mmc3.bank_data",
             Self::Mmc3Mirroring => "mmc3.mirroring",
@@ -104,10 +107,11 @@ impl Register {
 
     /// Whether a read of this port returns anything to do with the register.
     ///
-    /// Three of the sixteen can be read: $2002, $2004 and $2007. A read of any
-    /// other returns whatever was last on the PPU's data bus, or — at $8000 and
-    /// above — a byte of the PRG bank the mapper has at that address, which is
-    /// a byte of the program itself.
+    /// Three of the seventeen can be read: $2002, $2004 and $2007. A read of
+    /// any other returns whatever was last on the PPU's data bus, or — at $8000
+    /// and above — a byte of the PRG bank the mapper has at that address, which
+    /// is a byte of the program itself, or — at $4014 — whatever was last on
+    /// the CPU bus.
     ///
     /// Both sides are listed rather than `!matches!(...)` on the three, so the
     /// match stays exhaustive with no `_` arm: a register added later cannot
@@ -121,6 +125,7 @@ impl Register {
             | Self::PpuOamAddr
             | Self::PpuScroll
             | Self::PpuAddr
+            | Self::PpuOamDma
             | Self::Mmc3BankSelect
             | Self::Mmc3BankData
             | Self::Mmc3Mirroring
@@ -134,7 +139,7 @@ impl Register {
 
     /// Whether a write to this port reaches the register at all.
     ///
-    /// One of the sixteen is read-only: $2002, the PPU's status port, which the
+    /// One of the seventeen is read-only: $2002, the PPU's status port, which the
     /// CPU can only read. The PPU discards a store to it entirely — there is no
     /// register behind the address to hold the value, and no flag or latch the
     /// store moves.
@@ -156,6 +161,7 @@ impl Register {
             | Self::PpuScroll
             | Self::PpuAddr
             | Self::PpuData
+            | Self::PpuOamDma
             | Self::Mmc3BankSelect
             | Self::Mmc3BankData
             | Self::Mmc3Mirroring
@@ -387,6 +393,15 @@ pub struct LowerWarning {
     pub label: String,
     pub notes: Vec<String>,
     pub span: Span,
+    /// Whether this warning's claim holds only once the block met its budget.
+    ///
+    /// `oam_dma_uncertainty` says what a block *spends*, which is true only
+    /// after padding has brought it to its budget. A block refused as over
+    /// budget is never padded, so that sentence would contradict the refusal
+    /// printed beside it — one fault, one message, the same doctrine that makes
+    /// the bank-select warning stand aside from a refused read. Every other
+    /// warning is about what the author wrote and stays true either way.
+    pub assumes_budget_met: bool,
 }
 
 /// Lowering that produced errors, and the warnings it found on the way.
@@ -515,7 +530,13 @@ const PPU_DATA_KEEP_IT: &str = "read the byte you want into a variable of your o
 /// What a read of a write-only port actually returns.
 fn dead_read_note(register: Register) -> String {
     let address = register.address();
-    if address >= MMC3_PORT_BASE {
+    if address == raster_timing::OAM_DMA_PORT {
+        format!(
+            "${address:04X} does not read back at all: it is a write-only trigger on\n\
+             the CPU bus, and a read of it returns whatever was last on\n\
+             that bus"
+        )
+    } else if address >= MMC3_PORT_BASE {
         format!(
             "reading ${address:04X} returns a byte of your own program from the PRG\n\
              bank mapped there, not the last value written"
@@ -539,6 +560,93 @@ enum ReadSite {
     /// There is no read on that line at all, so the refusal says which operator
     /// made one. Carries the operator as the author wrote it.
     CompoundAssignment(&'static str),
+}
+
+/// How many OAM DMAs a block starts, at any depth.
+///
+/// Shaped after `writes_ppu_register` in `raster-sema`, and unlike
+/// `ppu_data_reads` it **does** descend into a nested `cycles(...)` block: an
+/// inner region's stall is part of the outer region's cost too, so an outer
+/// block padded to an exact budget is every bit as uncertain as the inner one.
+/// Both warn, and both are telling the truth about themselves.
+fn oam_dma_writes(block: &Block) -> usize {
+    block
+        .statements
+        .iter()
+        .map(|statement| match &statement.value {
+            SyntaxStatement::Expression(expression) => usize::from(is_oam_dma_write(expression)),
+            SyntaxStatement::Block(body) | SyntaxStatement::Loop(body) => oam_dma_writes(body),
+            SyntaxStatement::If {
+                then_body,
+                else_body,
+                ..
+            } => oam_dma_writes(then_body) + else_body.as_ref().map_or(0, oam_dma_writes),
+            SyntaxStatement::While { body, .. }
+            | SyntaxStatement::For { body, .. }
+            | SyntaxStatement::Cycles { body, .. } => oam_dma_writes(body),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Whether one expression assigns to `ppu.oam_dma`.
+///
+/// The operator list is the one `is_ppu_register_write` uses: a compound
+/// assignment starts a DMA too, and is refused for reading the port rather than
+/// for writing it — which is a different diagnostic on a later line.
+fn is_oam_dma_write(expression: &Spanned<SyntaxExpression>) -> bool {
+    let SyntaxExpression::Infix { left, operator, .. } = &expression.value else {
+        return false;
+    };
+    if !matches!(
+        operator.value,
+        Operator::Assign
+            | Operator::PlusEqual
+            | Operator::MinusEqual
+            | Operator::StarEqual
+            | Operator::SlashEqual
+    ) {
+        return false;
+    }
+    let SyntaxExpression::Member { base, member } = &left.value else {
+        return false;
+    };
+    member.value == "oam_dma"
+        && matches!(&base.value, SyntaxExpression::Name(name) if name.value == "ppu")
+}
+
+/// The warning an exact budget earns when it holds an OAM DMA.
+///
+/// Only `cycles(N)` gets it. A ceiling is still a true ceiling at 514 and a
+/// report is explicitly a measurement, so the warning is noise in both — and
+/// `cycles(N)` is the only bound whose promise this quietly softens.
+fn oam_dma_uncertainty(stalls: usize, budget: u32, span: Span) -> LowerWarning {
+    let (message, label) = if stalls == 1 {
+        (
+            "this block's cost is one cycle uncertain".to_owned(),
+            format!(
+                "an OAM DMA stalls 513 or 514 cycles, so this block spends {} or {budget}",
+                budget - 1
+            ),
+        )
+    } else {
+        (
+            format!("this block's cost is {stalls} cycles uncertain"),
+            format!(
+                "{stalls} OAM DMAs stall 513 or 514 cycles each, so this block spends between {} and {budget}",
+                budget - stalls as u32
+            ),
+        )
+    };
+    LowerWarning {
+        message,
+        label,
+        notes: vec![format!(
+            "the block is charged the worst case, so it never overruns;\n`cycles(<= {budget})` says the same thing without the promise"
+        )],
+        span,
+        assumes_budget_met: true,
+    }
 }
 
 /// How many times this statement reads `ppu.data` in its own right.
@@ -1001,6 +1109,7 @@ fn stolen_vblank_flag(span: Span) -> LowerWarning {
             SYNC_FIRST.to_owned(),
         ],
         span,
+        assumes_budget_met: false,
     }
 }
 
@@ -1029,6 +1138,7 @@ fn half_written_pair(opener: LatchPair, span: Span, by: LatchBreaker) -> LowerWa
             move_it.to_owned(),
         ],
         span,
+        assumes_budget_met: false,
     }
 }
 
@@ -1044,6 +1154,7 @@ fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
         label: label.to_owned(),
         notes: vec![reset_note.to_owned(), BANK_SELECT_MODE_NOTE.to_owned()],
         span,
+        assumes_budget_met: false,
     };
     let Value::Constant(bits) = value else {
         return Some(LowerWarning {
@@ -1056,6 +1167,7 @@ fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
                     .to_owned(),
             ],
             span,
+            assumes_budget_met: false,
         });
     };
     let prg = bits & MMC3_PRG_MODE != 0;
@@ -1099,6 +1211,7 @@ fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarnin
             second_note.to_owned(),
         ],
         span,
+        assumes_budget_met: false,
     };
     match selection {
         BankSelection::Known(0..=5) => None,
@@ -1148,6 +1261,7 @@ fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarnin
                 .to_owned(),
             ],
             span,
+            assumes_budget_met: false,
         }),
     }
 }
@@ -1819,6 +1933,16 @@ impl Lowerer {
             }
             SyntaxStatement::Cycles { spec, label, body } => {
                 let constraint = self.cycle_constraint(spec, label.as_ref());
+                // Pushed before the body is lowered, so this block's own
+                // warning comes out ahead of any warning from inside it and the
+                // two read in source order.
+                if let Some(CycleConstraint::Exact(budget)) = constraint {
+                    let stalls = oam_dma_writes(body);
+                    if stalls > 0 {
+                        self.warnings
+                            .push(oam_dma_uncertainty(stalls, budget, spec.span));
+                    }
+                }
                 self.enter_scope();
                 let (statements, always_returns) = self.lower_statements(body);
                 self.leave_scope();
@@ -2473,6 +2597,7 @@ impl Lowerer {
                     PPU_DATA_READ_TWICE.to_owned(),
                 ],
                 span,
+                assumes_budget_met: false,
             });
         }
         Some(Value::Register(Register::PpuData))
@@ -2556,6 +2681,7 @@ impl Lowerer {
             ("ppu", "scroll") => Register::PpuScroll,
             ("ppu", "addr") => Register::PpuAddr,
             ("ppu", "data") => Register::PpuData,
+            ("ppu", "oam_dma") => Register::PpuOamDma,
             ("mmc3", "bank_select") => Register::Mmc3BankSelect,
             ("mmc3", "bank_data") => Register::Mmc3BankData,
             ("mmc3", "mirroring") => Register::Mmc3Mirroring,

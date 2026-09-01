@@ -417,6 +417,62 @@ fn timing_overage_diagnostic_names_cost_budget_and_span() {
 }
 
 #[test]
+fn an_over_budget_block_says_how_much_of_it_was_one_oam_dma() {
+    let directory = Scratch::new("overbudgetdma");
+    let input = directory.path().join("dma.raster");
+    fs::write(
+        &input,
+        "main {\n    sync exact\n    cycles(114) pad {\n        ppu.oam_dma = $02\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "error: timed block exceeds its budget\n",
+                " --> {path}:3:5\n",
+                "  |\n",
+                "3 |     cycles(114) pad {{\n",
+                "  |     ^^^^^^^^^^^^^^^ block costs 529 cycles, budget is 114\n",
+                "  = note: an indexed read that may cross a page and a branch that may be\n",
+                "          taken are both charged their worst case\n",
+                "  = note: 514 of this block's 529 cycles are one OAM DMA, charged the\n",
+                "          worst of the 513 or 514 it may stall\n",
+                "\n",
+                "error: could not compile {path} (1 error)\n",
+            ),
+            path = input.display()
+        )
+    );
+}
+
+#[test]
+fn an_over_budget_block_counts_the_oam_dmas_it_holds() {
+    let directory = Scratch::new("overbudgetdmas");
+    let input = directory.path().join("dmas.raster");
+    fs::write(
+        &input,
+        "main {\n    sync exact\n    cycles(114) pad {\n        ppu.oam_dma = $02\n        ppu.oam_dma = $02\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert!(
+        stderr.contains(
+            "  = note: 1028 of this block's 1049 cycles are 2 OAM DMAs, charged the\n          worst of the 513 or 514 each may stall\n"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_report_region_prints_its_measured_cost_in_the_build_summary() {
     let directory = Scratch::new("cyclesreport");
     let input = directory.path().join("report.raster");

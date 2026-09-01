@@ -82,9 +82,32 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
     // Every failing stage after lowering reports the warnings lowering found,
     // for the reason the whole run does: the author who fixes the error is the
     // author who needed the warning, and they only get one look at it.
-    let warnings = warned(std::mem::take(&mut ir.warnings), source);
-    let output = generate_with_isa(&ir, LEGAL_ISA)
-        .map_err(|error| beside(&warnings, codegen_diagnostic(error, source)))?;
+    let lower_warnings = std::mem::take(&mut ir.warnings);
+    let warnings = warned(lower_warnings.clone(), source);
+    let output = generate_with_isa(&ir, LEGAL_ISA).map_err(|error| {
+        // One fault, one message: a warning saying what a block *spends* is
+        // about a padding that never happened once the block is refused for
+        // costing more than its budget, and printing it beside the refusal puts
+        // two different numbers for one block in front of the author.
+        let kept = if matches!(
+            error,
+            CodegenError::Timing {
+                error: TimingError::OverBudget { .. },
+                ..
+            }
+        ) {
+            warned(
+                lower_warnings
+                    .into_iter()
+                    .filter(|warning| !warning.assumes_budget_met)
+                    .collect(),
+                source,
+            )
+        } else {
+            warnings.clone()
+        };
+        beside(&kept, codegen_diagnostic(error, source))
+    })?;
     // Only `using timed` pays the three-frame pass the fixed-bank note describes; an `irq`
     // frame emits its handlers once.
     let timed_frame = ir
@@ -248,14 +271,38 @@ fn timing_diagnostic(error: TimingError, span: raster_syntax::Span, source: &str
         TimingError::OverBudget {
             measured_cycles,
             budget,
-        } => at(
-            "timed block exceeds its budget",
-            format!("block costs {measured_cycles} cycles, budget is {budget}"),
-        )
-        .with_note(
-            "an indexed read that may cross a page and a branch that may be
+            oam_dma_cycles,
+        } => {
+            let diagnostic = at(
+                "timed block exceeds its budget",
+                format!("block costs {measured_cycles} cycles, budget is {budget}"),
+            )
+            .with_note(
+                "an indexed read that may cross a page and a branch that may be
 taken are both charged their worst case",
-        ),
+            );
+            // Only when the block holds one: the vast majority do not, and a
+            // clause about DMA under every over-budget block is noise. The
+            // ratio is spelled out rather than asserted, because "514 alone is
+            // over this budget" is false whenever the block is over for other
+            // reasons too.
+            if oam_dma_cycles == 0 {
+                diagnostic
+            } else {
+                let stalls = oam_dma_cycles / raster_timing::OAM_DMA_STALL_CYCLES;
+                diagnostic.with_note(if stalls == 1 {
+                    format!(
+                        "{oam_dma_cycles} of this block's {measured_cycles} cycles are one OAM DMA, charged the
+worst of the 513 or 514 it may stall"
+                    )
+                } else {
+                    format!(
+                        "{oam_dma_cycles} of this block's {measured_cycles} cycles are {stalls} OAM DMAs, charged the
+worst of the 513 or 514 each may stall"
+                    )
+                })
+            }
+        }
         TimingError::UnderBudget {
             measured_cycles,
             budget,

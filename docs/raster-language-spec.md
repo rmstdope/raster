@@ -528,8 +528,8 @@ ppu.status                      // read
 ppu.addr   = $3F00
 ppu.data   = $21
 ppu.scroll = x
-oam.addr   = 0
-oam.dma    = $02
+ppu.oam_addr = 0
+ppu.oam_dma  = $02
 
 apu.pulse1.volume = $BF
 mmc3.bank_select  = 6
@@ -593,7 +593,7 @@ no register it can name.
 
 ### 9.5 Which registers read and which accept writes
 
-Sixteen registers have names. Three of them can be read, and fifteen of
+Seventeen registers have names. Three of them can be read, and sixteen of
 them can be written; `ppu.status` is the only one that can be read and not
 written.
 
@@ -607,6 +607,7 @@ written.
 | `ppu.scroll` | `$2005` | refused | **allowed** |
 | `ppu.addr` | `$2006` | refused | **allowed** |
 | `ppu.data` | `$2007` | **allowed, and buffered** | **allowed** |
+| `ppu.oam_dma` | `$4014` | refused | **allowed** |
 | `mmc3.bank_select` | `$8000` | refused | **allowed** |
 | `mmc3.bank_data` | `$8001` | refused | **allowed** |
 | `mmc3.mirroring` | `$A000` | refused | **allowed** |
@@ -616,12 +617,14 @@ written.
 | `mmc3.irq_disable` | `$E000` | refused | **allowed** |
 | `mmc3.irq_enable` | `$E001` | refused | **allowed** |
 
-The thirteen that cannot be read are write-only ports. A read of one does
+The fourteen that cannot be read are write-only ports. A read of one does
 not return the last value written: a PPU port returns whatever was last on
 the PPU's data bus, and an MMC3 port returns a byte of your own program,
-from the PRG bank the mapper has at that address. There is no value that
-makes such a read correct, so the compiler refuses it rather than warning
-about it. `ppu.status` is the mirror of that: `$2002` is a status port the
+from the PRG bank the mapper has at that address. `ppu.oam_dma` is neither
+— `$4014` is a trigger on the CPU bus rather than a register, does not read
+back at all, and a read of it returns whatever was last on that bus. There
+is no value that makes such a read correct, so the compiler refuses it
+rather than warning about it. `ppu.status` is the mirror of that: `$2002` is a status port the
 CPU can only read, the PPU ignores a store to it completely, and a write is
 refused for the same reason.
 

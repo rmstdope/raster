@@ -30,7 +30,7 @@ fn lower_failure(source: &str) -> raster_ir::LowerFailure {
 /// whether a write of it is refused. Written out here rather than derived, so
 /// the test fails when the compiler's own table changes rather than agreeing
 /// with it by construction.
-const REGISTERS: [(Register, &str, u16, bool, bool); 16] = [
+const REGISTERS: [(Register, &str, u16, bool, bool); 17] = [
     (Register::PpuCtrl, "ppu.ctrl", 0x2000, true, false),
     (Register::PpuMask, "ppu.mask", 0x2001, true, false),
     (Register::PpuStatus, "ppu.status", 0x2002, false, true),
@@ -39,6 +39,7 @@ const REGISTERS: [(Register, &str, u16, bool, bool); 16] = [
     (Register::PpuScroll, "ppu.scroll", 0x2005, true, false),
     (Register::PpuAddr, "ppu.addr", 0x2006, true, false),
     (Register::PpuData, "ppu.data", 0x2007, false, false),
+    (Register::PpuOamDma, "ppu.oam_dma", 0x4014, true, false),
     (
         Register::Mmc3BankSelect,
         "mmc3.bank_select",
@@ -108,11 +109,22 @@ fn the_register_table_names_every_register_and_says_which_read_and_write() {
         // false for both, because they read and write.
         assert!(!(write_only && read_only), "{name}");
     }
-    // Three of the sixteen read: $2002, $2004 and $2007. One of the sixteen
-    // cannot be written: $2002. If either number moves, a register has changed
-    // sides and the spec table in §9.5 has to move with it.
+    // Three of the seventeen read: $2002, $2004 and $2007. One of the
+    // seventeen cannot be written: $2002. If either number moves, a register
+    // has changed sides and the spec table in §9.5 has to move with it.
     assert_eq!(REGISTERS.iter().filter(|row| !row.3).count(), 3);
     assert_eq!(REGISTERS.iter().filter(|row| row.4).count(), 1);
+}
+
+/// The one address the cost model matches on and codegen stores to must be one
+/// fact, not two that happen to agree today.
+#[test]
+fn the_dma_port_the_cost_model_watches_is_the_one_the_register_names() {
+    assert_eq!(
+        Register::PpuOamDma.address(),
+        raster_timing::OAM_DMA_PORT,
+        "the register's address and the port the stall is charged for are the same fact"
+    );
 }
 
 #[test]
@@ -951,6 +963,26 @@ fn reading_a_write_only_register_is_refused() {
     // sixteen characters further along.
     assert_eq!(errors[0].span.start, 23);
     assert_eq!(errors[0].span.end, 31);
+}
+
+#[test]
+fn a_read_of_the_dma_port_does_not_claim_it_is_a_ppu_port() {
+    let errors = lower_errors("main {\n    var v: u8 = ppu.oam_dma\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "`ppu.oam_dma` cannot be read");
+    assert_eq!(
+        errors[0].notes[0],
+        "$4014 does not read back at all: it is a write-only trigger on\nthe CPU bus, and a read of it returns whatever was last on\nthat bus"
+    );
+    // $4014 is neither a PPU port nor a mapper port, so neither of the other
+    // two sentences may be told about it.
+    assert!(
+        !errors[0].notes[0].contains("PPU's data bus"),
+        "the PPU sentence is false about $4014: {:?}",
+        errors[0].notes[0]
+    );
+    assert!(!errors[0].notes[0].contains("PRG"));
 }
 
 #[test]
