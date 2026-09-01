@@ -1599,3 +1599,124 @@ fn a_condition_that_reads_ppu_status_breaks_a_pair() {
     // The carets are on the `ppu.status` in the condition, not on the `while`.
     assert_eq!(line_of(source, program.warnings[0].span.start), 3);
 }
+
+/// The first read is what breaks the pair; the second finds the latch already
+/// back at its first write. The span is asserted rather than only the count,
+/// because the count passes whichever read it lands on.
+#[test]
+fn two_ppu_status_reads_in_one_statement_warn_once_on_the_first() {
+    let source =
+        "main {\n    ppu.addr = $3f\n    var s: u8 = ppu.status + ppu.status\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let span = program.warnings[0].span;
+    assert_eq!(line_of(source, span.start), 3);
+    assert_eq!(
+        &source[span.start as usize..span.end as usize],
+        "ppu.status"
+    );
+    // The first of the two, at column 17, not the second at column 30.
+    assert_eq!(span.start as usize, source.find("ppu.status").unwrap());
+}
+
+/// `ppu.status += 1` emits `LDA $2002` before its store, so it really does
+/// break a pair. The carets cover the destination, which is the width
+/// raster-1t9 chose for a compound assignment.
+#[test]
+fn a_compound_assignment_to_ppu_status_is_a_read() {
+    let source = "main {\n    ppu.addr = $3f\n    ppu.status += 1\n    ppu.addr = $00\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].message,
+        "this `ppu.status` read leaves your `ppu.addr` pair half written"
+    );
+    let span = program.warnings[0].span;
+    assert_eq!(
+        &source[span.start as usize..span.end as usize],
+        "ppu.status"
+    );
+}
+
+/// A plain write is a store the PPU throws away, which is `raster-xeo`'s bead
+/// and not a read. This bead must not turn it into one.
+#[test]
+fn a_plain_write_to_ppu_status_is_not_a_read() {
+    let program =
+        lower_source("main {\n    ppu.addr = $3f\n    ppu.status = 0\n    ppu.addr = $00\n}\n");
+
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_ppu_status_read_directly_before_sync_exact_warns() {
+    let source = "main {\n    var s: u8 = ppu.status\n    sync exact\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this `ppu.status` read costs you a frame at the `sync exact` below"
+    );
+    assert_eq!(
+        warning.label,
+        "reading $2002 clears the vblank flag the poll is waiting for"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "the flag is set once a frame, and any read of $2002 clears it,\nwhoever does the reading",
+            "`sync exact` therefore waits for the next frame rather than\nthis one",
+            "put `sync exact` first, and read `ppu.status` after it",
+        ]
+    );
+    assert_eq!(line_of(source, warning.span.start), 2);
+}
+
+/// The rule looks at the very next statement and no further: a read and a sync
+/// with anything between them is a stale flag either way.
+#[test]
+fn a_ppu_status_read_two_statements_before_sync_exact_is_silent() {
+    let program = lower_source(
+        "main {\n    var s: u8 = ppu.status\n    ppu.mask = $1e\n    sync exact\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
+
+/// The loop only exits by consuming a set flag, so the sync below it always
+/// waits a frame.
+#[test]
+fn a_poll_loop_directly_before_sync_exact_warns() {
+    let source = "main {\n    while ppu.status < $80 {\n    }\n    sync exact\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].message,
+        "this `ppu.status` read costs you a frame at the `sync exact` below"
+    );
+    assert_eq!(line_of(source, program.warnings[0].span.start), 2);
+}
+
+/// Two faults whose fixes point in opposite directions — move the read down
+/// past the pair, move it up past the sync — so the author has to see both.
+#[test]
+fn a_read_that_trips_both_rules_warns_twice_with_the_latch_first() {
+    let program =
+        lower_source("main {\n    ppu.addr = $3f\n    var s: u8 = ppu.status\n    sync exact\n}\n");
+
+    assert_eq!(program.warnings.len(), 2);
+    assert_eq!(
+        program.warnings[0].message,
+        "this `ppu.status` read leaves your `ppu.addr` pair half written"
+    );
+    assert_eq!(
+        program.warnings[1].message,
+        "this `ppu.status` read costs you a frame at the `sync exact` below"
+    );
+    assert_eq!(program.warnings[0].span, program.warnings[1].span);
+}

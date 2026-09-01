@@ -739,6 +739,17 @@ const SYNC_POLLS_STATUS: &str = "`sync exact` polls $2002, and that resets the l
 /// What to do instead, when the read is the poll `sync exact` compiles to.
 const MOVE_THE_SYNC: &str = "put `sync exact` above the pair or below it, not inside it";
 
+/// Why the vblank flag is gone by the time the sync below looks for it.
+const FLAG_IS_ONCE_A_FRAME: &str = "the flag is set once a frame, and any read of $2002 clears it,\n\
+                                    whoever does the reading";
+
+/// What the sync therefore does instead.
+const SYNC_WAITS_A_FRAME: &str = "`sync exact` therefore waits for the next frame rather than\n\
+                                  this one";
+
+/// What to write instead.
+const SYNC_FIRST: &str = "put `sync exact` first, and read `ppu.status` after it";
+
 /// Who did the reading, which decides the message, the label and the last note.
 #[derive(Clone, Copy)]
 enum LatchBreaker {
@@ -951,6 +962,21 @@ fn is_ppu_status_member(expression: &SyntaxExpression) -> bool {
 /// Whether this `Member` expression's base and member spell `ppu.status`.
 fn is_ppu_status(base: &SyntaxExpression, member: &str) -> bool {
     matches!(base, SyntaxExpression::Name(name) if name.value == "ppu") && member == "status"
+}
+
+/// The warning a `ppu.status` read earns when `sync exact` is the next
+/// statement: the read takes the flag the poll is about to spin on.
+fn stolen_vblank_flag(span: Span) -> LowerWarning {
+    LowerWarning {
+        message: "this `ppu.status` read costs you a frame at the `sync exact` below".to_owned(),
+        label: "reading $2002 clears the vblank flag the poll is waiting for".to_owned(),
+        notes: vec![
+            FLAG_IS_ONCE_A_FRAME.to_owned(),
+            SYNC_WAITS_A_FRAME.to_owned(),
+            SYNC_FIRST.to_owned(),
+        ],
+        span,
+    }
 }
 
 /// The warning a $2002 read earns when a `ppu.addr` or `ppu.scroll` pair is
@@ -1685,6 +1711,13 @@ impl Lowerer {
                         statement.span,
                         LatchBreaker::SyncExact,
                     ));
+                }
+            }
+            // The latch warning is pushed first, so a read that trips both
+            // rules reads in the order the two faults have to be fixed in.
+            if let Some(span) = effect.read {
+                if effects.get(index + 1).is_some_and(|next| next.sync) {
+                    self.warnings.push(stolen_vblank_flag(span));
                 }
             }
             // Then the state, in the order the hardware sees it: a statement's
