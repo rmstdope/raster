@@ -62,9 +62,15 @@ pub struct LinkedRom {
 /// `entry` is the label control reaches once the runtime has finished; it must
 /// be defined inside `body`. The runtime cannot simply fall through into the
 /// program, because `raster-codegen` emits every function before `main`.
+///
+/// `irq` is the program's own IRQ entry, where it has one — a `frame ... using
+/// irq` chain. Without one, `$FFFE` keeps the runtime's bare `RTI`, so a
+/// spurious interrupt returns rather than running whatever byte follows it.
+/// `$FFFA` is that `RTI` either way: this release enables no NMI.
 pub fn link_mmc3_program(
     body: &RelocatableProgram,
     entry: Label,
+    irq: Option<Label>,
     legal_isa: bool,
 ) -> Result<LinkedRom, LinkError> {
     let mut program = RelocatableProgram {
@@ -80,10 +86,16 @@ pub fn link_mmc3_program(
     let reset = *labels
         .get(&RESET_LABEL)
         .expect("the runtime defines the reset label");
+    let irq = match irq {
+        Some(label) => *labels
+            .get(&label)
+            .ok_or(LinkError::UndefinedLabel { label })?,
+        None => interrupt,
+    };
     let vectors = InterruptVectors {
         nmi: interrupt,
         reset,
-        irq: interrupt,
+        irq,
     };
     let code_len = code.len();
     let image = emit_mmc3_ines(&code, vectors).map_err(|error| match error {

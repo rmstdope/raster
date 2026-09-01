@@ -56,7 +56,7 @@ fn body() -> RelocatableProgram {
 }
 
 pub fn m1_solid_backdrop_rom() -> Vec<u8> {
-    link_mmc3_program(&body(), ENTRY, true)
+    link_mmc3_program(&body(), ENTRY, None, true)
         .expect("the fixed M1 program must link and fit its bank")
         .image
 }

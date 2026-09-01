@@ -1,17 +1,18 @@
 use std::collections::BTreeMap;
 
 use raster_6502::{
-    AddressingMode::{Absolute, Immediate, Implied, Relative, ZeroPage},
+    AddressingMode::{Absolute, Immediate, Implied, Indirect, Relative, ZeroPage},
     Instruction,
 };
 use raster_ir::{
-    BinaryOperator, Comparison, Condition, CycleConstraint, Destination, Frame, Label as IrLabel,
-    Main, Place, Program, Statement, UnaryOperator, Value,
+    BinaryOperator, Comparison, Condition, CycleConstraint, Destination, Frame, FrameStrategy,
+    Label as IrLabel, Main, Place, Program, Register, Statement, UnaryOperator, Value,
 };
 use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind};
 use raster_syntax::Span;
 use raster_timing::{
-    analyze, plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError, FRAMES_PER_PASS,
+    analyze, mmc3_latch_for_delta, mmc3_latch_for_first_event, mmc3_latch_for_next_frame,
+    plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError, FRAMES_PER_PASS,
 };
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
@@ -22,6 +23,9 @@ pub struct CodegenOutput {
     /// The label `main` was emitted at. The interrupt vectors are the runtime's
     /// to decide, so this is the one fact codegen knows about entry.
     pub main: Label,
+    /// The label `$FFFE` points at, where the program has an IRQ handler of its own. A program with
+    /// no `frame ... using irq` has none, and the linker leaves the vector on its bare `RTI`.
+    pub irq: Option<Label>,
     pub zero_page: BTreeMap<Place, u8>,
     /// The measured cost of each `cycles(?)` region, in the order the regions were generated.
     pub reports: Vec<(String, u32)>,
@@ -74,6 +78,29 @@ const DEY: u8 = 0x88;
 const BEQ: u8 = 0xf0;
 /// What `JMP absolute` costs. The jump closing a frame pass is spent inside the pass's budget.
 const JMP_ABSOLUTE_CYCLES: u32 = 3;
+/// `PHA` and `PLA`, which save the accumulator an IRQ handler is about to use.
+const PHA: u8 = 0x48;
+const PLA: u8 = 0x68;
+/// `RTI`, which leaves an interrupt handler and restores the flags the interrupt saved — including
+/// the interrupt-disable flag, so the frame loop is interruptible again on the way out.
+const RTI: u8 = 0x40;
+/// `CLI`, which unmasks IRQs once a frame's chain is armed.
+const CLI: u8 = 0x58;
+const LDA_IMMEDIATE: u8 = 0xa9;
+const STA_ABSOLUTE: u8 = 0x8d;
+const STA_ZERO_PAGE: u8 = 0x85;
+const JMP_INDIRECT: u8 = 0x6c;
+/// The two RAM bytes an IRQ chain dispatches through: each handler leaves the address of its
+/// successor here, and the `$FFFE` entry is a `JMP` through it.
+///
+/// It sits below [`FIRST_ZERO_PAGE_ADDRESS`], where the compiler's own variables start, and clear
+/// of the `STA $00` the padding filler writes. A 6502 reads an indirect jump's high byte from the
+/// same page as its low byte, so a vector must never straddle a page boundary; this one cannot.
+const IRQ_DISPATCH_VECTOR: u8 = 0x0e;
+// Said above and enforced here: lowering `FIRST_ZERO_PAGE_ADDRESS` would hand the program's first
+// variable the vector's low byte and corrupt every dispatch, which is not a failure a test would
+// read as its own cause. A `const` assertion makes it a red build instead.
+const _: () = assert!(IRQ_DISPATCH_VECTOR + 1 < FIRST_ZERO_PAGE_ADDRESS);
 
 /// `LDX #$00` sets 256 iterations, because the first `DEX` wraps it to 255.
 fn iteration_operand(iterations: u32) -> u16 {
@@ -109,6 +136,7 @@ pub fn generate_with_isa(
         next_internal_label: next_internal_label(program),
         legal_isa,
         reports: Vec::new(),
+        irq: None,
     };
 
     for function in &program.functions {
@@ -119,9 +147,11 @@ pub fn generate_with_isa(
 
     generator.main(main, &program.global_initializers, program.frame.as_ref())?;
     let reports = std::mem::take(&mut generator.reports);
+    let irq = generator.irq.map(link_label);
     Ok(CodegenOutput {
         program: generator.output,
         main: link_label(main.label),
+        irq,
         zero_page,
         reports,
     })
@@ -152,6 +182,8 @@ struct Generator<'a> {
     next_internal_label: u32,
     legal_isa: bool,
     reports: Vec<(String, u32)>,
+    /// The entry an IRQ chain dispatches from, once one has been emitted.
+    irq: Option<IrLabel>,
 }
 
 impl Generator<'_> {
@@ -172,10 +204,121 @@ impl Generator<'_> {
         self.statements(&main.statements, Some(main.halt_label))?;
         self.emit_label(main.halt_label);
         match frame {
-            Some(frame) => self.timed_frame(frame, main.halt_label)?,
+            Some(frame) => match frame.strategy {
+                FrameStrategy::Timed => self.timed_frame(frame, main.halt_label)?,
+                FrameStrategy::Irq => self.irq_frame(frame, main.halt_label)?,
+            },
             None => self.jump(main.halt_label),
         }
         Ok(())
+    }
+
+    /// Emit a `frame ... using irq` as an MMC3 chain that wraps, armed once and never again.
+    ///
+    /// The program ends by waiting for vblank, pointing the dispatch vector at the first handler,
+    /// programming the latch and unmasking; from there it spins, and everything the frame does
+    /// happens in interrupts. Each handler programs the latch for the next, and the last programs
+    /// the one that reaches round to the first handler of the next frame.
+    ///
+    /// **The chain wraps rather than being re-armed each frame.** Nothing clocks the counter
+    /// between the last visible scanline and the next pre-render line, but the rises either side of
+    /// that gap are consecutive, so one latch reaches across it — see
+    /// [`mmc3_latch_for_next_frame`]. Re-arming instead means waiting on the vblank flag once a
+    /// frame, and a `$2002` read landing on the dot that sets the flag suppresses it and costs that
+    /// frame its whole schedule: measured here at about one frame in fifty.
+    ///
+    /// The one wait that remains is the arming itself, which has to happen in vblank so that the
+    /// reload lands on the pre-render line's rise. A suppressed flag there costs a frame at
+    /// start-up and nothing afterwards.
+    ///
+    /// The preconditions this depends on — rendering on, and the two pattern tables in opposite
+    /// halves so A12 moves at all — are `raster-timing`'s, checked in `raster-ir` before anything
+    /// reaches here.
+    fn irq_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
+        let Some(first) = frame.events.first() else {
+            // A schedule with no events arms nothing; the program still ends in its own loop.
+            self.jump(halt_label);
+            return Ok(());
+        };
+        let handlers: Vec<IrLabel> = frame.events.iter().map(|_| self.internal_label()).collect();
+
+        // The arming. `SEI` covers the whole sequence: an interrupt taken part-way through it would
+        // dispatch through a half-written vector.
+        self.statement(&Statement::SyncExact, Some(halt_label))?;
+        self.emit(SEI, Implied, None);
+        self.emit(LDA_IMMEDIATE, Immediate, Some(0));
+        self.emit_register(Register::Mmc3IrqDisable);
+        self.set_dispatch_vector(handlers[0]);
+        self.emit(
+            LDA_IMMEDIATE,
+            Immediate,
+            Some(u16::from(mmc3_latch_for_first_event(first.scanline as u16))),
+        );
+        self.emit_register(Register::Mmc3IrqLatch);
+        self.emit_register(Register::Mmc3IrqReload);
+        self.emit_register(Register::Mmc3IrqEnable);
+        self.emit(CLI, Implied, None);
+        let spin = self.internal_label();
+        self.emit_label(spin);
+        self.jump(spin);
+
+        // The handlers, past the spin loop: control reaches them through `$FFFE` and never by
+        // falling through.
+        for (index, event) in frame.events.iter().enumerate() {
+            // Every scanline here is on the visible picture, which `raster-ir` bounded at 239, so
+            // the counter's own 16-bit arithmetic loses nothing.
+            let next = &frame.events[(index + 1) % frame.events.len()];
+            let latch = if index + 1 < frame.events.len() {
+                mmc3_latch_for_delta((next.scanline - event.scanline) as u16)
+            } else {
+                mmc3_latch_for_next_frame(event.scanline as u16, next.scanline as u16)
+            };
+            self.emit_label(handlers[index]);
+            // Only the accumulator is saved. The loop these interrupt holds nothing in X or Y, and
+            // `RTI` restores the flags the interrupt itself pushed.
+            self.emit(PHA, Implied, None);
+            self.statements(&event.body, Some(halt_label))?;
+            self.emit(LDA_IMMEDIATE, Immediate, Some(u16::from(latch)));
+            // The order hardware requires: the latch, then the reload request, then the
+            // acknowledgement — which also disables — and only then the re-arm. Enabling before
+            // acknowledging would leave the line asserted and the console would take this same
+            // interrupt for ever.
+            self.emit_register(Register::Mmc3IrqLatch);
+            self.emit_register(Register::Mmc3IrqReload);
+            self.emit_register(Register::Mmc3IrqDisable);
+            self.emit_register(Register::Mmc3IrqEnable);
+            self.set_dispatch_vector(handlers[(index + 1) % handlers.len()]);
+            self.emit(PLA, Implied, None);
+            self.emit(RTI, Implied, None);
+        }
+
+        let entry = self.internal_label();
+        self.emit_label(entry);
+        self.emit(JMP_INDIRECT, Indirect, Some(u16::from(IRQ_DISPATCH_VECTOR)));
+        self.irq = Some(entry);
+        Ok(())
+    }
+
+    /// Point the chain's dispatch vector at `handler`, a byte at a time.
+    ///
+    /// The address is the linker's to decide, so both halves of it are relocations rather than
+    /// constants — which is what [`RelocationKind::LowByte`] and its high-byte twin exist for.
+    fn set_dispatch_vector(&mut self, handler: IrLabel) {
+        for (kind, address) in [
+            (RelocationKind::LowByte, IRQ_DISPATCH_VECTOR),
+            (RelocationKind::HighByte, IRQ_DISPATCH_VECTOR + 1),
+        ] {
+            self.relocated(LDA_IMMEDIATE, Immediate, kind, handler);
+            self.emit(STA_ZERO_PAGE, ZeroPage, Some(u16::from(address)));
+        }
+    }
+
+    /// Store the accumulator into a named hardware register.
+    ///
+    /// The address comes from `raster-ir`'s own register table, which is the one place in the
+    /// compiler that says where a register lives.
+    fn emit_register(&mut self, register: Register) {
+        self.emit(STA_ABSOLUTE, Absolute, Some(register.address()));
     }
 
     /// Emit a `frame ... using timed` as a synchronized loop the console never leaves.

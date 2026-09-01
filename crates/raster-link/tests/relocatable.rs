@@ -328,6 +328,70 @@ fn counts_data_against_the_fixed_bank_budget() {
     );
 }
 
+/// `LDA #<label` and `LDA #>label`: an address loaded a byte at a time, which is the only way code
+/// in ROM can leave a pointer in RAM for something else to jump through.
+#[test]
+fn resolves_low_and_high_byte_relocations() {
+    use raster_6502::AddressingMode::Immediate;
+
+    let destination = Label(2);
+    let mut items = vec![
+        FixedBankItem::Instruction {
+            instruction: instruction(0xa9, Immediate),
+            relocation: Some(Relocation {
+                kind: RelocationKind::LowByte,
+                target: destination,
+            }),
+        },
+        FixedBankItem::Instruction {
+            instruction: instruction(0xa9, Immediate),
+            relocation: Some(Relocation {
+                kind: RelocationKind::HighByte,
+                target: destination,
+            }),
+        },
+    ];
+    // Far enough into the bank that the two bytes differ from each other and from zero.
+    items.extend(std::iter::repeat_n(
+        FixedBankItem::Instruction {
+            instruction: instruction(0xea, Implied),
+            relocation: None,
+        },
+        0x0123 - 4,
+    ));
+    items.push(FixedBankItem::Label(destination));
+
+    let (bytes, labels) = link_fixed_bank(&RelocatableProgram { items }, true).unwrap();
+    assert_eq!(labels[&destination], 0xe123);
+    assert_eq!(&bytes[..4], &[0xa9, 0x23, 0xa9, 0xe1]);
+}
+
+/// A byte relocation is only meaningful on an immediate operand, and a mismatch is a compiler bug
+/// rather than a program's mistake — so it is refused where every other mode mismatch is.
+#[test]
+fn a_byte_relocation_refuses_a_mode_that_has_no_byte_to_fill() {
+    let program = RelocatableProgram {
+        items: vec![
+            FixedBankItem::Instruction {
+                instruction: instruction(0x4c, Absolute),
+                relocation: Some(Relocation {
+                    kind: RelocationKind::LowByte,
+                    target: Label(2),
+                }),
+            },
+            FixedBankItem::Label(Label(2)),
+        ],
+    };
+
+    assert!(matches!(
+        link_fixed_bank(&program, true),
+        Err(LinkError::Assemble(AssembleError::AddressingModeMismatch {
+            opcode: 0x4c,
+            ..
+        }))
+    ));
+}
+
 #[test]
 fn the_refusal_counts_every_item_and_not_the_walk_to_the_first_label() {
     // The refusal fires at the first label past the limit, so everything after

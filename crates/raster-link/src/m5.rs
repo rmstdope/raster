@@ -220,5 +220,6 @@ fn body(background: BackgroundData<'_>) -> RelocatableProgram {
 /// that: `raster_assets::encode_background` caps at 256 distinct tiles, so
 /// `chr` is at most 4096 bytes, which links with about 2.4 KiB to spare.
 pub fn m5_background_rom(background: BackgroundData<'_>) -> Result<LinkedRom, LinkError> {
-    link_mmc3_program(&body(background), ENTRY, true)
+    // No IRQ entry: this ROM has no frame, so `$FFFE` keeps the runtime's bare `RTI`.
+    link_mmc3_program(&body(background), ENTRY, None, true)
 }

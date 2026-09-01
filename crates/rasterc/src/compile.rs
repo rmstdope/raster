@@ -5,7 +5,7 @@
 
 use raster_codegen::{generate_with_isa, CodegenError};
 use raster_diag::{Diagnostic, Refusal, Span};
-use raster_ir::lower;
+use raster_ir::{lower, FrameStrategy};
 use raster_link::{link_mmc3_program, mmc3_reset_runtime_bytes, InterruptVectors, LinkError};
 use raster_sema::analyze;
 use raster_syntax::parse;
@@ -91,8 +91,14 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
     let warnings = warned(std::mem::take(&mut ir.warnings), source);
     let output = generate_with_isa(&ir, LEGAL_ISA)
         .map_err(|error| beside(&warnings, codegen_diagnostic(error, source)))?;
-    let rom = link_mmc3_program(&output.program, output.main, LEGAL_ISA)
-        .map_err(|error| beside(&warnings, link_diagnostic(error, ir.frame.is_some())))?;
+    // Only `using timed` pays the three-frame pass the fixed-bank note describes; an `irq`
+    // frame emits its handlers once.
+    let timed_frame = ir
+        .frame
+        .as_ref()
+        .is_some_and(|frame| frame.strategy == FrameStrategy::Timed);
+    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA)
+        .map_err(|error| beside(&warnings, link_diagnostic(error, timed_frame)))?;
 
     Ok(Rom {
         image: rom.image,

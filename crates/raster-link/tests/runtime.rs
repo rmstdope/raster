@@ -3,7 +3,7 @@ use raster_6502::{
     Instruction,
 };
 use raster_link::{
-    link_mmc3_program, mmc3_reset_runtime_bytes, FixedBankItem, InterruptVectors, Label,
+    link_mmc3_program, mmc3_reset_runtime_bytes, FixedBankItem, InterruptVectors, Label, LinkError,
     RelocatableProgram, Relocation, RelocationKind, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
     MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
 };
@@ -70,7 +70,8 @@ fn the_reset_runtime_measures_its_own_prologue_and_interrupt_handler() {
 
 #[test]
 fn emits_the_reset_prologue_before_the_program() {
-    let rom = link_mmc3_program(&one_instruction_body(), Label(0), true).expect("the body links");
+    let rom =
+        link_mmc3_program(&one_instruction_body(), Label(0), None, true).expect("the body links");
 
     assert_eq!(&fixed_bank(&rom.image)[..PROLOGUE.len()], PROLOGUE);
     assert_eq!(fixed_bank(&rom.image)[PROLOGUE.len()], 0x60);
@@ -87,7 +88,8 @@ fn emits_the_reset_prologue_before_the_program() {
 
 #[test]
 fn a_linked_rom_says_how_many_of_its_bytes_are_the_runtime() {
-    let rom = link_mmc3_program(&one_instruction_body(), Label(0), true).expect("the body links");
+    let rom =
+        link_mmc3_program(&one_instruction_body(), Label(0), None, true).expect("the body links");
 
     assert_eq!(rom.code_len, 133);
     assert_eq!(rom.runtime_len, 132);
@@ -99,7 +101,8 @@ fn a_linked_rom_says_how_many_of_its_bytes_are_the_runtime() {
 
 #[test]
 fn points_nmi_and_irq_at_an_rti_after_the_program() {
-    let rom = link_mmc3_program(&one_instruction_body(), Label(0), true).expect("the body links");
+    let rom =
+        link_mmc3_program(&one_instruction_body(), Label(0), None, true).expect("the body links");
 
     assert_eq!(
         &rom.image[rom.image.len() - 6..],
@@ -131,7 +134,7 @@ fn ships_embedded_data_in_the_linked_rom() {
         ],
     };
 
-    let rom = link_mmc3_program(&body, entry, true).expect("the program links");
+    let rom = link_mmc3_program(&body, entry, None, true).expect("the program links");
 
     let body_start = PROLOGUE.len();
     let data_address = MMC3_FIXED_BANK_START + u16::try_from(body_start + 3).unwrap();
@@ -145,6 +148,16 @@ fn ships_embedded_data_in_the_linked_rom() {
     );
     assert_eq!(bank[body_start + 7], 0x40); // the runtime's RTI, after the data
     assert_eq!(rom.code_len, body_start + 8);
+}
+
+/// The linker resolves the IRQ entry through the same label table as everything else, so a label
+/// codegen never defined has to be a refusal rather than a vector pointing at address zero.
+#[test]
+fn an_irq_entry_that_was_never_defined_is_refused() {
+    assert_eq!(
+        link_mmc3_program(&one_instruction_body(), Label(0), Some(Label(9)), true),
+        Err(LinkError::UndefinedLabel { label: Label(9) })
+    );
 }
 
 #[test]

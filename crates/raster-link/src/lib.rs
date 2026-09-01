@@ -29,6 +29,10 @@ pub struct Label(pub u32);
 pub enum RelocationKind {
     Absolute,
     Relative,
+    /// The low byte of the target's address, as an immediate operand — an assembler's `#<label`.
+    LowByte,
+    /// The high byte of the target's address, as an immediate operand — an assembler's `#>label`.
+    HighByte,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -244,6 +248,22 @@ fn emit_fixed_bank(
                                 return Err(LinkError::RelativeBranchOutOfRange { from, target });
                             }
                             resolved.operand = Some(displacement as i8 as u8 as u16);
+                        }
+                        RelocationKind::LowByte | RelocationKind::HighByte => {
+                            if resolved.mode != AddressingMode::Immediate {
+                                return Err(incompatible_relocation(
+                                    resolved.opcode,
+                                    AddressingMode::Immediate,
+                                    resolved.mode,
+                                ));
+                            }
+                            let [low, high] = target.to_le_bytes();
+                            let byte = if relocation.kind == RelocationKind::LowByte {
+                                low
+                            } else {
+                                high
+                            };
+                            resolved.operand = Some(u16::from(byte));
                         }
                     }
                 }

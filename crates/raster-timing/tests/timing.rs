@@ -504,3 +504,138 @@ fn a_handler_with_room_after_it_gets_one_scanline_body_and_a_delay_to_the_next()
             - 114
     );
 }
+
+/// The MMC3 counter reloads on the A12 rise *after* the write that requested it, and asserts the
+/// IRQ on the rise where the counter reaches zero — so a latch of `n` places the next IRQ `n + 1`
+/// scanlines after the one being handled. Every case here is a delta between two events, which is
+/// what a chained schedule is made of.
+#[test]
+fn mmc3_latch_for_delta_accounts_for_counter_offset() {
+    for (delta, latch) in [
+        (1u16, 0u8),
+        (2, 1),
+        (8, 7),
+        (60, 59),
+        (240, 239),
+        (256, 255),
+    ] {
+        assert_eq!(
+            raster_timing::mmc3_latch_for_delta(delta),
+            latch,
+            "an IRQ {delta} scanlines after this one needs a latch of {latch}"
+        );
+    }
+}
+
+/// The first IRQ of a frame is armed in vblank, so its reload lands on the pre-render line's own
+/// A12 rise rather than one rise after an IRQ. That is one rise earlier than a chained link, and
+/// it is exactly the difference that makes the first latch the scanline itself.
+#[test]
+fn the_first_irq_of_a_frame_is_armed_from_the_pre_render_line() {
+    for (scanline, latch) in [(0u16, 0u8), (1, 1), (60, 60), (239, 239)] {
+        assert_eq!(
+            raster_timing::mmc3_latch_for_first_event(scanline),
+            latch,
+            "an IRQ on scanline {scanline} armed in vblank needs a latch of {latch}"
+        );
+    }
+}
+
+/// The counter clocks on filtered PPU A12 rises, and A12 only rises when a scanline fetches from
+/// both halves of pattern memory. A layout with both tables in the same half is a ROM that looks
+/// right and never takes an interrupt, which is the failure spec section 7.3 exists to prevent.
+#[test]
+fn mmc3_irq_needs_opposite_pattern_halves() {
+    use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
+
+    let configuration = |ctrl: u8, mask: u8| PpuConfiguration {
+        ctrl: RegisterState::Known(ctrl),
+        mask: RegisterState::Known(mask),
+    };
+
+    // Background at $0000 and sprites at $1000, both halves of rendering on.
+    assert_eq!(validate_mmc3_irq_frame(&configuration(0x08, 0x18)), Ok(()));
+    // The other way round is just as valid.
+    assert_eq!(validate_mmc3_irq_frame(&configuration(0x10, 0x1e)), Ok(()));
+
+    for ctrl in [0x00, 0x18] {
+        assert_eq!(
+            validate_mmc3_irq_frame(&configuration(ctrl, 0x18)),
+            Err(Mmc3IrqError::PatternTablesShareHalf { ctrl }),
+            "${ctrl:02X} puts both pattern tables in one half"
+        );
+    }
+}
+
+/// Spec section 7.3 asks for rendering, not for both halves of it: the PPU runs its dot-257 to
+/// dot-320 sprite pattern fetches whenever rendering is on, whether or not sprites are composited,
+/// so a background-only split still clocks the counter. Measured on this project's own emulator.
+#[test]
+fn mmc3_irq_needs_rendering_enabled() {
+    use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
+
+    let with_mask = |mask: u8| PpuConfiguration {
+        ctrl: RegisterState::Known(0x08),
+        mask: RegisterState::Known(mask),
+    };
+
+    for mask in [0x1e, 0x0a, 0x14, 0x08, 0x10] {
+        assert_eq!(
+            validate_mmc3_irq_frame(&with_mask(mask)),
+            Ok(()),
+            "${mask:02X} renders, so the PPU fetches and A12 moves"
+        );
+    }
+    for mask in [0x00, 0x06, 0x01] {
+        assert_eq!(
+            validate_mmc3_irq_frame(&with_mask(mask)),
+            Err(Mmc3IrqError::RenderingDisabled { mask }),
+            "${mask:02X} renders nothing at all"
+        );
+    }
+}
+
+/// With 8x16 sprites the sprite half comes from bit 0 of each tile index and `ppu.ctrl` bit 3 is
+/// ignored, so the A12 check has nothing to read. Refused by name rather than answered from a bit
+/// the PPU is not looking at — a diagnostic that quotes a value must not misdescribe it.
+#[test]
+fn mmc3_irq_refuses_the_sprite_size_it_cannot_check() {
+    use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
+
+    for ctrl in [0x20, 0x28, 0x30] {
+        assert_eq!(
+            validate_mmc3_irq_frame(&PpuConfiguration {
+                ctrl: RegisterState::Known(ctrl),
+                mask: RegisterState::Known(0x1e),
+            }),
+            Err(Mmc3IrqError::TallSpritesUncheckable { ctrl }),
+            "${ctrl:02X} selects 8x16 sprites"
+        );
+    }
+}
+
+/// A register written from something other than a constant cannot be checked, and a compiler that
+/// guessed would either refuse a correct program or pass a silent one.
+#[test]
+fn mmc3_irq_refuses_a_ppu_configuration_it_cannot_prove() {
+    use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
+
+    assert_eq!(
+        validate_mmc3_irq_frame(&PpuConfiguration {
+            ctrl: RegisterState::Unproven,
+            mask: RegisterState::Known(0x18),
+        }),
+        Err(Mmc3IrqError::UnprovenConfiguration {
+            register: "ppu.ctrl"
+        })
+    );
+    assert_eq!(
+        validate_mmc3_irq_frame(&PpuConfiguration {
+            ctrl: RegisterState::Known(0x08),
+            mask: RegisterState::Unproven,
+        }),
+        Err(Mmc3IrqError::UnprovenConfiguration {
+            register: "ppu.mask"
+        })
+    );
+}

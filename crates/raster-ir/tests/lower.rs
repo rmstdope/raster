@@ -277,11 +277,13 @@ fn rejects_frame_events_outside_the_visible_scanline_range() {
 fn rejects_frame_forms_the_timed_lowering_does_not_cover() {
     for (source, expected) in [
         (
+            // `timed` and `irq` are the two strategies this release lowers; the rest of spec
+            // section 7.1's table is still refused by name.
             r#"
                 main { ppu.mask = 0 }
-                frame bars using irq { at scanline 60 { ppu.addr = $01 } }
+                frame bars using sprite0 { at scanline 60 { ppu.addr = $01 } }
             "#,
-            "`using irq` is not supported yet",
+            "`using sprite0` is not supported yet",
         ),
         (
             r#"

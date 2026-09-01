@@ -468,3 +468,169 @@ pub fn plan_delay(requested_cycles: u32, legal_isa: bool) -> Result<Vec<DelaySte
     }
     Ok(steps)
 }
+
+/// Scanlines the MMC3 counter can wait, which is one latch's worth of A12 rises plus the rise the
+/// reload itself lands on. The latch is a single byte, so nothing further apart than this can be
+/// asked of one link of a chain.
+pub const MAX_IRQ_DELTA_SCANLINES: u16 = 256;
+
+/// The `$C000` latch that places the next MMC3 IRQ `scanlines` scanlines after the one being
+/// handled.
+///
+/// The counter does not reload where the handler writes: `$C001` only sets the reload flag, and the
+/// flag is honoured on the *next* filtered A12 rise — one scanline later. From there the counter
+/// decrements once a scanline and the IRQ is asserted on the rise where it reaches zero, so a latch
+/// of `n` fires `n + 1` scanlines after the IRQ that programmed it. That is the off-by-one spec
+/// section 7.3 says the compiler carries for the author.
+///
+/// `scanlines` is a real distance between two events, so it is at least one and at most
+/// [`MAX_IRQ_DELTA_SCANLINES`]. Nothing in this crate enforces that — what bounds it is a crate
+/// away, in `raster-ir`: an event's scanline is refused unless it is a visible one (0 to 239), and
+/// two events on the same scanline are refused as well, so no delta a chain can ask for exceeds
+/// 241. The `debug_assert!` below is the guard for a caller that stops being true of, and the
+/// `clamp` keeps a release build from producing a latch out of thin air.
+pub fn mmc3_latch_for_delta(scanlines: u16) -> u8 {
+    debug_assert!(
+        (1..=MAX_IRQ_DELTA_SCANLINES).contains(&scanlines),
+        "a chained MMC3 IRQ is 1 to {MAX_IRQ_DELTA_SCANLINES} scanlines away, not {scanlines}"
+    );
+    (scanlines.clamp(1, MAX_IRQ_DELTA_SCANLINES) - 1) as u8
+}
+
+/// Scanlines the MMC3 counter sees in one frame: the 240 visible ones and the pre-render line.
+///
+/// The counter clocks on filtered A12 rises, which happen once per scanline the PPU renders — so
+/// the post-render line and the twenty of vblank are not among them, and the counter's year is 241
+/// rises long rather than 262. This is what lets one chain reach from a frame's last event to the
+/// next frame's first without anything re-arming it in between.
+pub const IRQ_SCANLINES_PER_FRAME: u16 = 241;
+
+/// The `$C000` latch that carries a chain from a frame's last event to the next frame's first.
+///
+/// Nothing clocks the counter between the last visible scanline and the next pre-render line, so
+/// the gap is not the 22 scanlines the picture spends there: it is one rise, the pre-render line's.
+/// Counted that way the wrap is [`IRQ_SCANLINES_PER_FRAME`] minus the distance the schedule already
+/// covered, which is at most 241 and always fits a latch.
+///
+/// A chain that wraps needs no per-frame re-arming, and that is the point rather than an economy:
+/// re-arming means waiting on the vblank flag in `$2002`, and a read landing within two cycles of
+/// the dot that sets the flag returns it clear and suppresses it. That costs the frame its whole
+/// schedule — measured here at about one frame in fifty before the chain wrapped.
+pub fn mmc3_latch_for_next_frame(last_scanline: u16, first_scanline: u16) -> u8 {
+    debug_assert!(
+        first_scanline <= last_scanline,
+        "a schedule's first event is not after its last"
+    );
+    mmc3_latch_for_delta(IRQ_SCANLINES_PER_FRAME - last_scanline + first_scanline)
+}
+
+/// The `$C000` latch that places a frame's first MMC3 IRQ on `scanline`, armed in vblank.
+///
+/// Armed in vblank there is no A12 rise left in the frame, so the reload flag is honoured on the
+/// first rise of the *next* frame — the pre-render line's. That is one rise earlier than the reload
+/// a handler's own `$C001` write gets, and one scanline earlier than the visible picture: counting
+/// from the pre-render line, an IRQ on scanline `s` is `s + 1` rises away and so needs a latch of
+/// `s`.
+///
+/// The IRQ is asserted towards the end of the scanline it is counted to, because A12 rises during
+/// that scanline's sprite fetches — so the handler counted to scanline `s - 1` is the one that runs
+/// at the top of scanline `s`. Both of these functions already carry that shift: they are given the
+/// picture scanline the author wrote and return the latch that runs its handler there.
+pub fn mmc3_latch_for_first_event(scanline: u16) -> u8 {
+    debug_assert!(
+        scanline < MAX_IRQ_DELTA_SCANLINES,
+        "a frame's first IRQ is at most {MAX_IRQ_DELTA_SCANLINES} scanlines from the pre-render \
+         line, not {scanline}"
+    );
+    scanline.min(MAX_IRQ_DELTA_SCANLINES - 1) as u8
+}
+
+/// `ppu.ctrl` bit 3: the half of pattern memory sprites are fetched from.
+const PPU_CTRL_SPRITE_PATTERN_HALF: u8 = 0b0000_1000;
+/// `ppu.ctrl` bit 4: the half of pattern memory the background is fetched from.
+const PPU_CTRL_BACKGROUND_PATTERN_HALF: u8 = 0b0001_0000;
+/// `ppu.ctrl` bit 5: 8x16 sprites, which take their half from the tile index instead.
+const PPU_CTRL_TALL_SPRITES: u8 = 0b0010_0000;
+/// `ppu.mask` bits 3 and 4: show the background, and show the sprites. Either one is rendering.
+const PPU_MASK_RENDERING: u8 = 0b0001_1000;
+
+/// What a PPU register holds where the compiler can prove it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegisterState {
+    /// Every store to the register before the frame runs was a constant, and this was the last.
+    Known(u8),
+    /// The last store was not a constant, so nothing here can be decided from it.
+    Unproven,
+    /// The register is written on some paths through the program and not others, so there is no
+    /// single value to check — whichever arm the author wrote first.
+    Conditional,
+}
+
+/// The PPU configuration a `frame ... using irq` inherits from the program that set it up.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PpuConfiguration {
+    pub ctrl: RegisterState,
+    pub mask: RegisterState,
+}
+
+/// Why an MMC3 IRQ schedule cannot be built from this program.
+///
+/// Each of these is a ROM that assembles, runs, and silently never takes an interrupt — the class
+/// of failure spec section 7.3 asks the compiler to catch instead of the author.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mmc3IrqError {
+    /// Rendering is off, so the PPU fetches nothing and A12 never moves.
+    RenderingDisabled { mask: u8 },
+    /// 8x16 sprites are selected, and their half of pattern memory is not in `ppu.ctrl` to check.
+    TallSpritesUncheckable { ctrl: u8 },
+    /// Background and sprite patterns are in the same half of pattern memory, so a scanline's
+    /// fetches never raise A12 and the counter never clocks.
+    PatternTablesShareHalf { ctrl: u8 },
+    /// The program's last store to this register was not a constant, so the check cannot be made.
+    UnprovenConfiguration { register: &'static str },
+    /// The register is written under a branch, so the program has no one configuration to check.
+    ConditionalConfiguration { register: &'static str },
+}
+
+/// Check the hardware preconditions an MMC3 IRQ chain depends on.
+///
+/// Rendering has to be on — either half of it. The counter clocks on filtered A12 rises, and A12
+/// only rises where a scanline fetches from both halves of pattern memory; a rendering PPU runs its
+/// sprite pattern fetches at dots 257 to 320 whether or not sprites are composited, so a
+/// background-only split clocks the counter exactly as a full one does. What is fatal is rendering
+/// nothing at all, or configuring both tables into the same half.
+///
+/// 8x16 sprites are refused rather than judged: in that mode the hardware ignores the sprite-half
+/// bit and takes the half from bit 0 of each tile index, which is not in a register this can read.
+///
+/// `ppu.ctrl` is the whole of what decides the two halves *today*, and that is a fact about the
+/// reset runtime rather than about the MMC3: it programs CHR mode 0 with R0-R5 as 0, 2, 4, 5, 6, 7,
+/// a flat 8 KiB map with no A12 inversion, and nothing else can change it while PRG/CHR bank
+/// switching is unsupported. Spec section 7.3 asks for the CHR layout to be checked too; when a
+/// program can choose its own, this function needs it passed in and the sentence above stops being
+/// true on its own.
+/// One register's value, or the reason it does not have one this can check.
+fn known(state: RegisterState, register: &'static str) -> Result<u8, Mmc3IrqError> {
+    match state {
+        RegisterState::Known(value) => Ok(value),
+        RegisterState::Unproven => Err(Mmc3IrqError::UnprovenConfiguration { register }),
+        RegisterState::Conditional => Err(Mmc3IrqError::ConditionalConfiguration { register }),
+    }
+}
+
+pub fn validate_mmc3_irq_frame(ppu: &PpuConfiguration) -> Result<(), Mmc3IrqError> {
+    let ctrl = known(ppu.ctrl, "ppu.ctrl")?;
+    let mask = known(ppu.mask, "ppu.mask")?;
+    if mask & PPU_MASK_RENDERING == 0 {
+        return Err(Mmc3IrqError::RenderingDisabled { mask });
+    }
+    if ctrl & PPU_CTRL_TALL_SPRITES != 0 {
+        return Err(Mmc3IrqError::TallSpritesUncheckable { ctrl });
+    }
+    let background_half = ctrl & PPU_CTRL_BACKGROUND_PATTERN_HALF != 0;
+    let sprite_half = ctrl & PPU_CTRL_SPRITE_PATTERN_HALF != 0;
+    if background_half == sprite_half {
+        return Err(Mmc3IrqError::PatternTablesShareHalf { ctrl });
+    }
+    Ok(())
+}

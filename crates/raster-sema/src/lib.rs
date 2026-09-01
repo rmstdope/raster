@@ -301,9 +301,12 @@ impl Analyzer {
     /// the construct exists to do for them.
     fn check_frame_event(&mut self, event: &FrameEvent) {
         let outer = std::mem::replace(&mut self.synchronized, true);
-        // A handler is emitted through the same `timed_region` a `cycles(...) { }` block is, with
-        // `pad` set and `interruptible` clear, so it carries the same restrictions and the same
-        // `PHP`/`SEI`/`PLP` — see `Generator::frame`.
+        // A `using timed` handler is emitted through the same `timed_region` a `cycles(...) { }`
+        // block is, with `pad` set and `interruptible` clear, so it carries the same restrictions
+        // and the same `PHP`/`SEI`/`PLP` — see `Generator::timed_frame`. A `using irq` handler is
+        // an interrupt rather than a region and masks nothing itself, but it is held to the same
+        // restrictions here: a `return` out of one would jump past its `RTI` and keep the three
+        // bytes the interrupt pushed.
         self.timed_regions.push(TimedBlock {
             block: true,
             interruptible: false,
