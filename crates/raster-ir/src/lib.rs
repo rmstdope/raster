@@ -687,13 +687,15 @@ enum WriteSite {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LatchPair {
     Address,
+    Scroll,
 }
 
 impl LatchPair {
-    /// The register as the author spells it: `ppu.addr`.
+    /// The register as the author spells it: `ppu.addr` or `ppu.scroll`.
     const fn name(self) -> &'static str {
         match self {
             Self::Address => "ppu.addr",
+            Self::Scroll => "ppu.scroll",
         }
     }
 
@@ -701,6 +703,7 @@ impl LatchPair {
     const fn read_label(self) -> &'static str {
         match self {
             Self::Address => "the `ppu.addr` write below this becomes a second high byte",
+            Self::Scroll => "the `ppu.scroll` write below this becomes a second X scroll",
         }
     }
 
@@ -709,6 +712,8 @@ impl LatchPair {
         match self {
             Self::Address => "$2005 and $2006 share one write latch, and reading $2002 puts\n\
                               it back to expecting a high byte",
+            Self::Scroll => "$2005 and $2006 share one write latch, and reading $2002 puts\n\
+                             it back to expecting an X scroll",
         }
     }
 
@@ -717,6 +722,8 @@ impl LatchPair {
         match self {
             Self::Address => "the PPU never sees the low byte, so it reads and writes at an\n\
                               address you did not ask for",
+            Self::Scroll => "the PPU never sees the Y scroll, so the picture scrolls\n\
+                             somewhere you did not ask for",
         }
     }
 }
@@ -832,7 +839,7 @@ fn ppu_status_read_in(expression: &Spanned<SyntaxExpression>) -> Option<Span> {
     }
 }
 
-/// The `ppu.addr` write this expression is, if it is one.
+/// The `ppu.addr` or `ppu.scroll` write this expression is, if it is one.
 fn latch_write_in(expression: &Spanned<SyntaxExpression>) -> Option<LatchPair> {
     let SyntaxExpression::Infix {
         left, operator, ..
@@ -856,6 +863,7 @@ fn latch_pair(base: &SyntaxExpression, member: &str) -> Option<LatchPair> {
     }
     match member {
         "addr" => Some(LatchPair::Address),
+        "scroll" => Some(LatchPair::Scroll),
         _ => None,
     }
 }

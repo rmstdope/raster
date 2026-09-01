@@ -1478,3 +1478,41 @@ fn a_read_feeding_the_write_that_opens_a_pair_is_silent() {
 
     assert!(program.warnings.is_empty());
 }
+
+#[test]
+fn a_ppu_status_read_inside_a_scroll_pair_warns_in_scroll_words() {
+    let source =
+        "main {\n    ppu.scroll = $10\n    var s: u8 = ppu.status\n    ppu.scroll = $20\n}\n";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this `ppu.status` read leaves your `ppu.scroll` pair half written"
+    );
+    assert_eq!(
+        warning.label,
+        "the `ppu.scroll` write below this becomes a second X scroll"
+    );
+    assert_eq!(
+        warning.notes,
+        [
+            "$2005 and $2006 share one write latch, and reading $2002 puts\nit back to expecting an X scroll",
+            "the PPU never sees the Y scroll, so the picture scrolls\nsomewhere you did not ask for",
+            "read `ppu.status` above the pair or below it, not inside it",
+        ]
+    );
+    assert_eq!(line_of(source, warning.span.start), 3);
+}
+
+/// The two registers share one latch, so two writes close a pair whichever
+/// registers they were.
+#[test]
+fn an_address_write_then_a_scroll_write_closes_the_pair() {
+    let program = lower_source(
+        "main {\n    ppu.addr = $3f\n    ppu.scroll = $10\n    var s: u8 = ppu.status\n}\n",
+    );
+
+    assert!(program.warnings.is_empty());
+}
