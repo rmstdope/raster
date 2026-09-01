@@ -711,3 +711,35 @@ fn stx_and_sty_to_the_dma_port_start_a_dma_too() {
         );
     }
 }
+
+/// Bit 7 of `ppu.ctrl` is NMI, and a `timed` schedule cannot spare the cycles one costs. The
+/// verdict is about the bit and nothing else: the other bits an author sets alongside it — the
+/// pattern halves, the nametable — are none of this check's business.
+#[test]
+fn nmi_is_on_when_ppu_ctrl_bit_7_reaches_the_frame() {
+    use raster_timing::{timed_frame_nmi, RegisterState, TimedFrameNmi};
+
+    assert_eq!(
+        timed_frame_nmi(RegisterState::Known(0x88)),
+        Some(TimedFrameNmi::On { ctrl: 0x88 })
+    );
+    assert_eq!(timed_frame_nmi(RegisterState::Known(0x08)), None);
+    // The reset runtime's own zero: a program that never writes `ppu.ctrl` is provably NMI-off.
+    assert_eq!(timed_frame_nmi(RegisterState::Known(0x00)), None);
+}
+
+/// A value rasterc could not fold and one written under a branch are two different things for the
+/// author to go and fix, so they stay two verdicts rather than one "unknown".
+#[test]
+fn a_ppu_ctrl_rasterc_cannot_prove_is_its_own_verdict() {
+    use raster_timing::{timed_frame_nmi, RegisterState, TimedFrameNmi};
+
+    assert_eq!(
+        timed_frame_nmi(RegisterState::Unproven),
+        Some(TimedFrameNmi::Unproven)
+    );
+    assert_eq!(
+        timed_frame_nmi(RegisterState::Conditional),
+        Some(TimedFrameNmi::Conditional)
+    );
+}
