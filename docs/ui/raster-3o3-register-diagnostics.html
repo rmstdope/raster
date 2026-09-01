@@ -1,0 +1,134 @@
+<!doctype html>
+<title>raster-3o3 — the agreed register diagnostics and §9.1</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 70rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:56em; }
+  h2 { font-size: 1.05rem; margin: 2.4rem 0 .3rem; letter-spacing:-.01em; }
+  h3 { font-size: .82rem; margin: 1.3rem 0 .35rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.3rem 0 .7rem; max-width:60em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:.9rem 1.1rem;
+          font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; margin:.4rem 0; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .src .add { color:#1f7a3d; font-weight:600; }
+  .src .cmt { color:#7a8090; }
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:60em; }
+  .card { border:1px solid #dcdfe8; border-radius:10px; padding:1.1rem 1.3rem 1.4rem; margin:1rem 0 0; background:#fff; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.6rem;}
+  code { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  hr { border:0; border-top:1px solid #dfe2ea; margin:2.4rem 0 0; }
+  table { border-collapse: collapse; margin:.6rem 0; font-size:.86rem; width:100%; }
+  th, td { border:1px solid #d9dce6; padding:.4rem .6rem; text-align:left; vertical-align:top; }
+  th { background:#eceef4; font-weight:600; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h3, .note, .cost { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; } .cost { border-color:#2a2d3a; }
+    .card { background:#131521; border-color:#262a36; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    .src .add { color:#7fce97; } .src .cmt { color:#767c8e; }
+    th, td { border-color:#262a36; } th { background:#1b1e27; }
+  }
+</style>
+<main>
+<h1>raster-3o3 &mdash; the agreed register diagnostics and &sect;9.1</h1>
+<p class="sub">The agreed outcome, in the words that ship. Every message, every label, and &sect;9.1 in full.
+The options that were rejected, and why, are in the bead's plan under <em>User-facing decisions</em>.</p>
+
+<h2>&sect;9.1, in full, as it would land</h2>
+<div class="src">### 9.1 Named registers
+
+ppu.ctrl     = $80
+ppu.mask     = $1E
+<span class="add">var s: u8    = ppu.status       // read; clears vblank and the latch</span>
+<span class="add">ppu.addr     = $3F              // high byte, then low</span>
+<span class="add">ppu.addr     = $00</span>
+ppu.data     = $21
+ppu.scroll   = x
+<span class="add">ppu.oam_addr = 0</span>
+<span class="add">ppu.oam_data = $18</span>
+
+mmc3.bank_select  = 6
+mmc3.bank_data    = 0
+
+Named access exists so the compiler understands hardware side effects &mdash; write
+ordering, the `$2005`/`$2006` shared latch, `$2002` clearing that latch on read. The
+compiler warns when a sequence violates a known hardware requirement.
+
+<span class="add">**rasterc today:** every line above compiles. Three things this section
+once showed are intended and not built: `ppu.addr = $3F00`, one 16-bit
+write to the address latch, because `u16` values are not supported
+anywhere yet; OAM DMA through `$4014`, which stalls the CPU for 513 or
+514 cycles and cannot be admitted until a timed block can charge it;
+and the APU registers, which today belong to the linked sound driver
+(&sect;8.3).</span></div>
+<p class="cost">Ten lines became eleven. Every one of them compiles &mdash; verified by building each.
+The three absent features are named with the reason each is absent, and the block is copy-pasteable.</p>
+
+<hr>
+
+<h2>Every message, in the words that ship</h2>
+<table>
+<tr><th>Source</th><th>What rasterc says</th><th>Kind</th></tr>
+<tr><td><code>oam.addr = 0</code></td>
+    <td><strong>error:</strong> there is no <code>oam</code> namespace<br>
+        <em>label:</em> $2003 is spelled <code>ppu.oam_addr</code></td><td>Rejected</td></tr>
+<tr><td><code>oam.data = $18</code></td>
+    <td><strong>error:</strong> there is no <code>oam</code> namespace<br>
+        <em>label:</em> $2004 is spelled <code>ppu.oam_data</code></td><td>Rejected</td></tr>
+<tr><td><code>oam.dma = $02</code></td>
+    <td><strong>error:</strong> OAM DMA is not supported yet<br>
+        <em>label:</em> $4014 stalls the CPU for 513 or 514 cycles<br>
+        <em>+ the &ldquo;this release compiles&hellip;&rdquo; note</em></td><td>NotInThisRelease</td></tr>
+<tr><td><code>apu.pulse1.volume = $BF</code></td>
+    <td><strong>error:</strong> the <code>apu</code> registers are not supported yet<br>
+        <em>label:</em> the sound driver owns the APU today (&sect;8.3)<br>
+        <em>+ the note, if not already said</em></td><td>NotInThisRelease</td></tr>
+<tr><td><code>foo.bar = 1</code></td>
+    <td><strong>error:</strong> there is no <code>foo</code> namespace<br>
+        <em>label:</em> rasterc has <code>ppu</code> and <code>mmc3</code></td><td>Rejected</td></tr>
+<tr><td><code>ppu.crtl = $80</code></td>
+    <td><strong>error:</strong> unknown ppu register <code>crtl</code> &mdash; <em>unchanged</em></td><td>Rejected</td></tr>
+<tr><td><code>ppu.oam.addr = 0</code></td>
+    <td><strong>error:</strong> unknown ppu register <code>oam</code><br><em>4 errors today &rarr; 1</em></td><td>Rejected</td></tr>
+<tr><td><code>x.y = 1</code> (x a variable)</td>
+    <td><strong>error:</strong> member access requires a register namespace<br>
+        <em>label:</em> <code>x</code> is a variable, not a register namespace<br><em>2 errors today &rarr; 1</em></td><td>Rejected</td></tr>
+<tr><td><code>ppu.status</code> alone</td>
+    <td><strong>error:</strong> a register read cannot stand on its own as a statement<br>
+        <em>label:</em> assign it to a variable: <code>var s: u8 = ppu.status</code></td><td>Rejected</td></tr>
+</table>
+<p class="note">Carets land under the whole member expression in every namespace case, as chosen.</p>
+
+<hr>
+
+<h2>The <code>oam.dma</code> naming, decided</h2>
+<p class="note"><strong>Chosen: N-A &mdash; say the concept, not the spelling.</strong> &sect;9.1 no longer shows
+<code>oam.dma</code>, and nothing in the project commits to that name over <code>ppu.oam_dma</code>. The message
+names the hardware feature and the reason, and matches &sect;9.1's note word for word. <em>Rejected: N-B,
+&ldquo;<code>oam.dma</code> is not supported yet&rdquo;, which would have promised a spelling in a terminal message
+that the spec had just stopped showing.</em></p>
+<div class="term"><span class="e">error: OAM DMA is not supported yet</span>
+ <span class="g">--&gt; demo.raster:4:5</span>
+  <span class="g">|</span>
+<span class="g">4 |</span>     oam.dma = $02
+  <span class="g">|</span>     <span class="e">^^^^^^^</span> $4014 stalls the CPU for 513 or 514 cycles
+  <span class="g">= note:</span> this release compiles `main`, `fn`, `if`, `while`, `for`, u8
+          arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks
+          with `cycles`, `pad`, `sync exact` and `wait cycles`; and one
+          `frame` of `every ... scanlines` events</div>
+<p class="note">Note that <code>oam.addr</code> and <code>oam.data</code> are still recognised by name &mdash; that
+is what makes &ldquo;$2003 is spelled <code>ppu.oam_addr</code>&rdquo; possible &mdash; so the <code>oam</code>
+namespace is known to the compiler as three names it does not have, and to the spec as none.</p>
+</main>
