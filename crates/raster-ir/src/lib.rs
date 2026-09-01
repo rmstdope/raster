@@ -1938,7 +1938,14 @@ impl Lowerer {
                 // two read in source order.
                 if let Some(CycleConstraint::Exact(budget)) = constraint {
                     let stalls = oam_dma_writes(body);
-                    if stalls > 0 {
+                    // `budget >= stalls` guards the label's arithmetic, and is
+                    // not merely a clamp: a block whose budget is fewer cycles
+                    // than it holds DMAs costs at least 514 times that and is
+                    // certain to be refused as over budget, so there is no
+                    // floor worth printing. Without it, lowering — which runs
+                    // before the analysis that refuses the block — subtracted
+                    // past zero and aborted the compiler on source that parses.
+                    if stalls > 0 && budget >= stalls as u32 {
                         self.warnings
                             .push(oam_dma_uncertainty(stalls, budget, spec.span));
                     }

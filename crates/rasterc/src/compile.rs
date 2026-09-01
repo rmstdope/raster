@@ -86,25 +86,26 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
     let warnings = warned(lower_warnings.clone(), source);
     let output = generate_with_isa(&ir, LEGAL_ISA).map_err(|error| {
         // One fault, one message: a warning saying what a block *spends* is
-        // about a padding that never happened once the block is refused for
-        // costing more than its budget, and printing it beside the refusal puts
-        // two different numbers for one block in front of the author.
-        let kept = if matches!(
-            error,
-            CodegenError::Timing {
-                error: TimingError::OverBudget { .. },
-                ..
-            }
-        ) {
-            warned(
+        // about a padding that never happened once the block is refused, and
+        // printing it beside the refusal puts two different numbers for one
+        // block in front of the author. Every timing error refuses its region —
+        // over budget, short of an exact budget with no `pad`, unpaddable — so
+        // the test is the error's span rather than its variant, which is also
+        // what keeps a refusal of one block from withdrawing another block's
+        // warning.
+        let refused = match &error {
+            CodegenError::Timing { span, .. } => Some(*span),
+            _ => None,
+        };
+        let kept = match refused {
+            None => warnings.clone(),
+            Some(span) => warned(
                 lower_warnings
                     .into_iter()
-                    .filter(|warning| !warning.assumes_budget_met)
+                    .filter(|warning| !(warning.assumes_budget_met && warning.span == span))
                     .collect(),
                 source,
-            )
-        } else {
-            warnings.clone()
+            ),
         };
         beside(&kept, codegen_diagnostic(error, source))
     })?;

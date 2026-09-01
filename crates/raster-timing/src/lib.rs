@@ -252,6 +252,12 @@ pub const OAM_DMA_PORT: u16 = 0x4014;
 /// is the direction that meets a budget early rather than overrunning it.
 pub const OAM_DMA_STALL_CYCLES: u32 = 514;
 
+/// `STY`, `STA` and `STX` absolute — the three stores whose target address is in the instruction
+/// itself. All three are `op!(4, Absolute, true, false)` in `raster-6502`'s opcode table. Written
+/// out rather than as the range they happen to form, because the list is three named instructions
+/// and not an interval.
+const ABSOLUTE_STORES: [u8; 3] = [0x8c, 0x8d, 0x8e];
+
 /// The cycles these instructions spend stalled in OAM DMAs, charged at the worst case.
 ///
 /// A store to an absolute address is the only shape that can start one, and the address is the
@@ -260,12 +266,6 @@ pub const OAM_DMA_STALL_CYCLES: u32 = 514;
 /// emits only `STA` today — the rule is about the hardware, not about this month's code generator.
 /// Indexed stores are not counted: their effective address is not in the instruction, so a flat
 /// sequence cannot tell whether one lands on `$4014`.
-/// `STY`, `STA` and `STX` absolute — the three stores whose target address is in the instruction
-/// itself. All three are `op!(4, Absolute, true, false)` in `raster-6502`'s opcode table. Written
-/// out rather than as the range they happen to form, because the list is three named instructions
-/// and not an interval.
-const ABSOLUTE_STORES: [u8; 3] = [0x8c, 0x8d, 0x8e];
-
 pub fn oam_dma_stall_cycles(instructions: &[Instruction]) -> u32 {
     instructions
         .iter()

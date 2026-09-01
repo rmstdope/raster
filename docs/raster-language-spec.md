@@ -624,9 +624,9 @@ from the PRG bank the mapper has at that address. `ppu.oam_dma` is neither
 — `$4014` is a trigger on the CPU bus rather than a register, does not read
 back at all, and a read of it returns whatever was last on that bus. There
 is no value that makes such a read correct, so the compiler refuses it
-rather than warning about it. `ppu.status` is the mirror of that: `$2002` is a status port the
-CPU can only read, the PPU ignores a store to it completely, and a write is
-refused for the same reason.
+rather than warning about it. `ppu.status` is the mirror of that: `$2002`
+is a status port the CPU can only read, the PPU ignores a store to it
+completely, and a write is refused for the same reason.
 
 That includes the read or write a compound assignment makes for you.
 `ppu.mask += $18` reads `$2001` before it writes, and `ppu.status += 1`
