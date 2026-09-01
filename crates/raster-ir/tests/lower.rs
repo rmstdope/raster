@@ -1127,10 +1127,12 @@ fn a_bad_write_and_a_bad_read_on_one_line_are_two_errors_in_source_order() {
 #[test]
 fn every_register_but_the_read_only_one_accepts_a_write() {
     for (register, name, _address, _write_only, read_only) in REGISTERS {
-        // `= 0` is silent for every one of the sixteen: in particular
-        // `mmc3.bank_select = 0` raises no warning, because bits 6 and 7 are
-        // clear. A different constant would fold to a warning and this test
-        // would pass for a reason it does not state.
+        // `= 0` raises no warning for fifteen of the sixteen; `mmc3.bank_data
+        // = 0` warns (raster-rid), which this test does not assert on, because
+        // `result.is_ok()` is unaffected by warnings. `mmc3.bank_select = 0` is
+        // the one worth naming: it is silent because bits 6 and 7 are clear,
+        // and a different constant would fold to a warning, so the test would
+        // pass for a reason it does not state.
         let source = format!("main {{ {name} = 0 }}");
         let syntax = parse(&source).expect("fixture should parse");
         let typed = analyze(&syntax).expect("fixture should analyze");
