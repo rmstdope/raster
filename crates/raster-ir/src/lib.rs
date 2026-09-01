@@ -1483,6 +1483,14 @@ impl Lowerer {
                 let Some(destination) = self.lower_destination(left) else {
                     return;
                 };
+                // Q7: one fault, one message. If lowering this statement's own
+                // value refused something — a read of a write-only register,
+                // say — the statement is being rewritten, so what its value
+                // would have been is moot and the bank-select warning below is
+                // unactionable until the refusal is fixed. Counted rather than
+                // returned, so it covers a plain assignment as well as the
+                // compound arm's early `return`.
+                let errors_before = self.errors.len();
                 let value = match operator.value {
                     Operator::Assign => self.lower_value(right),
                     Operator::PlusEqual
@@ -1516,7 +1524,9 @@ impl Lowerer {
                     }
                     _ => unreachable!("assignment operator was checked above"),
                 };
-                if destination == Destination::Register(Register::Mmc3BankSelect) {
+                if destination == Destination::Register(Register::Mmc3BankSelect)
+                    && self.errors.len() == errors_before
+                {
                     if let Some(warning) = bank_select_warning(&value, expression.span) {
                         self.warnings.push(warning);
                     }

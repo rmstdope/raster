@@ -933,9 +933,18 @@ fn every_compound_operator_names_itself_in_the_refusal() {
     ] {
         let errors = lower_errors(source);
         assert_eq!(errors.len(), 1, "{source}");
+        // All three notes, not just the operator's: this is the only place a
+        // compound assignment meets the PPU-port form of `dead_read_note`.
         assert_eq!(
-            errors[0].notes[0],
-            format!("`{spelling}` reads its destination before it writes, so this reads $2001"),
+            errors[0].notes,
+            [
+                format!(
+                    "`{spelling}` reads its destination before it writes, so this reads $2001"
+                ),
+                "reading $2001 returns whatever was last on the PPU's data bus,\nnot the last value written"
+                    .to_owned(),
+                "keep what you wrote in a variable of your own\nand write the whole value".to_owned(),
+            ],
             "{source}"
         );
     }
@@ -943,12 +952,16 @@ fn every_compound_operator_names_itself_in_the_refusal() {
 
 #[test]
 fn every_write_only_register_refuses_a_read_and_every_readable_one_does_not() {
-    for (register, name, _address, _write_only) in REGISTERS {
+    for (_register, name, _address, write_only) in REGISTERS {
         let source = format!("main {{ var v: u8 = {name} }}");
         let syntax = parse(&source).expect("fixture should parse");
         let typed = analyze(&syntax).expect("fixture should analyze");
         let result = lower(&typed);
-        if register.is_write_only() {
+        // The table's own verdict column, not `is_write_only()`: this test is
+        // about what lowering does, and the function it would otherwise ask is
+        // the one `the_register_table_names_every_register_and_says_which_read`
+        // is there to pin.
+        if write_only {
             let failure = result.expect_err(name);
             assert_eq!(failure.errors.len(), 1, "{name}");
             assert_eq!(
@@ -982,4 +995,37 @@ fn writing_a_write_only_register_is_still_fine() {
         "main {\n    ppu.mask = $1E\n    mmc3.bank_select = $06\n    ppu.addr = $00\n}\n",
     );
     assert!(program.main.is_some());
+}
+
+#[test]
+fn a_bank_select_whose_value_was_refused_does_not_also_warn() {
+    // Q7 again, on the route the plan's site list did not name. `+=` is not the
+    // only way a bank select can carry a refused read: a plain assignment of an
+    // expression that reads a write-only register refuses too, and the same
+    // reasoning applies word for word — the statement is being rewritten, so
+    // what its value would have been is moot, and the warning is unactionable
+    // until the read is fixed.
+    let source = "main {\n    mmc3.bank_select = ppu.mask | $80\n}\n";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("$2001 does not read back");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(failure.errors[0].message, "`ppu.mask` cannot be read");
+    assert!(failure.warnings.is_empty());
+}
+
+#[test]
+fn a_compound_assignment_to_anything_that_reads_is_untouched() {
+    // The other half of the rule: `+=` on a place, and on a register that does
+    // read, still lowers. Nothing else in the suite lowers a compound
+    // assignment successfully any more, so this is what goes red if
+    // `destination_read` ever refuses a `Destination::Place`, or if the
+    // refusal path fires one branch too wide.
+    let program = lower_source("main {\n    var n: u8 = 1\n    n += 2\n    ppu.mask = n\n}\n");
+    assert!(program.main.is_some());
+
+    let readable = lower_source("main {\n    ppu.data += 1\n}\n");
+    assert!(readable.main.is_some());
 }
