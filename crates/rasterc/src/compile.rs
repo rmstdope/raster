@@ -3,6 +3,7 @@
 //! Nothing here reads or writes a file, so the whole of what `rasterc` does to a
 //! source is testable from a string.
 
+use crate::assets::{resolve_assets, AssetSource, NoAssets};
 use raster_codegen::{generate_with_isa, CodegenError};
 use raster_diag::{Diagnostic, Refusal, Span};
 use raster_ir::{lower, FrameStrategy};
@@ -58,6 +59,18 @@ pub struct Rom {
 /// a file with both a parse error and an unsupported construct reports only the
 /// parse errors: the later stages were never given a program worth judging.
 pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
+    compile_source_with_assets(source, &NoAssets)
+}
+
+/// Compile `source`, reading any `asset` file through `assets`.
+///
+/// Assets resolve *after* semantic analysis: an author whose program does not
+/// yet make sense should be told that, rather than told about their PNG. The
+/// file is only worth opening once the program that names it makes sense.
+pub fn compile_source_with_assets(
+    source: &str,
+    assets: &dyn AssetSource,
+) -> Result<Rom, Vec<Diagnostic>> {
     let syntax = parse(source).map_err(|errors| {
         spanned(
             errors
@@ -69,6 +82,18 @@ pub fn compile_source(source: &str) -> Result<Rom, Vec<Diagnostic>> {
     let typed = analyze(&syntax).map_err(|errors| {
         spanned(
             errors.into_iter().map(|e| (e.message, e.span, e.refusal)),
+            source,
+        )
+    })?;
+    // Nothing consumes the decoded pictures yet, and dropping them here is the
+    // honest end of this stage: the file has been read, decoded and encoded, so
+    // every real problem with it has been reported, and lowering refuses the
+    // item because no byte of it is placed.
+    let _assets = resolve_assets(&typed.program, assets).map_err(|errors| {
+        spanned(
+            errors
+                .into_iter()
+                .map(|error| (error.message, error.span, Refusal::Rejected)),
             source,
         )
     })?;

@@ -39,6 +39,7 @@ pub enum Item {
     Function(Function),
     Frame(Frame),
     Main(Block),
+    Asset(Asset),
     Other(Block),
 }
 
@@ -59,6 +60,48 @@ pub struct TargetField {
     pub name: Spanned<String>,
     pub value: Spanned<String>,
     pub span: Span,
+}
+
+/// An `asset image name = png("path") { ... }` item.
+///
+/// `kind` is the word after `asset` (`image`), and `loader` is the loader
+/// keyword (`png`). Both are kept even though only one spelling of each is
+/// supported, so the refusal can point at what the author actually wrote.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Asset {
+    pub kind: Spanned<String>,
+    pub name: Spanned<String>,
+    pub loader: Spanned<String>,
+    pub path: Spanned<String>,
+    pub fields: Vec<AssetField>,
+    pub span: Span,
+}
+
+/// One `name: value` line of an asset's block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetField {
+    pub name: Spanned<String>,
+    pub value: Spanned<AssetValue>,
+    pub span: Span,
+}
+
+/// What an asset field may be set to.
+///
+/// Three shapes cover the whole of the specification's asset blocks:
+/// `kind: background` is a word, `dedup: true` is a word, `palette: auto(4)`
+/// is a call, and a bare number is accepted so a wrong one can be refused with
+/// a message rather than a parse error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AssetValue {
+    Word(String),
+    Number(String),
+    Call {
+        name: String,
+        argument: String,
+    },
+    /// The specification's explicit-palette form, `palette: [ $0F, $30, ... ]`
+    /// (§8.1). Parsed so it can be refused by name, not by token.
+    List(Vec<String>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -134,6 +134,144 @@ main {
     }
 
     #[test]
+    fn parses_an_asset_item() {
+        let program = parse(
+            "asset image picture = png(\"art/picture.png\") { kind: background  palette: auto(4)  dedup: true }",
+        )
+        .expect("the item parses");
+        let Item::Asset(asset) = &program.items[0].value else {
+            panic!("expected an asset item");
+        };
+        assert_eq!(asset.kind.value, "image");
+        assert_eq!(asset.name.value, "picture");
+        assert_eq!(asset.loader.value, "png");
+        assert_eq!(asset.path.value, "art/picture.png");
+        assert_eq!(asset.fields.len(), 3);
+        assert_eq!(asset.fields[0].name.value, "kind");
+        assert_eq!(
+            asset.fields[0].value.value,
+            AssetValue::Word("background".into())
+        );
+        assert_eq!(asset.fields[1].name.value, "palette");
+        assert_eq!(
+            asset.fields[1].value.value,
+            AssetValue::Call {
+                name: "auto".into(),
+                argument: "4".into()
+            }
+        );
+        assert_eq!(asset.fields[2].name.value, "dedup");
+        assert_eq!(asset.fields[2].value.value, AssetValue::Word("true".into()));
+    }
+
+    /// The path is what every asset diagnostic points at, so its span is asserted
+    /// here rather than trusted: it covers the quoted string, quotes included.
+    #[test]
+    fn the_asset_path_span_covers_the_quoted_string() {
+        let source = "asset image picture = png(\"art/picture.png\")";
+        let program = parse(source).expect("the item parses");
+        let Item::Asset(asset) = &program.items[0].value else {
+            panic!("expected an asset item");
+        };
+        assert_eq!(slice(source, asset.path.span), "\"art/picture.png\"");
+    }
+
+    /// One typo, one diagnostic. Every structural part of an asset bails out of
+    /// the item rather than reporting and carrying on, because a parser that
+    /// carries on past a token it did not understand asks the next four
+    /// expectations about that same token and prints all of them.
+    #[test]
+    fn a_malformed_asset_item_reports_once() {
+        for source in [
+            "asset image p = Png(\"art/p.png\")\nmain { }",
+            "asset image p = jpeg(\"art/p.png\")\nmain { }",
+            "asset image p = \"art/p.png\"\nmain { }",
+            "asset 3 p = png(\"art/p.png\")\nmain { }",
+            "asset image = png(\"art/p.png\")\nmain { }",
+            "asset image p png(\"art/p.png\")\nmain { }",
+            "asset image p = png(art/p.png)\nmain { }",
+            "asset image p = png(\"art/p.png\" { kind: background }\nmain { }",
+        ] {
+            let errors = parse(source).expect_err("the item is malformed");
+            assert_eq!(errors.len(), 1, "for `{source}`, got {errors:?}");
+        }
+    }
+
+    /// A bad field is one error for the block, not one per token after it.
+    ///
+    /// This characterises the block-recovery loop rather than introducing it: it
+    /// passes against the parser before the recovery rework too, which is the
+    /// point — the loop's "one error per bad block" comment was an untested
+    /// claim, and this is the test that makes it one.
+    #[test]
+    fn a_malformed_asset_field_reports_once() {
+        for source in [
+            "asset image p = png(\"p.png\") { 3: background  kind: background }\nmain { }",
+            "asset image p = png(\"p.png\") { kind background }\nmain { }",
+            "asset image p = png(\"p.png\") { kind: }\nmain { }",
+            "asset image p = png(\"p.png\") { palette: auto(x) }\nmain { }",
+            "asset image p = png(\"p.png\") { palette: auto(4 }\nmain { }",
+        ] {
+            let errors = parse(source).expect_err("the field is malformed");
+            assert_eq!(errors.len(), 1, "for `{source}`, got {errors:?}");
+        }
+    }
+
+    /// Recovery from a malformed asset stops at the asset, so the item after it
+    /// is still parsed and still reports mistakes of its own.
+    ///
+    /// A count alone cannot show this — swallowing the next item silently would
+    /// leave the count unchanged — so the item that follows is one that errors
+    /// when it is parsed, and its error is the evidence it was reached.
+    ///
+    /// Only the first case is a regression test for the recovery rework: the two
+    /// field cases pass against the parser before it, because the block loop
+    /// already recovered to its own `}`. They are kept as coverage of that loop,
+    /// which had none.
+    #[test]
+    fn asset_recovery_leaves_the_next_item_to_be_parsed() {
+        for asset in [
+            "asset image p = Png(\"art/p.png\")",
+            "asset image p = png(\"p.png\") { kind background }",
+            "asset image p = png(\"p.png\") { 3: background }",
+        ] {
+            let source = format!("{asset}\ngarbage\n");
+            let errors = parse(&source).expect_err("the asset is malformed");
+            assert_eq!(errors.len(), 2, "for `{source}`, got {errors:?}");
+            assert_eq!(
+                errors[1].message, "expected a top-level declaration",
+                "for `{source}`"
+            );
+            assert_eq!(slice(&source, errors[1].span), "garbage");
+        }
+    }
+
+    /// The spec's explicit-palette form (§8.1) parses, so `raster-sema` can refuse
+    /// it by name rather than the parser refusing it by token.
+    #[test]
+    fn parses_the_spec_s_explicit_palette_array() {
+        let program = parse("asset image p = png(\"p.png\") { palette: [ $0F, $30, $21, $11 ] }")
+            .expect("the explicit palette parses");
+        let Item::Asset(asset) = &program.items[0].value else {
+            panic!("expected an asset item");
+        };
+        assert_eq!(
+            asset.fields[0].value.value,
+            AssetValue::List(vec!["$0F".into(), "$30".into(), "$21".into(), "$11".into()])
+        );
+    }
+
+    #[test]
+    fn parses_an_asset_item_with_no_block() {
+        let program = parse("asset image picture = png(\"p.png\")").expect("the item parses");
+        let Item::Asset(asset) = &program.items[0].value else {
+            panic!("expected an asset item");
+        };
+        assert_eq!(asset.name.value, "picture");
+        assert!(asset.fields.is_empty());
+    }
+
+    #[test]
     fn parser_accepts_the_complete_mvp_example() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

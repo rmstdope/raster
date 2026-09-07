@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use raster_diag::Refusal;
 use raster_syntax::{
-    Block, CycleBound, Declaration, Expression, FrameEvent, FramePosition, Function, Item, Keyword,
-    Operator, Program, Span, Spanned, Statement, Type, Wait,
+    AssetValue, Block, CycleBound, Declaration, Expression, FrameEvent, FramePosition, Function,
+    Item, Keyword, Operator, Program, Span, Spanned, Statement, Type, Wait,
 };
 
 #[derive(Debug)]
@@ -27,6 +27,10 @@ enum ValueType {
     Array(Box<ValueType>, u32),
     Void,
     Namespace,
+    /// An `asset` item's name. It is not a value: nothing may be added to it or
+    /// stored in it, and the only thing it admits is a member access naming one
+    /// of the four blocks it exposes.
+    Asset,
     Unknown,
 }
 
@@ -37,6 +41,7 @@ enum SymbolKind {
     Group,
     Function(Vec<ValueType>, ValueType),
     Namespace,
+    Asset,
 }
 
 #[derive(Clone)]
@@ -125,6 +130,12 @@ impl Analyzer {
         self.refuse(span, message, Refusal::TimedRegionCost);
     }
 
+    /// Refuse a construct the language defines and this release does not build
+    /// anywhere. These carry the list of what the release can build instead.
+    fn not_in_this_release(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::NotInThisRelease);
+    }
+
     fn refuse(&mut self, span: Span, message: impl Into<String>, refusal: Refusal) {
         self.errors.push(SemanticError {
             message: message.into(),
@@ -173,8 +184,90 @@ impl Analyzer {
             match &item.value {
                 Item::Declaration(declaration) => self.declare_declaration(declaration),
                 Item::Function(function) => self.declare_function(function),
+                Item::Asset(asset) => self.declare_asset(asset),
                 _ => {}
             }
+        }
+    }
+
+    fn declare_asset(&mut self, asset: &raster_syntax::Asset) {
+        self.declare(
+            &asset.name,
+            Symbol {
+                kind: SymbolKind::Asset,
+                value_type: ValueType::Asset,
+                span: asset.name.span,
+            },
+        );
+    }
+
+    /// What an asset asks for, against what `raster-assets` actually does.
+    ///
+    /// Every accepted value here is a fact about the encoder rather than a
+    /// preference: `BACKGROUND_SUBPALETTE_COUNT` is 4, `encode_background`
+    /// deduplicates unconditionally, and the only encoder there is is a
+    /// background one. A field this release cannot honour is refused rather
+    /// than ignored, because a compiler that silently drops a setting is worse
+    /// than one that says it cannot build it.
+    fn check_asset(&mut self, asset: &raster_syntax::Asset) {
+        if asset.kind.value != "image" {
+            self.not_in_this_release(asset.kind.span, "only `asset image` is supported yet");
+        }
+        if asset.loader.value != "png" {
+            self.not_in_this_release(asset.loader.span, "only `png` is supported yet");
+        }
+
+        let mut seen: Vec<&str> = Vec::new();
+        for field in &asset.fields {
+            let name = field.name.value.as_str();
+            if seen.contains(&name) {
+                self.error(field.name.span, "this asset field is set twice");
+                continue;
+            }
+            seen.push(name);
+            match name {
+                "kind" => self.require_asset_value(
+                    field,
+                    &AssetValue::Word("background".into()),
+                    "only `kind: background` is supported yet",
+                ),
+                "palette" => self.require_asset_value(
+                    field,
+                    &AssetValue::Call {
+                        name: "auto".into(),
+                        argument: "4".into(),
+                    },
+                    "only `palette: auto(4)` is supported yet",
+                ),
+                "dedup" => self.require_asset_value(
+                    field,
+                    &AssetValue::Word("true".into()),
+                    "only `dedup: true` is supported yet",
+                ),
+                // §8.1 of the specification defines this and this release does
+                // not build it. An author copying that block verbatim must not
+                // be told they invented it.
+                "compress" => self.not_in_this_release(
+                    field.name.span,
+                    "only `kind`, `palette` and `dedup` are supported yet",
+                ),
+                _ => self.error(
+                    field.name.span,
+                    "unknown asset field; this release knows `kind`, `palette` and `dedup`",
+                ),
+            }
+        }
+    }
+
+    /// The caret is on the value, which is the part the author must change.
+    fn require_asset_value(
+        &mut self,
+        field: &raster_syntax::AssetField,
+        wanted: &AssetValue,
+        message: &str,
+    ) {
+        if &field.value.value != wanted {
+            self.not_in_this_release(field.value.span, message);
         }
     }
 
@@ -235,6 +328,7 @@ impl Analyzer {
                 self.leave_scope();
             }
             Item::Main(block) => self.check_block(block),
+            Item::Asset(asset) => self.check_asset(asset),
             _ => {}
         }
     }
@@ -712,6 +806,39 @@ impl Analyzer {
             }
             Expression::Member { base, member } => {
                 let base_type = self.expression_type(base);
+                if base_type == ValueType::Asset {
+                    if spec_only_asset_member(&member.value) {
+                        // Defined by §8.1 and not built yet, which is a
+                        // different thing from a member nobody has heard of.
+                        self.not_in_this_release(
+                            member.span,
+                            "only `tiles`, `nametable`, `attributes` and `palette` \
+                             are supported yet",
+                        );
+                    } else if !asset_member(&member.value) {
+                        self.error(
+                            member.span,
+                            format!(
+                                "unknown asset member `{}`; an image asset has `tiles`, \
+                                 `nametable`, `attributes` and `palette`",
+                                member.value
+                            ),
+                        );
+                    }
+                    // A block of ROM data rather than a value. `Unknown` is the
+                    // language's "do not build on this" type: it suppresses the
+                    // cascade a wrong member would otherwise cause. It does not
+                    // by itself forbid arithmetic — `require_integer` and
+                    // `ensure_compatible` both accept `Unknown` deliberately —
+                    // so `picture.tiles + 1` analyzes clean today and is caught
+                    // only by lowering's blanket refusal of the item — which
+                    // prints "this byte register is not supported" under the
+                    // member, beside the correct refusal. Giving these members a
+                    // type that holds once that refusal is lifted, and so
+                    // retires that second message, belongs to the bead that
+                    // gives them a consumer.
+                    return ValueType::Unknown;
+                }
                 if base_type != ValueType::Namespace {
                     self.error(base.span, "member access requires a register namespace");
                     return ValueType::Unknown;
@@ -1079,6 +1206,20 @@ fn parse_number(value: &str) -> Option<u32> {
     } else {
         value.parse().ok()
     }
+}
+
+/// The members §8.1 of the specification defines that this release does not
+/// build. `raster_assets` counts its tiles, so `tile_count` is a value rather
+/// than a block, and giving it a type is the job of the bead that gives these
+/// members a consumer.
+fn spec_only_asset_member(member: &str) -> bool {
+    member == "tile_count"
+}
+
+/// The four blocks an image asset exposes, which are exactly the four accessors
+/// of `raster_assets::NesBackground`.
+fn asset_member(member: &str) -> bool {
+    matches!(member, "tiles" | "nametable" | "attributes" | "palette")
 }
 
 fn register_member(namespace: &str, member: &str) -> bool {

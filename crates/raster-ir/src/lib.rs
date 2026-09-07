@@ -1649,6 +1649,14 @@ impl Lowerer {
                     self.not_in_this_release(item.span, "`import` is not supported yet")
                 }
                 Item::Frame(frame) => self.lower_frame(frame, item.span),
+                // The file has already been read, decoded and encoded by the
+                // time lowering sees this, so every real problem with the
+                // picture has been reported. What is left is that no byte of it
+                // is placed yet, and a ROM built without it would be a compiler
+                // lying about what it built.
+                Item::Asset(_) => {
+                    self.not_in_this_release(item.span, "an `asset` does not reach the ROM yet")
+                }
                 Item::Other(_) => self.error(item.span, "this top-level item is not supported"),
             }
         }
