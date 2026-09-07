@@ -694,3 +694,62 @@ fn no_refusal_calls_a_timed_block_a_timed_region() {
         "a message that opens with `timed block` must not call it a region later: {bare:?}"
     );
 }
+
+/// The four blocks an image asset exposes, read from inside `main`. Nothing is done
+/// with them — they are blocks of ROM data, not values — so naming them must simply
+/// analyze.
+#[test]
+fn an_asset_declares_a_name_with_four_members() {
+    let source = r#"
+        asset image picture = png("art/picture.png") { kind: background }
+        main {
+            picture.tiles
+            picture.nametable
+            picture.attributes
+            picture.palette
+        }
+    "#;
+    let program = parse(source).expect("fixture should parse");
+    let errors = analyze(&program)
+        .err()
+        .map(|errors| {
+            errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(errors, Vec::<String>::new());
+}
+
+#[test]
+fn refuses_an_unknown_asset_member() {
+    let source = r#"
+        asset image picture = png("art/picture.png")
+        main { picture.sprites }
+    "#;
+    let found = errors_with_spans(source);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].message,
+        "unknown asset member `sprites`; an image asset has `tiles`, `nametable`, `attributes` and `palette`"
+    );
+    assert_eq!(
+        &source[found[0].span.start as usize..found[0].span.end as usize],
+        "sprites"
+    );
+    assert_eq!(found[0].refusal, Refusal::Rejected);
+}
+
+/// The existing refusal, which the asset arm must not swallow: a member of a `u8`
+/// is still a register-namespace mistake.
+#[test]
+fn refuses_a_member_of_something_that_is_not_a_namespace_or_asset() {
+    let messages = errors("main { var value: u8 = 1\n value.mask = 2 }");
+    assert!(
+        messages
+            .iter()
+            .any(|message| message == "member access requires a register namespace"),
+        "expected the register-namespace refusal, got {messages:?}"
+    );
+}

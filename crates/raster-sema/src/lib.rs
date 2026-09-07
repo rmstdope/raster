@@ -27,6 +27,10 @@ enum ValueType {
     Array(Box<ValueType>, u32),
     Void,
     Namespace,
+    /// An `asset` item's name. It is not a value: nothing may be added to it or
+    /// stored in it, and the only thing it admits is a member access naming one
+    /// of the four blocks it exposes.
+    Asset,
     Unknown,
 }
 
@@ -37,6 +41,7 @@ enum SymbolKind {
     Group,
     Function(Vec<ValueType>, ValueType),
     Namespace,
+    Asset,
 }
 
 #[derive(Clone)]
@@ -173,9 +178,21 @@ impl Analyzer {
             match &item.value {
                 Item::Declaration(declaration) => self.declare_declaration(declaration),
                 Item::Function(function) => self.declare_function(function),
+                Item::Asset(asset) => self.declare_asset(asset),
                 _ => {}
             }
         }
+    }
+
+    fn declare_asset(&mut self, asset: &raster_syntax::Asset) {
+        self.declare(
+            &asset.name,
+            Symbol {
+                kind: SymbolKind::Asset,
+                value_type: ValueType::Asset,
+                span: asset.name.span,
+            },
+        );
     }
 
     fn declare_declaration(&mut self, declaration: &Declaration) {
@@ -235,6 +252,8 @@ impl Analyzer {
                 self.leave_scope();
             }
             Item::Main(block) => self.check_block(block),
+            // An asset declares a name and has no body to check.
+            Item::Asset(_) => {}
             _ => {}
         }
     }
@@ -712,6 +731,22 @@ impl Analyzer {
             }
             Expression::Member { base, member } => {
                 let base_type = self.expression_type(base);
+                if base_type == ValueType::Asset {
+                    if !asset_member(&member.value) {
+                        self.error(
+                            member.span,
+                            format!(
+                                "unknown asset member `{}`; an image asset has `tiles`, \
+                                 `nametable`, `attributes` and `palette`",
+                                member.value
+                            ),
+                        );
+                    }
+                    // A block of ROM data, not a value: `Unknown` is what stops
+                    // anything in this release doing arithmetic on one, and it
+                    // already suppresses the cascade a wrong member would cause.
+                    return ValueType::Unknown;
+                }
                 if base_type != ValueType::Namespace {
                     self.error(base.span, "member access requires a register namespace");
                     return ValueType::Unknown;
@@ -1079,6 +1114,12 @@ fn parse_number(value: &str) -> Option<u32> {
     } else {
         value.parse().ok()
     }
+}
+
+/// The four blocks an image asset exposes, which are exactly the four accessors
+/// of `raster_assets::NesBackground`.
+fn asset_member(member: &str) -> bool {
+    matches!(member, "tiles" | "nametable" | "attributes" | "palette")
 }
 
 fn register_member(namespace: &str, member: &str) -> bool {
