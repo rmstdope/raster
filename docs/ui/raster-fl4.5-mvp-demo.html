@@ -1,0 +1,211 @@
+<!doctype html>
+<title>raster-fl4.5 &mdash; what the MVP demo ships as</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 68rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:58em; }
+  h2 { font-size: .95rem; margin: 2.6rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  h3 { font-size:.9rem; margin:1.4rem 0 .3rem; color:#4a4f61; text-transform:uppercase; letter-spacing:.07em; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:58em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .new { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .src .miss { color:#c0392b; font-weight:700; }
+  .src .g { color:#8a8f9e; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 1.4rem; font-size:.9rem; color:#4a4f61; max-width:58em; }
+  table { border-collapse:collapse; font-size:.88rem; margin:.6rem 0 1rem; width:100%; }
+  th, td { text-align:left; padding:.35rem .6rem; border-bottom:1px solid #dcdfe8; vertical-align:top; }
+  th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.05em; font-size:.78rem; }
+  td.y { color:#1e7a3c; font-weight:600; }
+  td.n { color:#b03030; font-weight:600; }
+  .opt { border:1px solid #d9dce6; border-radius:10px; padding:1.1rem 1.3rem 1.3rem; margin:1rem 0 1.8rem; background:#fff; }
+  .opt h2 { margin-top:0; }
+  .price { font:600 13px/1.4 ui-monospace,monospace; color:#4a4f61; background:#eceef4;
+           display:inline-block; padding:.3rem .55rem; border-radius:4px; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, h3, .note, .cost { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    .src .g { color:#6d7386; }
+    .src .miss { color:#ff8080; }
+    .opt { background:#111219; border-color:#262a36; }
+    th, td { border-color:#262a36; }
+    .price { background:#1e2029; color:#a8adc0; }
+    td.y { color:#6fca8c; } td.n { color:#ff8080; }
+  }
+</style>
+<main>
+<h1>What the MVP demo ships as</h1>
+<p class="sub">Planning <code>raster-fl4.5</code> (P0). The bead is milestone <strong>M8</strong> of
+<code>docs/raster-mvp-plan.md</code> &mdash; &ldquo;the full MVP demo from spec &sect;13&rdquo; &mdash; and it is
+not one bead. Two implementers have handed it back. Below are three things the demo could ship as, what each
+proves, and what each costs. <strong>The choice is yours; the split into beads afterwards is mine.</strong></p>
+
+<h2>00 &middot; Why section 13 cannot be built as written</h2>
+<p class="note">The spec says of its own example: &ldquo;This is the program the MVP must compile &mdash; not one
+that compiles today.&rdquo; That is true, and it understates it. Two names in the example are declared
+<em>nowhere</em> &mdash; not in the example, not in the compiler, not elsewhere in the spec:</p>
+<div class="src">    for i in 0..240 {
+        raster.bars[i] = <span class="miss">sine_table</span>[i] &amp; $E0     <span class="g">// sine_table is never declared</span>
+    }
+...
+        cycles(&lt;= 28) pad {
+            ppu.mask = $1E | raster.bars[<span class="miss">line</span>]     <span class="g">// `line` is not a builtin anywhere</span>
+        }</div>
+<p class="cost">Verified: <code>grep '"line"'</code> across the compiler matches only parser tests, and neither
+<code>raster-sema</code> nor <code>raster-ir</code> binds it. Both would fail with <code>unknown name</code>
+(<code>crates/raster-sema/src/lib.rs:656</code>). <strong>So section 13 needs a spec decision before it needs
+code</strong>, whichever option you pick &mdash; unless you pick one that does not use them.</p>
+
+<h2>01 &middot; Where the compiler actually is</h2>
+<p class="note">Much better than <code>raster-fl4.5</code>&rsquo;s plan assumes. Stable IRQ-timed colour bars
+already run and are pinned to frame 300 in the emulator
+(<code>crates/rasterc/tests/emulator.rs:187</code>).</p>
+<table>
+  <tr><th>Acceptance criterion</th><th>Today</th><th>What is missing</th></tr>
+  <tr><td>A1 &mdash; source + PNG &rarr; iNES, no external toolchain</td><td class="n">part</td><td>the PNG half: nothing in <code>rasterc</code> reads an image</td></tr>
+  <tr><td>A2 &mdash; runs clean in Mesen2</td><td class="y">yes</td><td>&mdash;</td></tr>
+  <tr><td>A3 &mdash; PNG on screen, pixel-identical</td><td class="n">no</td><td><code>raster-assets</code> is complete but is a <em>dev-dependency of <code>raster-link</code></em> only</td></tr>
+  <tr><td>A4 &mdash; bars at chosen scanlines, no jitter</td><td class="y">yes</td><td>&mdash; proven to frame 300</td></tr>
+  <tr><td>A5 &mdash; <code>cycles(N)</code> verified, overage named</td><td class="y">yes</td><td>&mdash;</td></tr>
+  <tr><td>A6 &mdash; per-event budget table</td><td class="n">no</td><td>computed in codegen, then discarded (<code>raster-codegen/src/lib.rs:535</code>). This is <strong>raster-5vk</strong>, already filed.</td></tr>
+  <tr><td>A7 &mdash; runs on your hardware</td><td class="n">stale</td><td>last run 2026-08-30, predates the CHR-bank reset. This is <strong>raster-dxk</strong>, already filed.</td></tr>
+</table>
+
+<div class="opt">
+<span class="tag">OPTION A</span>
+<h2>Section 13, in full</h2>
+<p class="note">The demo the spec and the MVP plan describe: a PNG background, and a per-scanline emphasis
+value read out of a 240-byte table in RAM.</p>
+<div class="src">target nes { mapper: mmc3  prg: 128K  chr: 128K  region: ntsc }
+asset image picture = png("art/picture.png") { kind: background  palette: auto(4) }
+chrrom bank 0 { picture.tiles }
+group raster { var bars: [240]u8 in bss }
+frame main using irq {
+    every 1 scanlines from 0 to 239 {
+        cycles(&lt;= 28) pad { ppu.mask = $1E | raster.bars[line] }
+    }
+}</div>
+<h3>What it needs first</h3>
+<p class="note">Arrays and indexed reads &middot; a BSS allocator (the zero page is the only arena today, and
+240 bytes will not fit) &middot; <code>group</code> members &middot; <code>in bss</code> &middot;
+<code>wait vblank</code> &middot; <code>loop</code> &middot; the asset pipeline wired into
+<code>rasterc</code> &middot; <code>chrrom</code> and real CHR ROM in the linker (which hardcodes CHR
+<em>RAM</em> today) &middot; <code>target</code> honoured for <code>prg: 128K</code> (the linker hardcodes
+32 KiB) &middot; a <code>line</code> builtin and a <code>sine_table</code> answer in the spec.</p>
+<p><span class="price">~12 beads</span> &nbsp; Proves A1&ndash;A7 in full. The demo is the one the documents promise.</p>
+</div>
+
+<div class="opt">
+<span class="tag">OPTION B</span>
+<h2>The image, with bars the compiler can already place</h2>
+<p class="note">Keeps the MVP&rsquo;s one-sentence goal intact &mdash; &ldquo;displays an image imported from a
+PNG with the background colour changing at chosen vertical positions&rdquo; &mdash; but places the bars with
+the <code>at scanline</code> handlers that work today instead of a RAM table.</p>
+<div class="src">target nes { mapper: mmc3  region: ntsc }
+asset image picture = png("art/picture.png") { kind: background  palette: auto(4) }
+chrrom bank 0 { picture.tiles }
+
+main {
+    load_palette(picture.palette)
+    load_nametable(picture.nametable, picture.attributes)
+    ppu.ctrl = $08
+    ppu.mask = $1e
+}
+
+frame main using irq {
+    at scanline  60 { ppu.mask = $3e }   <span class="g">// red emphasis</span>
+    at scanline 120 { ppu.mask = $5e }   <span class="g">// green</span>
+    at scanline 180 { ppu.mask = $1e }   <span class="g">// none again</span>
+}</div>
+<h3>What it needs first</h3>
+<p class="note">The asset pipeline wired into <code>rasterc</code> &middot; <code>chrrom</code> and CHR ROM in
+the linker &middot; a minimal <code>target</code> block &middot; the two load builtins. <strong>No arrays, no
+BSS, no <code>loop</code>, no <code>line</code>, no spec change.</strong></p>
+<p><span class="price">~5 beads</span> &nbsp; Proves A1&ndash;A7. Section 13&rsquo;s per-scanline table becomes a
+later epic rather than a blocker.</p>
+</div>
+
+<div class="opt">
+<span class="tag">OPTION C</span>
+<h2>The timing demo now, the image next</h2>
+<p class="note">Promote the fixture that already works to <code>examples/mvp/</code>, add the budget table, and
+put it on your console. No image.</p>
+<div class="src">main {
+    ppu.addr = $3f
+    ppu.addr = $00
+    ppu.data = $0f
+    ppu.ctrl = $08          <span class="g">// background $0000, sprites $1000: A12 rises every scanline</span>
+    ppu.mask = $1e
+}
+
+frame bars using irq {
+    at scanline  60 { ppu.mask = $3e }
+    at scanline 120 { ppu.mask = $5e }
+    at scanline 180 { ppu.mask = $1e }
+}</div>
+<h3>What it needs first</h3>
+<p class="note">Only <strong>raster-5vk</strong> (the budget table) and a hardware run. This program compiles
+and runs on <code>main</code> today.</p>
+<p><span class="price">~2&ndash;3 beads</span> &nbsp; Proves A1, A2, A4, A5, A6, A7. <strong>Does not prove
+A3</strong> &mdash; there is no image, so the MVP&rsquo;s own sentence is not met.</p>
+</div>
+
+<h2>02 &middot; What the build prints, either way</h2>
+<p class="note">The eight rows are what <code>main</code> prints today, verbatim from
+<code>crates/rasterc/src/report.rs</code>. The frame section is the part that does not exist &mdash; A6, filed as
+<code>raster-5vk</code>. Its exact shape and wording is that bead&rsquo;s question, not this one; shown here in
+the spec&rsquo;s own &sect;7.2 form only so the options can be compared.</p>
+<div class="term">$ rasterc examples/mvp/demo.raster
+ Compiled  examples/mvp/demo.raster -&gt; examples/mvp/demo.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 412 of 8186 bytes used
+    yours  280 bytes
+  runtime  132 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $E09F, irq $E0A4
+<span class="new">
+frame main (using irq, mmc3)
+  scanline  60   handler   7 cycles   window   9   <span class="ok">ok</span>
+  scanline 120   handler   7 cycles   window   9   <span class="ok">ok</span>
+  scanline 180   handler   7 cycles   window   9   <span class="ok">ok</span></span></div>
+
+<h2>03 &middot; The hardware gate, on a PAL console</h2>
+<p class="note">Separate question, and it applies to every option above. The compiler, the spec and the emulator
+are all NTSC (<code>raster-emu</code> is hard-wired <code>NesRegion::Ntsc</code>); the MVP plan puts PAL out of
+scope; your console is a PAL NES. On <code>raster-20i.4</code> you already chose to accept PAL evidence rather
+than rerun NTSC, and that decision is what A7 now has to be read against.</p>
+<table>
+  <tr><th>What PAL hardware can and cannot settle</th><th></th></tr>
+  <tr><td><strong>Bar placement</strong> &mdash; the MMC3 counter clocks on filtered PPU A12 rises, so
+      <code>at scanline 60</code> is scanline 60 on either region</td><td class="y">holds on PAL</td></tr>
+  <tr><td><strong>Boot, mapper, CHR bank init</strong> &mdash; what an emulator cannot prove, since it powers
+      every MMC3 register up at zero</td><td class="y">holds on PAL</td></tr>
+  <tr><td><strong>Cycle windows</strong> &mdash; <code>IRQ_HANDLER_BODY_CYCLES = 9</code> was
+      <em>measured</em> on NTSC; PAL runs 3.2 dots per CPU cycle, not 3</td><td class="n">NTSC number</td></tr>
+  <tr><td><strong>A <code>using timed</code> frame</strong> &mdash; spends a whole frame of counted cycles;
+      PAL has 312 scanlines, not 262</td><td class="n">wrong on PAL</td></tr>
+</table>
+<p class="cost">So an <code>using irq</code> demo is largely region-tolerant and a <code>using timed</code> one
+is not &mdash; which is reasoning from the constants, not something anyone has run. Whether that is good enough
+for A7, or whether the compiler should learn <code>region: pal</code>, is the second question.</p>
+
+</main>
