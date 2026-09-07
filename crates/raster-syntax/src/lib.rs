@@ -223,6 +223,11 @@ main {
     /// A count alone cannot show this — swallowing the next item silently would
     /// leave the count unchanged — so the item that follows is one that errors
     /// when it is parsed, and its error is the evidence it was reached.
+    ///
+    /// Only the first case is a regression test for the recovery rework: the two
+    /// field cases pass against the parser before it, because the block loop
+    /// already recovered to its own `}`. They are kept as coverage of that loop,
+    /// which had none.
     #[test]
     fn asset_recovery_leaves_the_next_item_to_be_parsed() {
         for asset in [
