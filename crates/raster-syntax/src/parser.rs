@@ -1,7 +1,7 @@
 use crate::{
     Asset, AssetField, AssetValue, Block, CycleBound, CycleSpec, Declaration, Expression, Frame,
-    FrameEvent, FramePosition, Function, Identifier, Item, Keyword, Parameter, Program, Punctuation,
-    Span, Spanned, Statement, Target, TargetField, Token, TokenKind, Type, lex,
+    FrameEvent, FramePosition, Function, Identifier, Item, Keyword, Parameter, Program,
+    Punctuation, Span, Spanned, Statement, Target, TargetField, Token, TokenKind, Type, lex,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
