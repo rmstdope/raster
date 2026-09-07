@@ -1,7 +1,7 @@
 use crate::{
     Block, CycleBound, CycleSpec, Declaration, Expression, Frame, FrameEvent, FramePosition,
     Function, Identifier, Item, Keyword, Parameter, Program, Punctuation, Span, Spanned, Statement,
-    Token, TokenKind, Type, lex,
+    Target, TargetField, Token, TokenKind, Type, lex,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,7 +53,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Target) => {
                 self.advance();
                 self.expect_name("nes", "expected `nes` after `target`");
-                Item::Target(self.opaque_block("expected `{` after target"))
+                Item::Target(self.target())
             }
             TokenKind::Keyword(Keyword::Import) => {
                 self.advance();
@@ -346,6 +346,64 @@ impl<'a> Parser<'a> {
         Block {
             statements,
             span: start.join(end),
+        }
+    }
+
+    /// The fields of a `target` block, as spelled.
+    ///
+    /// Whitespace separates fields and a comma between them is optional, because
+    /// the specification's own example writes one field per line with no commas.
+    /// Every field name and value this release knows lexes as an identifier or a
+    /// number, so nothing here reads a keyword.
+    fn target(&mut self) -> Target {
+        let start = self.peek().span;
+        if !self.expect_punctuation(Punctuation::LeftBrace, "expected `{` after target") {
+            return Target {
+                fields: Vec::new(),
+                span: start,
+            };
+        }
+
+        let mut fields = Vec::new();
+        while !self.check_punctuation(Punctuation::RightBrace) && !self.at_end() {
+            let Some(name) = self.take_identifier() else {
+                self.error_here("expected a `target` field name, or `}`");
+                // One bad field is one error: skip to the closing brace rather than
+                // reporting every remaining token.
+                while !self.check_punctuation(Punctuation::RightBrace) && !self.at_end() {
+                    self.advance();
+                }
+                break;
+            };
+            self.expect_punctuation(
+                Punctuation::Colon,
+                "expected `:` after a `target` field name",
+            );
+            let value = self.target_value();
+            let span = name.span.join(value.span);
+            fields.push(TargetField { name, value, span });
+            self.match_punctuation(Punctuation::Comma);
+        }
+
+        self.expect_punctuation(Punctuation::RightBrace, "expected `}` to close block");
+        Target {
+            fields,
+            span: start.join(self.previous().span),
+        }
+    }
+
+    /// A `target` field's value, as the token spelled it: `mmc3`, `ntsc`, `128K`.
+    fn target_value(&mut self) -> Spanned<String> {
+        match self.peek().value.clone() {
+            TokenKind::Identifier(value) | TokenKind::Number(value) => {
+                let token = self.advance();
+                Spanned::new(value, token.span)
+            }
+            _ => {
+                let span = self.peek().span;
+                self.error_here("expected a value after `:`");
+                Spanned::new(String::new(), span)
+            }
         }
     }
 

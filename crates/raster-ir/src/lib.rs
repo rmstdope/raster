@@ -5,13 +5,29 @@ use raster_sema::TypedProgram;
 use raster_syntax::{
     Block, CycleBound, Declaration, Expression as SyntaxExpression, Frame as SyntaxFrame,
     FrameEvent as SyntaxFrameEvent, FramePosition, Function as SyntaxFunction, Item, Keyword,
-    Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement, Type, Wait,
+    Operator, Program as SyntaxProgram, Span, Spanned, Statement as SyntaxStatement, Target, Type,
+    Wait,
 };
 pub use raster_timing::CycleConstraint;
 use raster_timing::{
     mask_enables_rendering, timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError,
     PpuConfiguration, RegisterState, TimedFrameNmi, NMI_CYCLES, PPU_CTRL_NMI,
 };
+
+/// The one ROM shape this release builds, in the words a `target` block spells it.
+///
+/// These are `raster-link`'s facts restated: `MMC3_PRG_ROM_SIZE`, the mapper
+/// nibble of the iNES header, and the `$A000` write the reset runtime makes.
+/// `raster-ir` cannot depend on `raster-link` — the linker is downstream of
+/// lowering — so the agreement is pinned by a test in `rasterc`, which sees both
+/// crates.
+pub const TARGET_MAPPER: &str = "mmc3";
+pub const TARGET_REGION: &str = "ntsc";
+pub const TARGET_MIRROR: &str = "vertical";
+pub const TARGET_PRG: &str = "32K";
+
+/// `TARGET_PRG` as a byte count, for the crate that can compare it with the linker.
+pub const TARGET_PRG_ROM_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Place(pub u32);
@@ -1548,8 +1564,57 @@ impl Lowerer {
         visit_states.insert(function.to_owned(), VisitState::Visited);
     }
 
+    /// Check a `target` block against the ROM this release builds.
+    ///
+    /// A field naming what the compiler already builds is accepted and changes
+    /// nothing at all — no field of a `target` block reaches codegen. Every other
+    /// value is refused with the span of the *value*, so the caret lands on the
+    /// part the author has to change; a field with no acceptable value, and a name
+    /// the compiler does not know, are refused on the name instead.
+    fn check_target(&mut self, target: &Target) {
+        let mut seen = BTreeSet::new();
+        for field in &target.fields {
+            let name = field.name.value.as_str();
+            if !seen.insert(name) {
+                self.error(field.name.span, "this `target` field is set twice");
+                continue;
+            }
+            let accepted = match name {
+                "mapper" => TARGET_MAPPER,
+                "region" => TARGET_REGION,
+                "mirror" => TARGET_MIRROR,
+                "prg" => TARGET_PRG,
+                // The ROM has 8 KiB of CHR *RAM* and `chr:` names CHR ROM size,
+                // so no spelling of this field is currently true.
+                "chr" => {
+                    self.not_in_this_release(
+                        field.name.span,
+                        "the `chr` field is not supported yet; this release builds 8 KiB of CHR RAM",
+                    );
+                    continue;
+                }
+                _ => {
+                    self.error(
+                        field.name.span,
+                        "unknown `target` field; this release knows `mapper`, `prg`, `chr`, `mirror` and `region`",
+                    );
+                    continue;
+                }
+            };
+            // Enumerated words rather than identifiers, so `32k` and `32K` are the
+            // same answer and refusing one of them would teach an author nothing.
+            if !field.value.value.eq_ignore_ascii_case(accepted) {
+                self.not_in_this_release(
+                    field.value.span,
+                    format!("only `{name}: {accepted}` is supported yet"),
+                );
+            }
+        }
+    }
+
     fn lower_program(&mut self, syntax: &raster_syntax::Program) {
         let mut main_count = 0usize;
+        let mut target_count = 0usize;
         for item in &syntax.items {
             match &item.value {
                 Item::Declaration(declaration) => self.lower_top_level_declaration(declaration),
@@ -1562,8 +1627,13 @@ impl Lowerer {
                         self.lower_main(block);
                     }
                 }
-                Item::Target(_) => {
-                    self.not_in_this_release(item.span, "`target` blocks are not supported yet")
+                Item::Target(target) => {
+                    target_count += 1;
+                    if target_count > 1 {
+                        self.error(item.span, "multiple `target` blocks are not supported");
+                    } else {
+                        self.check_target(target);
+                    }
                 }
                 Item::Import(_) => {
                     self.not_in_this_release(item.span, "`import` is not supported yet")

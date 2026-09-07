@@ -225,6 +225,31 @@ main {
     }
 
     #[test]
+    fn parses_the_target_block_fields() {
+        let program = parse("target nes { mapper: mmc3  prg: 128K }").expect("the block parses");
+        assert_eq!(program.items.len(), 1);
+        let Item::Target(target) = &program.items[0].value else {
+            panic!("expected a target block");
+        };
+        assert_eq!(target.fields.len(), 2);
+        assert_eq!(target.fields[0].name.value, "mapper");
+        assert_eq!(target.fields[0].value.value, "mmc3");
+        assert_eq!(target.fields[1].name.value, "prg");
+        assert_eq!(target.fields[1].value.value, "128K");
+    }
+
+    #[test]
+    fn reports_a_target_field_without_a_colon() {
+        let errors = parse("target nes { mapper mmc3 }").expect_err("a missing `:` must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message == "expected `:` after a `target` field name"),
+            "expected a colon diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn parser_returns_multiple_source_spanned_errors() {
         let errors = parse("wat\nmain {\n  @\n  #\n}").expect_err("invalid source must fail");
         assert_eq!(errors.len(), 3);
