@@ -753,3 +753,84 @@ fn refuses_a_member_of_something_that_is_not_a_namespace_or_asset() {
         "expected the register-namespace refusal, got {messages:?}"
     );
 }
+
+/// Every field value this release does not build is refused rather than ignored: a
+/// compiler that accepts `dedup: false` and deduplicates anyway is worse than one
+/// that says it cannot.
+#[test]
+fn refuses_asset_fields_this_release_does_not_build() {
+    for (field, message, refusal, caret) in [
+        (
+            "kind: sprites",
+            "only `kind: background` is supported yet",
+            Refusal::NotInThisRelease,
+            "sprites",
+        ),
+        (
+            "palette: auto(2)",
+            "only `palette: auto(4)` is supported yet",
+            Refusal::NotInThisRelease,
+            "auto(2)",
+        ),
+        (
+            "dedup: false",
+            "only `dedup: true` is supported yet",
+            Refusal::NotInThisRelease,
+            "false",
+        ),
+        (
+            "sharpness: 3",
+            "unknown asset field; this release knows `kind`, `palette` and `dedup`",
+            Refusal::Rejected,
+            "sharpness",
+        ),
+    ] {
+        let source = format!("asset image picture = png(\"p.png\") {{ {field} }}\nmain {{ }}");
+        let found = errors_with_spans(&source);
+        assert_eq!(found.len(), 1, "for `{field}`, got {found:?}");
+        assert_eq!(found[0].message, message, "for `{field}`");
+        assert_eq!(found[0].refusal, refusal, "for `{field}`");
+        assert_eq!(
+            &source[found[0].span.start as usize..found[0].span.end as usize],
+            caret,
+            "for `{field}`"
+        );
+    }
+}
+
+#[test]
+fn refuses_an_asset_field_set_twice() {
+    let source =
+        "asset image picture = png(\"p.png\") { kind: background  kind: background }\nmain { }";
+    let found = errors_with_spans(source);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].message, "this asset field is set twice");
+    assert_eq!(found[0].refusal, Refusal::Rejected);
+    // The caret is on the second `kind`, which is the one to delete.
+    assert_eq!(found[0].span.start as usize, source.rfind("kind").unwrap());
+}
+
+#[test]
+fn refuses_an_asset_loader_and_kind_this_release_does_not_build() {
+    for (source, message, caret) in [
+        (
+            "asset image picture = fam(\"p.fam\")\nmain { }",
+            "only `png` is supported yet",
+            "fam",
+        ),
+        (
+            "asset sound jingle = png(\"p.png\")\nmain { }",
+            "only `asset image` is supported yet",
+            "sound",
+        ),
+    ] {
+        let found = errors_with_spans(source);
+        assert_eq!(found.len(), 1, "for `{source}`, got {found:?}");
+        assert_eq!(found[0].message, message);
+        assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+        assert_eq!(
+            &source[found[0].span.start as usize..found[0].span.end as usize],
+            caret
+        );
+    }
+}

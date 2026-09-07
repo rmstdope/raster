@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use raster_diag::Refusal;
 use raster_syntax::{
-    Block, CycleBound, Declaration, Expression, FrameEvent, FramePosition, Function, Item, Keyword,
-    Operator, Program, Span, Spanned, Statement, Type, Wait,
+    AssetValue, Block, CycleBound, Declaration, Expression, FrameEvent, FramePosition, Function,
+    Item, Keyword, Operator, Program, Span, Spanned, Statement, Type, Wait,
 };
 
 #[derive(Debug)]
@@ -130,6 +130,12 @@ impl Analyzer {
         self.refuse(span, message, Refusal::TimedRegionCost);
     }
 
+    /// Refuse a construct the language defines and this release does not build
+    /// anywhere. These carry the list of what the release can build instead.
+    fn not_in_this_release(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::NotInThisRelease);
+    }
+
     fn refuse(&mut self, span: Span, message: impl Into<String>, refusal: Refusal) {
         self.errors.push(SemanticError {
             message: message.into(),
@@ -195,6 +201,69 @@ impl Analyzer {
         );
     }
 
+    /// What an asset asks for, against what `raster-assets` actually does.
+    ///
+    /// Every accepted value here is a fact about the encoder rather than a
+    /// preference: `BACKGROUND_SUBPALETTE_COUNT` is 4, `encode_background`
+    /// deduplicates unconditionally, and the only encoder there is is a
+    /// background one. A field this release cannot honour is refused rather
+    /// than ignored, because a compiler that silently drops a setting is worse
+    /// than one that says it cannot build it.
+    fn check_asset(&mut self, asset: &raster_syntax::Asset) {
+        if asset.kind.value != "image" {
+            self.not_in_this_release(asset.kind.span, "only `asset image` is supported yet");
+        }
+        if asset.loader.value != "png" {
+            self.not_in_this_release(asset.loader.span, "only `png` is supported yet");
+        }
+
+        let mut seen: Vec<&str> = Vec::new();
+        for field in &asset.fields {
+            let name = field.name.value.as_str();
+            if seen.contains(&name) {
+                self.error(field.name.span, "this asset field is set twice");
+                continue;
+            }
+            seen.push(name);
+            match name {
+                "kind" => self.require_asset_value(
+                    field,
+                    &AssetValue::Word("background".into()),
+                    "only `kind: background` is supported yet",
+                ),
+                "palette" => self.require_asset_value(
+                    field,
+                    &AssetValue::Call {
+                        name: "auto".into(),
+                        argument: "4".into(),
+                    },
+                    "only `palette: auto(4)` is supported yet",
+                ),
+                "dedup" => self.require_asset_value(
+                    field,
+                    &AssetValue::Word("true".into()),
+                    "only `dedup: true` is supported yet",
+                ),
+                _ => self.error(
+                    field.name.span,
+                    "unknown asset field; this release knows `kind`, `palette` and `dedup`",
+                ),
+            }
+        }
+    }
+
+    /// The caret is on the value, which is the part the author must change.
+    fn require_asset_value(
+        &mut self,
+        field: &raster_syntax::AssetField,
+        wanted: &AssetValue,
+        message: &str,
+    ) {
+        if &field.value.value != wanted {
+            self.not_in_this_release(field.value.span, message);
+        }
+    }
+
     fn declare_declaration(&mut self, declaration: &Declaration) {
         let Some(name) = &declaration.name else {
             return;
@@ -252,8 +321,7 @@ impl Analyzer {
                 self.leave_scope();
             }
             Item::Main(block) => self.check_block(block),
-            // An asset declares a name and has no body to check.
-            Item::Asset(_) => {}
+            Item::Asset(asset) => self.check_asset(asset),
             _ => {}
         }
     }
