@@ -964,3 +964,55 @@ fn a_status_read_inside_an_address_pair_warns_and_still_writes_a_rom() {
     );
     assert!(stdout.ends_with(" warnings  1\n"), "got:\n{stdout}");
 }
+
+/// An asset path is relative to the source file, not to the working directory —
+/// the only rule under which `png("art/picture.png")` means one thing wherever
+/// `rasterc` is invoked from. The input is named by an absolute path here and the
+/// picture by a relative one, so nothing but that rule can find the file.
+#[test]
+fn an_asset_path_resolves_relative_to_the_source_file() {
+    let directory = Scratch::new("asset");
+    let input = directory.path().join("demo.raster");
+    fs::create_dir_all(directory.path().join("art")).unwrap();
+    fs::write(directory.path().join("art/picture.png"), b"not a png").unwrap();
+    fs::write(
+        &input,
+        "asset image picture = png(\"art/picture.png\") { kind: background }\nmain { }\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.contains("`art/picture.png` is not a readable PNG"),
+        "got {stderr}"
+    );
+    // The caret is under the quoted path, which is what the author must change.
+    assert!(
+        stderr.contains("asset image picture = png(\"art/picture.png\")"),
+        "got {stderr}"
+    );
+}
+
+/// A file the source names and the directory does not have is reported by name,
+/// with the reason the filesystem gave.
+#[test]
+fn a_missing_asset_file_is_reported_by_name() {
+    let directory = Scratch::new("missing");
+    let input = directory.path().join("demo.raster");
+    fs::write(
+        &input,
+        "asset image picture = png(\"art/picture.png\") { kind: background }\nmain { }\n",
+    )
+    .unwrap();
+
+    let (result, _, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert!(
+        stderr.contains("could not read `art/picture.png`: "),
+        "got {stderr}"
+    );
+}

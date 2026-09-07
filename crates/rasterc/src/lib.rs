@@ -4,10 +4,12 @@ use std::{
     path::PathBuf,
 };
 
+mod assets;
 mod compile;
 mod report;
 
-pub use compile::{compile_source, Rom};
+pub use assets::{AssetSource, Assets, DirectoryAssets, NoAssets};
+pub use compile::{compile_source, compile_source_with_assets, Rom};
 
 const USAGE: &str = "Usage: rasterc <INPUT.raster> [-o <OUTPUT.nes>]\n";
 
@@ -122,7 +124,7 @@ fn compile(
         }
     };
 
-    let rom = match compile_source(&source) {
+    let rom = match compile_source_with_assets(&source, &DirectoryAssets::beside(input)) {
         Ok(rom) => rom,
         Err(found) => {
             write(stderr, &report::diagnostics(input, &source, &found))?;

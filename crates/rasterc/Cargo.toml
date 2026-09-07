@@ -7,6 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+raster-assets = { path = "../raster-assets" }
 raster-codegen = { path = "../raster-codegen" }
 raster-diag = { path = "../raster-diag" }
 raster-ir = { path = "../raster-ir" }
@@ -17,4 +18,5 @@ raster-timing = { path = "../raster-timing" }
 
 [dev-dependencies]
 raster-6502 = { path = "../raster-6502" }
+png = "0.17"
 raster-emu = { path = "../raster-emu" }
