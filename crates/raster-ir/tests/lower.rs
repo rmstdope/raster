@@ -2283,3 +2283,28 @@ fn refuses_a_second_target_block() {
     );
     assert_eq!(errors[0].refusal, Refusal::Rejected);
 }
+/// A picture that decodes perfectly still fails the build, because no byte of it
+/// reaches the ROM yet. A compiler that accepted the asset and emitted a ROM with
+/// no picture in it would be lying about what it built.
+#[test]
+fn an_asset_does_not_reach_the_rom_yet() {
+    let source = "asset image picture = png(\"art/picture.png\")\nmain { }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("an asset is refused");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(
+        failure.errors[0].message,
+        "an `asset` does not reach the ROM yet"
+    );
+    assert_eq!(
+        failure.errors[0].refusal,
+        raster_diag::Refusal::NotInThisRelease
+    );
+    assert_eq!(
+        &source[failure.errors[0].span.start as usize..failure.errors[0].span.end as usize],
+        "asset image picture = png(\"art/picture.png\")"
+    );
+}

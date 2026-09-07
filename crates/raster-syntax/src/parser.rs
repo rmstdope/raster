@@ -1,7 +1,7 @@
 use crate::{
-    Block, CycleBound, CycleSpec, Declaration, Expression, Frame, FrameEvent, FramePosition,
-    Function, Identifier, Item, Keyword, Parameter, Program, Punctuation, Span, Spanned, Statement,
-    Target, TargetField, Token, TokenKind, Type, lex,
+    Asset, AssetField, AssetValue, Block, CycleBound, CycleSpec, Declaration, Expression, Frame,
+    FrameEvent, FramePosition, Function, Identifier, Item, Keyword, Parameter, Program, Punctuation,
+    Span, Spanned, Statement, Target, TargetField, Token, TokenKind, Type, lex,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,12 +75,9 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Item::Declaration(self.declaration(keyword))
             }
+            TokenKind::Keyword(Keyword::Asset) => Item::Asset(self.asset()),
             TokenKind::Keyword(
-                Keyword::Asset
-                | Keyword::Chrrom
-                | Keyword::Charmap
-                | Keyword::Bank
-                | Keyword::Timeline,
+                Keyword::Chrrom | Keyword::Charmap | Keyword::Bank | Keyword::Timeline,
             ) => Item::Other(self.opaque_item()),
             TokenKind::End => return None,
             _ => {
@@ -320,6 +317,162 @@ impl<'a> Parser<'a> {
             initializer,
             body,
         }
+    }
+
+    /// An `asset` item: `asset <kind> <name> = <loader>("<path>") { <fields> }`.
+    ///
+    /// The block is optional, and every part is kept as written rather than
+    /// checked here: `asset sound`, `= fam("x")` and `kind: sprites` all parse,
+    /// so that `raster-sema` can refuse each of them with a message naming what
+    /// the author actually asked for instead of a parse error naming a token.
+    fn asset(&mut self) -> Asset {
+        let start = self.peek().span;
+        self.advance();
+        let kind = self.required_identifier("expected an asset kind, such as `image`");
+        let name = self.required_identifier("expected the asset name");
+        if !self.match_operator(crate::Operator::Assign) {
+            self.error_here("expected `=` after the asset name");
+        }
+        let loader = self.asset_loader();
+        self.expect_punctuation(Punctuation::LeftParen, "expected `(` after the loader");
+        let path_span = self.peek().span;
+        let path = self
+            .take_string("expected a quoted file path")
+            .unwrap_or_default();
+        self.expect_punctuation(Punctuation::RightParen, "expected `)` after the file path");
+
+        let mut fields = Vec::new();
+        if self.match_punctuation(Punctuation::LeftBrace) {
+            while !self.at_end() && !self.check_punctuation(Punctuation::RightBrace) {
+                let before = self.current;
+                match self.asset_field() {
+                    Some(field) => {
+                        fields.push(field);
+                        self.match_punctuation(Punctuation::Comma);
+                    }
+                    // One error per bad block, not one per token: skip to the
+                    // closing brace and stop, so a mistyped field does not
+                    // report every token after it.
+                    None => {
+                        while !self.at_end() && !self.check_punctuation(Punctuation::RightBrace) {
+                            self.advance();
+                        }
+                        break;
+                    }
+                }
+                if self.current == before {
+                    self.advance();
+                }
+            }
+            self.expect_punctuation(
+                Punctuation::RightBrace,
+                "expected `}` to close the asset block",
+            );
+        }
+
+        Asset {
+            kind,
+            name,
+            loader,
+            path: Spanned::new(path, path_span),
+            fields,
+            span: start.join(self.previous().span),
+        }
+    }
+
+    /// The loader named after `=`. `png`, `fam` and `bin` are keywords, so this
+    /// records the word rather than expecting an identifier; anything else is a
+    /// parse error, because there is no word to refuse later.
+    fn asset_loader(&mut self) -> Identifier {
+        let word = match self.peek().value {
+            TokenKind::Keyword(Keyword::Png) => "png",
+            TokenKind::Keyword(Keyword::Fam) => "fam",
+            TokenKind::Keyword(Keyword::Bin) => "bin",
+            _ => {
+                let span = self.peek().span;
+                self.error_here("expected `png(` after `=`");
+                return Spanned::new(String::new(), span);
+            }
+        };
+        let token = self.advance();
+        Spanned::new(word.into(), token.span)
+    }
+
+    /// One `name: value` of an asset block.
+    ///
+    /// Not shared with any other block's field loop: `palette` is a keyword and
+    /// so are `true` and `false`, and a value may be a call — none of which an
+    /// identifier-or-number field loop accepts.
+    fn asset_field(&mut self) -> Option<AssetField> {
+        let start = self.peek().span;
+        let name = match self.peek().value.clone() {
+            TokenKind::Identifier(word) => {
+                let token = self.advance();
+                Spanned::new(word, token.span)
+            }
+            TokenKind::Keyword(Keyword::Palette) => {
+                let token = self.advance();
+                Spanned::new("palette".into(), token.span)
+            }
+            _ => {
+                self.error_here("expected an asset field name, or `}`");
+                return None;
+            }
+        };
+        if !self.expect_punctuation(Punctuation::Colon, "expected `:` after an asset field name") {
+            return None;
+        }
+        let value = self.asset_value()?;
+        Some(AssetField {
+            name,
+            value,
+            span: start.join(self.previous().span),
+        })
+    }
+
+    fn asset_value(&mut self) -> Option<Spanned<AssetValue>> {
+        let start = self.peek().span;
+        let value = match self.peek().value.clone() {
+            TokenKind::Identifier(word) => {
+                self.advance();
+                if self.match_punctuation(Punctuation::LeftParen) {
+                    let TokenKind::Number(argument) = self.peek().value.clone() else {
+                        self.error_here("expected a number inside the asset field's parentheses");
+                        return None;
+                    };
+                    self.advance();
+                    if !self.expect_punctuation(
+                        Punctuation::RightParen,
+                        "expected `)` after the asset field's argument",
+                    ) {
+                        return None;
+                    }
+                    AssetValue::Call {
+                        name: word,
+                        argument,
+                    }
+                } else {
+                    AssetValue::Word(word)
+                }
+            }
+            TokenKind::Keyword(Keyword::True) => {
+                self.advance();
+                AssetValue::Word("true".into())
+            }
+            TokenKind::Keyword(Keyword::False) => {
+                self.advance();
+                AssetValue::Word("false".into())
+            }
+            TokenKind::Number(number) => {
+                self.advance();
+                AssetValue::Number(number)
+            }
+            _ => {
+                self.error_here("expected an asset field value");
+                return None;
+            }
+        };
+        Some(Spanned::new(value, start.join(self.previous().span)))
     }
 
     fn required_block(&mut self, message: &str) -> Block {

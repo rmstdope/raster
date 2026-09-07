@@ -134,6 +134,59 @@ main {
     }
 
     #[test]
+    fn parses_an_asset_item() {
+        let program = parse(
+            "asset image picture = png(\"art/picture.png\") { kind: background  palette: auto(4)  dedup: true }",
+        )
+        .expect("the item parses");
+        let Item::Asset(asset) = &program.items[0].value else {
+            panic!("expected an asset item");
+        };
+        assert_eq!(asset.kind.value, "image");
+        assert_eq!(asset.name.value, "picture");
+        assert_eq!(asset.loader.value, "png");
+        assert_eq!(asset.path.value, "art/picture.png");
+        assert_eq!(asset.fields.len(), 3);
+        assert_eq!(asset.fields[0].name.value, "kind");
+        assert_eq!(
+            asset.fields[0].value.value,
+            AssetValue::Word("background".into())
+        );
+        assert_eq!(asset.fields[1].name.value, "palette");
+        assert_eq!(
+            asset.fields[1].value.value,
+            AssetValue::Call {
+                name: "auto".into(),
+                argument: "4".into()
+            }
+        );
+        assert_eq!(asset.fields[2].name.value, "dedup");
+        assert_eq!(asset.fields[2].value.value, AssetValue::Word("true".into()));
+    }
+
+    /// The path is what every asset diagnostic points at, so its span is asserted
+    /// here rather than trusted: it covers the quoted string, quotes included.
+    #[test]
+    fn the_asset_path_span_covers_the_quoted_string() {
+        let source = "asset image picture = png(\"art/picture.png\")";
+        let program = parse(source).expect("the item parses");
+        let Item::Asset(asset) = &program.items[0].value else {
+            panic!("expected an asset item");
+        };
+        assert_eq!(slice(source, asset.path.span), "\"art/picture.png\"");
+    }
+
+    #[test]
+    fn parses_an_asset_item_with_no_block() {
+        let program = parse("asset image picture = png(\"p.png\")").expect("the item parses");
+        let Item::Asset(asset) = &program.items[0].value else {
+            panic!("expected an asset item");
+        };
+        assert_eq!(asset.name.value, "picture");
+        assert!(asset.fields.is_empty());
+    }
+
+    #[test]
     fn parser_accepts_the_complete_mvp_example() {
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
