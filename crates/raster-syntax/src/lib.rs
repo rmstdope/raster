@@ -322,6 +322,20 @@ main {
         );
     }
 
+    /// An unclosed `target` block is reported as unclosed, the way every other
+    /// block is, rather than silently swallowing the next item's closing brace.
+    #[test]
+    fn reports_an_unclosed_target_block() {
+        let errors = parse("target nes { mapper:\nmain { }").expect_err("unclosed must fail");
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| error.message.as_str())
+                .collect::<Vec<_>>(),
+            ["expected a value after `:`", "expected `}` to close block"]
+        );
+    }
+
     #[test]
     fn parser_returns_multiple_source_spanned_errors() {
         let errors = parse("wat\nmain {\n  @\n  #\n}").expect_err("invalid source must fail");

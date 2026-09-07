@@ -410,16 +410,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Skip forward to the next `}`, without consuming it.
+    /// Skip the rest of a malformed block, stopping before the `}` that closes
+    /// *this* one and consuming nothing if that is the next token.
     ///
-    /// It counts no depth, so on an unclosed block it stops at whatever `}` comes
-    /// next — a later item's, if that is the first one. `target nes { mapper:`
-    /// followed by `main { }` therefore reports the missing value and swallows
-    /// `main`, rather than reporting the unclosed block. That is the same
-    /// recovery `opaque_block` has always had, and improving it is a change to
-    /// how every block recovers rather than to `target`.
+    /// Depth is counted, exactly as `opaque_block` counts it, so an unclosed block
+    /// runs to the end of input and is reported as unclosed. Without that,
+    /// `target nes { mapper:` followed by `main { }` stops at `main`'s brace and
+    /// swallows the whole item, telling the author nothing about the block they
+    /// left open.
     fn skip_to_close_brace(&mut self) {
-        while !self.check_punctuation(Punctuation::RightBrace) && !self.at_end() {
+        let mut depth = 0usize;
+        while !self.at_end() {
+            if self.check_punctuation(Punctuation::RightBrace) {
+                if depth == 0 {
+                    return;
+                }
+                depth -= 1;
+            } else if self.check_punctuation(Punctuation::LeftBrace) {
+                depth += 1;
+            }
             self.advance();
         }
     }

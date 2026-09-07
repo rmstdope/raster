@@ -24,8 +24,8 @@ use raster_timing::{
 /// as the string this module compares against, because those are two declarations
 /// and either can drift.
 ///
-/// The other three restate literals that are not constants anywhere, and so are
-/// pinned to nothing: the `0x40` mapper nibble of the iNES header
+/// The other three restate values that no constant holds in the form a `target`
+/// block spells them, and so are pinned to nothing: the `0x40` mapper nibble of the iNES header
 /// (`raster-link/src/lib.rs`), the `0x00` written to `$A000` for vertical
 /// mirroring (`raster-link/src/runtime.rs`), and NTSC, which is spelled out in
 /// the build summary (`rasterc/src/report.rs`) and encoded by `raster-timing`'s
