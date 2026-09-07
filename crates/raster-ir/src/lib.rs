@@ -16,11 +16,19 @@ use raster_timing::{
 
 /// The one ROM shape this release builds, in the words a `target` block spells it.
 ///
-/// These are `raster-link`'s facts restated: `MMC3_PRG_ROM_SIZE`, the mapper
-/// nibble of the iNES header, and the `$A000` write the reset runtime makes.
 /// `raster-ir` cannot depend on `raster-link` — the linker is downstream of
-/// lowering — so the agreement is pinned by a test in `rasterc`, which sees both
-/// crates.
+/// lowering — so these restate the linker's facts rather than reading them.
+/// Only `TARGET_PRG` is *pinned* to its source, by
+/// `the_declared_target_is_the_rom_the_linker_builds` in `rasterc`, the one crate
+/// that sees both: it is checked against `MMC3_PRG_ROM_SIZE` as a byte count and
+/// as the string this module compares against, because those are two declarations
+/// and either can drift.
+///
+/// The other three restate literals that are not constants anywhere, and so are
+/// pinned to nothing: the `0x40` mapper nibble of the iNES header
+/// (`raster-link/src/lib.rs`), the `0x00` written to `$A000` for vertical
+/// mirroring (`raster-link/src/runtime.rs`), and NTSC, which the codebase never
+/// names at all. Changing any of them means changing this list by hand.
 pub const TARGET_MAPPER: &str = "mmc3";
 pub const TARGET_REGION: &str = "ntsc";
 pub const TARGET_MIRROR: &str = "vertical";

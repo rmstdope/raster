@@ -236,6 +236,19 @@ main {
         assert_eq!(target.fields[0].value.value, "mmc3");
         assert_eq!(target.fields[1].name.value, "prg");
         assert_eq!(target.fields[1].value.value, "128K");
+        // The whole construct, so a diagnostic reaching for it gets a caret under
+        // `target nes { ... }` rather than under the braces alone.
+        assert_eq!(
+            slice("target nes { mapper: mmc3  prg: 128K }", target.span),
+            "target nes { mapper: mmc3  prg: 128K }"
+        );
+        assert_eq!(
+            slice(
+                "target nes { mapper: mmc3  prg: 128K }",
+                target.fields[1].span
+            ),
+            "prg: 128K"
+        );
     }
 
     #[test]
@@ -246,6 +259,69 @@ main {
                 .iter()
                 .any(|error| error.message == "expected `:` after a `target` field name"),
             "expected a colon diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_comma_between_target_fields_is_optional() {
+        let with = parse("target nes { mapper: mmc3, region: ntsc }").expect("commas parse");
+        let without = parse("target nes { mapper: mmc3  region: ntsc }").expect("no commas parse");
+        let (Item::Target(with), Item::Target(without)) =
+            (&with.items[0].value, &without.items[0].value)
+        else {
+            panic!("expected two target blocks");
+        };
+        let pairs = |target: &Target| {
+            target
+                .fields
+                .iter()
+                .map(|field| (field.name.value.clone(), field.value.value.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pairs(with).len(), 2);
+        assert_eq!(pairs(with), pairs(without));
+    }
+
+    #[test]
+    fn reports_a_target_field_with_no_value() {
+        let source = "target nes { mapper: }";
+        let errors = parse(source).expect_err("a missing value must fail");
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| (error.message.as_str(), slice(source, error.span)))
+                .collect::<Vec<_>>(),
+            [("expected a value after `:`", "}")]
+        );
+    }
+
+    /// A keyword in value position is one error about the value, not two
+    /// contradictory ones — the second of which would call it a field name.
+    #[test]
+    fn a_keyword_in_target_value_position_is_one_error() {
+        let source = "target nes { region: true }";
+        let errors = parse(source).expect_err("a keyword value must fail");
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| (error.message.as_str(), slice(source, error.span)))
+                .collect::<Vec<_>>(),
+            [("expected a value after `:`", "true")]
+        );
+    }
+
+    /// One bad field is one error: the loop skips to the closing brace rather
+    /// than reporting every remaining token.
+    #[test]
+    fn one_bad_target_field_name_is_one_error() {
+        let source = "target nes { \"mapper\": mmc3  region: ntsc }";
+        let errors = parse(source).expect_err("a bad field name must fail");
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| (error.message.as_str(), slice(source, error.span)))
+                .collect::<Vec<_>>(),
+            [("expected a `target` field name, or `}`", "\"mapper\"")]
         );
     }
 

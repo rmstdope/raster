@@ -53,7 +53,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Target) => {
                 self.advance();
                 self.expect_name("nes", "expected `nes` after `target`");
-                Item::Target(self.target())
+                Item::Target(self.target(start))
             }
             TokenKind::Keyword(Keyword::Import) => {
                 self.advance();
@@ -355,31 +355,34 @@ impl<'a> Parser<'a> {
     /// the specification's own example writes one field per line with no commas.
     /// Every field name and value this release knows lexes as an identifier or a
     /// number, so nothing here reads a keyword.
-    fn target(&mut self) -> Target {
-        let start = self.peek().span;
+    fn target(&mut self, start: Span) -> Target {
         if !self.expect_punctuation(Punctuation::LeftBrace, "expected `{` after target") {
             return Target {
                 fields: Vec::new(),
-                span: start,
+                span: start.join(self.previous().span),
             };
         }
 
         let mut fields = Vec::new();
         while !self.check_punctuation(Punctuation::RightBrace) && !self.at_end() {
+            // One bad field is one error, whether the name or the value is what
+            // went wrong: report it, skip to the closing brace, and stop. Pushing
+            // a half-parsed field instead would hand `raster-ir` a value the
+            // author never wrote, and it would refuse that value by name.
             let Some(name) = self.take_identifier() else {
                 self.error_here("expected a `target` field name, or `}`");
-                // One bad field is one error: skip to the closing brace rather than
-                // reporting every remaining token.
-                while !self.check_punctuation(Punctuation::RightBrace) && !self.at_end() {
-                    self.advance();
-                }
+                self.skip_to_close_brace();
                 break;
             };
             self.expect_punctuation(
                 Punctuation::Colon,
                 "expected `:` after a `target` field name",
             );
-            let value = self.target_value();
+            let Some(value) = self.take_target_value() else {
+                self.error_here("expected a value after `:`");
+                self.skip_to_close_brace();
+                break;
+            };
             let span = name.span.join(value.span);
             fields.push(TargetField { name, value, span });
             self.match_punctuation(Punctuation::Comma);
@@ -393,17 +396,25 @@ impl<'a> Parser<'a> {
     }
 
     /// A `target` field's value, as the token spelled it: `mmc3`, `ntsc`, `128K`.
-    fn target_value(&mut self) -> Spanned<String> {
+    ///
+    /// Consumes nothing when the token is neither, so the caller decides how to
+    /// recover — and so a keyword in value position is never re-read as the next
+    /// field's name.
+    fn take_target_value(&mut self) -> Option<Spanned<String>> {
         match self.peek().value.clone() {
             TokenKind::Identifier(value) | TokenKind::Number(value) => {
                 let token = self.advance();
-                Spanned::new(value, token.span)
+                Some(Spanned::new(value, token.span))
             }
-            _ => {
-                let span = self.peek().span;
-                self.error_here("expected a value after `:`");
-                Spanned::new(String::new(), span)
-            }
+            _ => None,
+        }
+    }
+
+    /// Skip whatever is left of a malformed block, up to but not including its
+    /// closing brace.
+    fn skip_to_close_brace(&mut self) {
+        while !self.check_punctuation(Punctuation::RightBrace) && !self.at_end() {
+            self.advance();
         }
     }
 
