@@ -2166,3 +2166,120 @@ fn two_ppu_ctrl_writes_in_one_handler_keep_the_order_the_body_has_them_in() {
         "ppu.ctrl = flags"
     );
 }
+
+#[test]
+fn accepts_the_target_this_release_builds() {
+    lower_source("target nes { mapper: mmc3  prg: 32K  mirror: vertical  region: ntsc } main { }");
+}
+
+#[test]
+fn accepts_a_target_block_that_omits_fields() {
+    lower_source("target nes { region: ntsc } main { }");
+}
+
+#[test]
+fn accepts_a_target_prg_in_either_case() {
+    lower_source("target nes { prg: 32k } main { }");
+}
+
+/// Every value the specification defines and this release does not build is
+/// refused, and the caret lands on the value the author has to change.
+#[test]
+fn refuses_target_fields_this_release_does_not_build() {
+    let source = "
+    target nes {
+        mapper: nrom
+        prg: 128K
+        mirror: horizontal
+        region: pal
+        chr: 128K
+    }
+    main { }
+";
+    let errors = lower_errors(source);
+
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| (
+                error.message.as_str(),
+                error.refusal,
+                &source[error.span.start as usize..error.span.end as usize],
+                line_of(source, error.span.start),
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "only `mapper: mmc3` is supported yet",
+                Refusal::NotInThisRelease,
+                "nrom",
+                3
+            ),
+            (
+                "only `prg: 32K` is supported yet",
+                Refusal::NotInThisRelease,
+                "128K",
+                4
+            ),
+            (
+                "only `mirror: vertical` is supported yet",
+                Refusal::NotInThisRelease,
+                "horizontal",
+                5
+            ),
+            (
+                "only `region: ntsc` is supported yet",
+                Refusal::NotInThisRelease,
+                "pal",
+                6
+            ),
+            (
+                "the `chr` field is not supported yet; this release builds 8 KiB of CHR RAM",
+                Refusal::NotInThisRelease,
+                "chr",
+                7
+            ),
+        ]
+    );
+}
+
+#[test]
+fn refuses_an_unknown_target_field() {
+    let source = "target nes { sprites: 8 } main { }";
+    let errors = lower_errors(source);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "unknown `target` field; this release knows `mapper`, `prg`, `chr`, `mirror` and `region`"
+    );
+    assert_eq!(errors[0].refusal, Refusal::Rejected);
+    assert_eq!(
+        &source[errors[0].span.start as usize..errors[0].span.end as usize],
+        "sprites"
+    );
+}
+
+#[test]
+fn refuses_a_target_field_set_twice() {
+    let source = "target nes { region: ntsc  region: ntsc } main { }";
+    let errors = lower_errors(source);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "this `target` field is set twice");
+    assert_eq!(errors[0].refusal, Refusal::Rejected);
+    // The second `region`, not the first: the caret lands on the line to delete.
+    assert_eq!(
+        errors[0].span.start as usize,
+        source.rfind("region").unwrap()
+    );
+}
+
+#[test]
+fn refuses_a_second_target_block() {
+    let errors = lower_errors("target nes { } target nes { } main { }");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "multiple `target` blocks are not supported"
+    );
+    assert_eq!(errors[0].refusal, Refusal::Rejected);
+}

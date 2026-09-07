@@ -1251,3 +1251,38 @@ fn a_program_that_enables_nmi_twice_over_warns_about_each() {
         "this write enables NMI, and a `timed` frame cannot afford one"
     );
 }
+
+/// `raster-ir` accepts `prg: 32K` because that is what `raster-link` lays out.
+/// The two crates cannot compare their constants where they are used — the
+/// linker is downstream of lowering — so the agreement is pinned here, in the
+/// one crate that depends on both.
+#[test]
+fn the_declared_target_is_the_rom_the_linker_builds() {
+    assert_eq!(
+        raster_ir::TARGET_PRG_ROM_BYTES,
+        raster_link::MMC3_PRG_ROM_SIZE,
+        "`prg: 32K` is accepted because that is what the linker lays out"
+    );
+    // The byte count above is not what `check_target` compares against: it
+    // compares the *string*. Without this second assertion the two can drift
+    // apart silently, and the compiler goes on accepting `prg: 32K` for a ROM
+    // of some other size.
+    assert_eq!(
+        raster_ir::TARGET_PRG,
+        format!("{}K", raster_link::MMC3_PRG_ROM_SIZE / 1024),
+        "the `prg` value the compiler accepts must name the size the linker lays out"
+    );
+}
+
+/// The whole claim of this construct: a `target` block is a check, not codegen.
+#[test]
+fn a_target_block_changes_no_byte_of_the_rom() {
+    let declared = format!(
+        "target nes {{ mapper: mmc3  region: ntsc }}\n{}",
+        demo_source()
+    );
+    let with = compile_source(&declared).expect("the demo with a target block compiles");
+    let without = compile_source(&demo_source()).expect("the demo compiles");
+    assert_eq!(with.image, without.image);
+    assert_eq!(with.code_len, without.code_len);
+}

@@ -1,7 +1,7 @@
 use crate::{
     Block, CycleBound, CycleSpec, Declaration, Expression, Frame, FrameEvent, FramePosition,
     Function, Identifier, Item, Keyword, Parameter, Program, Punctuation, Span, Spanned, Statement,
-    Token, TokenKind, Type, lex,
+    Target, TargetField, Token, TokenKind, Type, lex,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,7 +53,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Target) => {
                 self.advance();
                 self.expect_name("nes", "expected `nes` after `target`");
-                Item::Target(self.opaque_block("expected `{` after target"))
+                Item::Target(self.target(start))
             }
             TokenKind::Keyword(Keyword::Import) => {
                 self.advance();
@@ -346,6 +346,90 @@ impl<'a> Parser<'a> {
         Block {
             statements,
             span: start.join(end),
+        }
+    }
+
+    /// The fields of a `target` block, as spelled.
+    ///
+    /// Whitespace separates fields and a comma between them is optional, because
+    /// the specification's own example writes one field per line with no commas.
+    /// Every field name and value this release knows lexes as an identifier or a
+    /// number, so nothing here reads a keyword.
+    fn target(&mut self, start: Span) -> Target {
+        if !self.expect_punctuation(Punctuation::LeftBrace, "expected `{` after target") {
+            return Target {
+                fields: Vec::new(),
+                span: start.join(self.previous().span),
+            };
+        }
+
+        let mut fields = Vec::new();
+        while !self.check_punctuation(Punctuation::RightBrace) && !self.at_end() {
+            // One bad field is one error, whether the name or the value is what
+            // went wrong: report it, skip to the closing brace, and stop. Pushing
+            // a half-parsed field instead would hand `raster-ir` a value the
+            // author never wrote, and it would refuse that value by name.
+            let Some(name) = self.take_identifier() else {
+                self.error_here("expected a `target` field name, or `}`");
+                self.skip_to_close_brace();
+                break;
+            };
+            self.expect_punctuation(
+                Punctuation::Colon,
+                "expected `:` after a `target` field name",
+            );
+            let Some(value) = self.take_target_value() else {
+                self.error_here("expected a value after `:`");
+                self.skip_to_close_brace();
+                break;
+            };
+            let span = name.span.join(value.span);
+            fields.push(TargetField { name, value, span });
+            self.match_punctuation(Punctuation::Comma);
+        }
+
+        self.expect_punctuation(Punctuation::RightBrace, "expected `}` to close block");
+        Target {
+            fields,
+            span: start.join(self.previous().span),
+        }
+    }
+
+    /// A `target` field's value, as the token spelled it: `mmc3`, `ntsc`, `128K`.
+    ///
+    /// Consumes nothing when the token is neither, so the caller decides how to
+    /// recover — and so a keyword in value position is never re-read as the next
+    /// field's name.
+    fn take_target_value(&mut self) -> Option<Spanned<String>> {
+        match self.peek().value.clone() {
+            TokenKind::Identifier(value) | TokenKind::Number(value) => {
+                let token = self.advance();
+                Some(Spanned::new(value, token.span))
+            }
+            _ => None,
+        }
+    }
+
+    /// Skip the rest of a malformed block, stopping before the `}` that closes
+    /// *this* one and consuming nothing if that is the next token.
+    ///
+    /// Depth is counted, exactly as `opaque_block` counts it, so an unclosed block
+    /// runs to the end of input and is reported as unclosed. Without that,
+    /// `target nes { mapper:` followed by `main { }` stops at `main`'s brace and
+    /// swallows the whole item, telling the author nothing about the block they
+    /// left open.
+    fn skip_to_close_brace(&mut self) {
+        let mut depth = 0usize;
+        while !self.at_end() {
+            if self.check_punctuation(Punctuation::RightBrace) {
+                if depth == 0 {
+                    return;
+                }
+                depth -= 1;
+            } else if self.check_punctuation(Punctuation::LeftBrace) {
+                depth += 1;
+            }
+            self.advance();
         }
     }
 

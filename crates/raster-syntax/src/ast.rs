@@ -33,13 +33,32 @@ pub struct Program {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Item {
-    Target(Block),
+    Target(Target),
     Import(String),
     Declaration(Declaration),
     Function(Function),
     Frame(Frame),
     Main(Block),
     Other(Block),
+}
+
+/// A `target nes { ... }` block: the console the program declares it is built for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Target {
+    pub fields: Vec<TargetField>,
+    pub span: Span,
+}
+
+/// One `name: value` line of a `target` block.
+///
+/// The value is kept exactly as the token spelled it — `mmc3`, `128K`, `ntsc` —
+/// because *which* values this release can build is `raster-ir`'s question and
+/// not the parser's.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TargetField {
+    pub name: Spanned<String>,
+    pub value: Spanned<String>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
