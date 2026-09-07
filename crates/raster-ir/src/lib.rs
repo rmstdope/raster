@@ -27,8 +27,10 @@ use raster_timing::{
 /// The other three restate literals that are not constants anywhere, and so are
 /// pinned to nothing: the `0x40` mapper nibble of the iNES header
 /// (`raster-link/src/lib.rs`), the `0x00` written to `$A000` for vertical
-/// mirroring (`raster-link/src/runtime.rs`), and NTSC, which the codebase never
-/// names at all. Changing any of them means changing this list by hand.
+/// mirroring (`raster-link/src/runtime.rs`), and NTSC, which is spelled out in
+/// the build summary (`rasterc/src/report.rs`) and encoded by `raster-timing`'s
+/// dot and scanline counts. Changing any of the three means finding those places
+/// by hand — the summary row in particular is what an author actually reads.
 pub const TARGET_MAPPER: &str = "mmc3";
 pub const TARGET_REGION: &str = "ntsc";
 pub const TARGET_MIRROR: &str = "vertical";

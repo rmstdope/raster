@@ -226,8 +226,11 @@ main {
 
     #[test]
     fn parses_the_target_block_fields() {
-        let program = parse("target nes { mapper: mmc3  prg: 128K }").expect("the block parses");
-        assert_eq!(program.items.len(), 1);
+        // A second item follows, so a span assertion below cannot pass by
+        // covering the whole source instead of the construct.
+        let source = "target nes { mapper: mmc3  prg: 128K }\nmain { }";
+        let program = parse(source).expect("the block parses");
+        assert_eq!(program.items.len(), 2);
         let Item::Target(target) = &program.items[0].value else {
             panic!("expected a target block");
         };
@@ -239,16 +242,10 @@ main {
         // The whole construct, so a diagnostic reaching for it gets a caret under
         // `target nes { ... }` rather than under the braces alone.
         assert_eq!(
-            slice("target nes { mapper: mmc3  prg: 128K }", target.span),
+            slice(source, target.span),
             "target nes { mapper: mmc3  prg: 128K }"
         );
-        assert_eq!(
-            slice(
-                "target nes { mapper: mmc3  prg: 128K }",
-                target.fields[1].span
-            ),
-            "prg: 128K"
-        );
+        assert_eq!(slice(source, target.fields[1].span), "prg: 128K");
     }
 
     #[test]

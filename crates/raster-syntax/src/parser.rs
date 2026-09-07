@@ -410,8 +410,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Skip whatever is left of a malformed block, up to but not including its
-    /// closing brace.
+    /// Skip forward to the next `}`, without consuming it.
+    ///
+    /// It counts no depth, so on an unclosed block it stops at whatever `}` comes
+    /// next — a later item's, if that is the first one. `target nes { mapper:`
+    /// followed by `main { }` therefore reports the missing value and swallows
+    /// `main`, rather than reporting the unclosed block. That is the same
+    /// recovery `opaque_block` has always had, and improving it is a change to
+    /// how every block recovers rather than to `target`.
     fn skip_to_close_brace(&mut self) {
         while !self.check_punctuation(Punctuation::RightBrace) && !self.at_end() {
             self.advance();
