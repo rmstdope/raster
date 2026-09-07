@@ -64,7 +64,7 @@ pub(crate) struct AssetError {
 ///
 /// Every asset is attempted, so an author with two broken pictures is told about
 /// both rather than one per run.
-pub fn resolve_assets(
+pub(crate) fn resolve_assets(
     program: &Program,
     source: &dyn AssetSource,
 ) -> Result<Assets, Vec<AssetError>> {

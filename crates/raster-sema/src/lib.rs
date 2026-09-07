@@ -831,9 +831,12 @@ impl Analyzer {
                     // by itself forbid arithmetic — `require_integer` and
                     // `ensure_compatible` both accept `Unknown` deliberately —
                     // so `picture.tiles + 1` analyzes clean today and is caught
-                    // only by lowering's blanket refusal of the item. Giving
-                    // these members a type that holds once that refusal is
-                    // lifted belongs to the bead that gives them a consumer.
+                    // only by lowering's blanket refusal of the item — which
+                    // prints "this byte register is not supported" under the
+                    // member, beside the correct refusal. Giving these members a
+                    // type that holds once that refusal is lifted, and so
+                    // retires that second message, belongs to the bead that
+                    // gives them a consumer.
                     return ValueType::Unknown;
                 }
                 if base_type != ValueType::Namespace {

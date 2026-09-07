@@ -197,10 +197,14 @@ main {
         }
     }
 
-    /// A bad field is one error for the block, not one per token after it, and
-    /// the item after the asset still parses.
+    /// A bad field is one error for the block, not one per token after it.
+    ///
+    /// This characterises the block-recovery loop rather than introducing it: it
+    /// passes against the parser before the recovery rework too, which is the
+    /// point — the loop's "one error per bad block" comment was an untested
+    /// claim, and this is the test that makes it one.
     #[test]
-    fn a_malformed_asset_field_reports_once_and_the_next_item_still_parses() {
+    fn a_malformed_asset_field_reports_once() {
         for source in [
             "asset image p = png(\"p.png\") { 3: background  kind: background }\nmain { }",
             "asset image p = png(\"p.png\") { kind background }\nmain { }",
@@ -210,6 +214,30 @@ main {
         ] {
             let errors = parse(source).expect_err("the field is malformed");
             assert_eq!(errors.len(), 1, "for `{source}`, got {errors:?}");
+        }
+    }
+
+    /// Recovery from a malformed asset stops at the asset, so the item after it
+    /// is still parsed and still reports mistakes of its own.
+    ///
+    /// A count alone cannot show this — swallowing the next item silently would
+    /// leave the count unchanged — so the item that follows is one that errors
+    /// when it is parsed, and its error is the evidence it was reached.
+    #[test]
+    fn asset_recovery_leaves_the_next_item_to_be_parsed() {
+        for asset in [
+            "asset image p = Png(\"art/p.png\")",
+            "asset image p = png(\"p.png\") { kind background }",
+            "asset image p = png(\"p.png\") { 3: background }",
+        ] {
+            let source = format!("{asset}\ngarbage\n");
+            let errors = parse(&source).expect_err("the asset is malformed");
+            assert_eq!(errors.len(), 2, "for `{source}`, got {errors:?}");
+            assert_eq!(
+                errors[1].message, "expected a top-level declaration",
+                "for `{source}`"
+            );
+            assert_eq!(slice(&source, errors[1].span), "garbage");
         }
     }
 
