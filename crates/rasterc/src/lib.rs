@@ -8,7 +8,7 @@ mod assets;
 mod compile;
 mod report;
 
-pub use assets::{AssetSource, Assets, DirectoryAssets, NoAssets};
+pub use assets::{AssetSource, DirectoryAssets, NoAssets};
 pub use compile::{compile_source, compile_source_with_assets, Rom};
 
 const USAGE: &str = "Usage: rasterc <INPUT.raster> [-o <OUTPUT.nes>]\n";

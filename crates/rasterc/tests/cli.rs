@@ -1016,3 +1016,32 @@ fn a_missing_asset_file_is_reported_by_name() {
         "got {stderr}"
     );
 }
+
+/// A source named without a directory has no parent path, and the working
+/// directory is then the right root rather than a fallback: it is the directory
+/// the source is in. Run in a child process, because a test that changes the
+/// working directory would race every other test in this binary.
+#[test]
+fn a_bare_source_file_name_resolves_assets_beside_it() {
+    let directory = Scratch::new("bare");
+    fs::create_dir_all(directory.path().join("art")).unwrap();
+    fs::write(directory.path().join("art/picture.png"), b"not a png").unwrap();
+    fs::write(
+        directory.path().join("demo.raster"),
+        "asset image picture = png(\"art/picture.png\") { kind: background }\nmain { }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rasterc"))
+        .arg("demo.raster")
+        .current_dir(directory.path())
+        .output()
+        .expect("rasterc runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr is valid UTF-8");
+    assert!(
+        stderr.contains("`art/picture.png` is not a readable PNG"),
+        "got {stderr}"
+    );
+}

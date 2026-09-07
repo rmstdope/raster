@@ -32,9 +32,8 @@ fn source() -> String {
 /// The single diagnostic a fixture produces, with the source it was compiled from.
 fn only_diagnostic(fixture: Fixture) -> (String, raster_diag::Diagnostic) {
     let source = source();
-    let found = compile_source_with_assets(&source, &fixture)
-        .err()
-        .expect("the fixture does not compile");
+    let found =
+        compile_source_with_assets(&source, &fixture).expect_err("the fixture does not compile");
     assert_eq!(found.len(), 1, "expected one diagnostic, got {found:?}");
     assert_eq!(found[0].severity, Severity::Error);
     (source, found[0].clone())
@@ -226,5 +225,29 @@ fn a_program_compiled_from_text_has_no_files_to_read() {
         found[0].message,
         "could not read `art/picture.png`: no file could be read for `art/picture.png`: \
          this program was compiled from text, not from a file"
+    );
+}
+
+/// Every asset is attempted, so an author with two broken pictures is told about
+/// both rather than one per run.
+#[test]
+fn two_broken_pictures_are_both_reported() {
+    struct NoFiles;
+    impl AssetSource for NoFiles {
+        fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+            Err(format!("no such file `{path}`"))
+        }
+    }
+
+    let source = "asset image one = png(\"a.png\")\nasset image two = png(\"b.png\")\nmain { }";
+    let found = compile_source_with_assets(source, &NoFiles).expect_err("neither file exists");
+
+    let messages: Vec<_> = found.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "could not read `a.png`: no such file `a.png`",
+            "could not read `b.png`: no such file `b.png`",
+        ]
     );
 }

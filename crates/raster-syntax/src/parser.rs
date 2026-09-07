@@ -322,80 +322,139 @@ impl<'a> Parser<'a> {
     /// An `asset` item: `asset <kind> <name> = <loader>("<path>") { <fields> }`.
     ///
     /// The block is optional, and every part is kept as written rather than
-    /// checked here: `asset sound`, `= fam("x")` and `kind: sprites` all parse,
-    /// so that `raster-sema` can refuse each of them with a message naming what
-    /// the author actually asked for instead of a parse error naming a token.
+    /// checked here: `asset sound`, `= fam("x")`, `kind: sprites` and the
+    /// specification's explicit `palette: [ ... ]` all parse, so that
+    /// `raster-sema` can refuse each of them with a message naming what the
+    /// author actually asked for instead of a parse error naming a token.
+    ///
+    /// The first structural part that does not parse ends the item. A parser
+    /// that reports and carries on asks the next four expectations about the
+    /// same token and prints all of them, so one typo becomes five diagnostics —
+    /// two of them contradicting each other.
     fn asset(&mut self) -> Asset {
         let start = self.peek().span;
         self.advance();
-        let kind = self.required_identifier("expected an asset kind, such as `image`");
-        let name = self.required_identifier("expected the asset name");
+        let parsed = self.asset_parts();
+        if parsed.is_none() {
+            self.recover_asset();
+        }
+        let span = start.join(self.previous().span);
+        let empty = || Spanned::new(String::new(), span);
+        parsed.unwrap_or_else(|| Asset {
+            kind: empty(),
+            name: empty(),
+            loader: empty(),
+            path: empty(),
+            fields: Vec::new(),
+            span,
+        })
+    }
+
+    /// Everything after the `asset` keyword, or `None` at the first part that
+    /// does not parse. The block never fails: it recovers to its own `}`.
+    fn asset_parts(&mut self) -> Option<Asset> {
+        let start = self.previous().span;
+        let kind = self.asset_identifier("expected an asset kind, such as `image`")?;
+        let name = self.asset_identifier("expected the asset name")?;
         if !self.match_operator(crate::Operator::Assign) {
             self.error_here("expected `=` after the asset name");
+            return None;
         }
-        let loader = self.asset_loader();
-        self.expect_punctuation(Punctuation::LeftParen, "expected `(` after the loader");
+        let loader = self.asset_loader()?;
+        if !self.expect_punctuation(Punctuation::LeftParen, "expected `(` after the loader") {
+            return None;
+        }
         let path_span = self.peek().span;
-        let path = self
-            .take_string("expected a quoted file path")
-            .unwrap_or_default();
-        self.expect_punctuation(Punctuation::RightParen, "expected `)` after the file path");
-
-        let mut fields = Vec::new();
-        if self.match_punctuation(Punctuation::LeftBrace) {
-            while !self.at_end() && !self.check_punctuation(Punctuation::RightBrace) {
-                let before = self.current;
-                match self.asset_field() {
-                    Some(field) => {
-                        fields.push(field);
-                        self.match_punctuation(Punctuation::Comma);
-                    }
-                    // One error per bad block, not one per token: skip to the
-                    // closing brace and stop, so a mistyped field does not
-                    // report every token after it.
-                    None => {
-                        while !self.at_end() && !self.check_punctuation(Punctuation::RightBrace) {
-                            self.advance();
-                        }
-                        break;
-                    }
-                }
-                if self.current == before {
-                    self.advance();
-                }
-            }
-            self.expect_punctuation(
-                Punctuation::RightBrace,
-                "expected `}` to close the asset block",
-            );
+        let path = self.take_string("expected a quoted file path")?;
+        if !self.expect_punctuation(Punctuation::RightParen, "expected `)` after the file path") {
+            return None;
         }
-
-        Asset {
+        let fields = self.asset_block();
+        Some(Asset {
             kind,
             name,
             loader,
             path: Spanned::new(path, path_span),
             fields,
             span: start.join(self.previous().span),
+        })
+    }
+
+    /// The optional `{ ... }` after the path. A bad field ends the block rather
+    /// than the item, so the fields before it are kept and the item after the
+    /// asset still parses.
+    fn asset_block(&mut self) -> Vec<AssetField> {
+        let mut fields = Vec::new();
+        if !self.match_punctuation(Punctuation::LeftBrace) {
+            return fields;
+        }
+        while !self.at_end() && !self.check_punctuation(Punctuation::RightBrace) {
+            let before = self.current;
+            match self.asset_field() {
+                Some(field) => {
+                    fields.push(field);
+                    self.match_punctuation(Punctuation::Comma);
+                }
+                // One error per bad block, not one per token: skip to the
+                // closing brace and stop, so a mistyped field does not report
+                // every token after it.
+                None => {
+                    while !self.at_end() && !self.check_punctuation(Punctuation::RightBrace) {
+                        self.advance();
+                    }
+                    break;
+                }
+            }
+            if self.current == before {
+                self.advance();
+            }
+        }
+        self.expect_punctuation(
+            Punctuation::RightBrace,
+            "expected `}` to close the asset block",
+        );
+        fields
+    }
+
+    /// Skip what is left of a malformed asset, so the item after it still
+    /// parses and reports mistakes of its own.
+    fn recover_asset(&mut self) {
+        while !self.at_end()
+            && !self.check_punctuation(Punctuation::LeftBrace)
+            && !self.at_statement_end()
+        {
+            self.advance();
+        }
+        if self.check_punctuation(Punctuation::LeftBrace) {
+            self.opaque_block("expected `{` after top-level item");
+        }
+    }
+
+    fn asset_identifier(&mut self, message: &str) -> Option<Identifier> {
+        match self.take_identifier() {
+            Some(identifier) => Some(identifier),
+            None => {
+                self.error_here(message);
+                None
+            }
         }
     }
 
     /// The loader named after `=`. `png`, `fam` and `bin` are keywords, so this
-    /// records the word rather than expecting an identifier; anything else is a
-    /// parse error, because there is no word to refuse later.
-    fn asset_loader(&mut self) -> Identifier {
+    /// records the word rather than expecting an identifier; anything else ends
+    /// the item, because there is no word left to refuse later.
+    fn asset_loader(&mut self) -> Option<Identifier> {
         let word = match self.peek().value {
             TokenKind::Keyword(Keyword::Png) => "png",
             TokenKind::Keyword(Keyword::Fam) => "fam",
             TokenKind::Keyword(Keyword::Bin) => "bin",
             _ => {
-                let span = self.peek().span;
                 self.error_here("expected `png(` after `=`");
-                return Spanned::new(String::new(), span);
+                return None;
             }
         };
         let token = self.advance();
-        Spanned::new(word.into(), token.span)
+        Some(Spanned::new(word.into(), token.span))
     }
 
     /// One `name: value` of an asset block.
@@ -466,6 +525,26 @@ impl<'a> Parser<'a> {
             TokenKind::Number(number) => {
                 self.advance();
                 AssetValue::Number(number)
+            }
+            TokenKind::Punctuation(Punctuation::LeftBracket) => {
+                self.advance();
+                let mut entries = Vec::new();
+                while !self.at_end() && !self.check_punctuation(Punctuation::RightBracket) {
+                    let TokenKind::Number(entry) = self.peek().value.clone() else {
+                        self.error_here("expected a number in the palette");
+                        return None;
+                    };
+                    self.advance();
+                    entries.push(entry);
+                    self.match_punctuation(Punctuation::Comma);
+                }
+                if !self.expect_punctuation(
+                    Punctuation::RightBracket,
+                    "expected `]` to close the palette",
+                ) {
+                    return None;
+                }
+                AssetValue::List(entries)
             }
             _ => {
                 self.error_here("expected an asset field value");

@@ -834,3 +834,51 @@ fn refuses_an_asset_loader_and_kind_this_release_does_not_build() {
         );
     }
 }
+
+/// A field and a member the language specification defines (§8.1) and this release
+/// does not build are refused as not-yet-built, not as the author's invention. A
+/// developer copying §8.1 verbatim must not be told they made `compress` up.
+#[test]
+fn refuses_spec_defined_asset_surface_as_not_yet_built() {
+    let source = "asset image picture = png(\"p.png\") { compress: none }\nmain { }";
+    let found = errors_with_spans(source);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].message,
+        "only `kind`, `palette` and `dedup` are supported yet"
+    );
+    assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+    assert_eq!(
+        &source[found[0].span.start as usize..found[0].span.end as usize],
+        "compress"
+    );
+
+    let source = "asset image picture = png(\"p.png\")\nmain { picture.tile_count }";
+    let found = errors_with_spans(source);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].message,
+        "only `tiles`, `nametable`, `attributes` and `palette` are supported yet"
+    );
+    assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+    assert_eq!(
+        &source[found[0].span.start as usize..found[0].span.end as usize],
+        "tile_count"
+    );
+}
+
+/// The specification's explicit-palette form parses, so it is refused by name
+/// rather than by token — one message, saying what is supported instead.
+#[test]
+fn refuses_the_explicit_palette_by_name() {
+    let source =
+        "asset image picture = png(\"p.png\") { palette: [ $0F, $30, $21, $11 ] }\nmain { }";
+    let found = errors_with_spans(source);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].message, "only `palette: auto(4)` is supported yet");
+    assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+    assert_eq!(
+        &source[found[0].span.start as usize..found[0].span.end as usize],
+        "[ $0F, $30, $21, $11 ]"
+    );
+}

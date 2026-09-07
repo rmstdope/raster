@@ -95,7 +95,13 @@ pub struct AssetField {
 pub enum AssetValue {
     Word(String),
     Number(String),
-    Call { name: String, argument: String },
+    Call {
+        name: String,
+        argument: String,
+    },
+    /// The specification's explicit-palette form, `palette: [ $0F, $30, ... ]`
+    /// (§8.1). Parsed so it can be refused by name, not by token.
+    List(Vec<String>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -176,6 +176,58 @@ main {
         assert_eq!(slice(source, asset.path.span), "\"art/picture.png\"");
     }
 
+    /// One typo, one diagnostic. Every structural part of an asset bails out of
+    /// the item rather than reporting and carrying on, because a parser that
+    /// carries on past a token it did not understand asks the next four
+    /// expectations about that same token and prints all of them.
+    #[test]
+    fn a_malformed_asset_item_reports_once() {
+        for source in [
+            "asset image p = Png(\"art/p.png\")\nmain { }",
+            "asset image p = jpeg(\"art/p.png\")\nmain { }",
+            "asset image p = \"art/p.png\"\nmain { }",
+            "asset 3 p = png(\"art/p.png\")\nmain { }",
+            "asset image = png(\"art/p.png\")\nmain { }",
+            "asset image p png(\"art/p.png\")\nmain { }",
+            "asset image p = png(art/p.png)\nmain { }",
+            "asset image p = png(\"art/p.png\" { kind: background }\nmain { }",
+        ] {
+            let errors = parse(source).expect_err("the item is malformed");
+            assert_eq!(errors.len(), 1, "for `{source}`, got {errors:?}");
+        }
+    }
+
+    /// A bad field is one error for the block, not one per token after it, and
+    /// the item after the asset still parses.
+    #[test]
+    fn a_malformed_asset_field_reports_once_and_the_next_item_still_parses() {
+        for source in [
+            "asset image p = png(\"p.png\") { 3: background  kind: background }\nmain { }",
+            "asset image p = png(\"p.png\") { kind background }\nmain { }",
+            "asset image p = png(\"p.png\") { kind: }\nmain { }",
+            "asset image p = png(\"p.png\") { palette: auto(x) }\nmain { }",
+            "asset image p = png(\"p.png\") { palette: auto(4 }\nmain { }",
+        ] {
+            let errors = parse(source).expect_err("the field is malformed");
+            assert_eq!(errors.len(), 1, "for `{source}`, got {errors:?}");
+        }
+    }
+
+    /// The spec's explicit-palette form (§8.1) parses, so `raster-sema` can refuse
+    /// it by name rather than the parser refusing it by token.
+    #[test]
+    fn parses_the_spec_s_explicit_palette_array() {
+        let program = parse("asset image p = png(\"p.png\") { palette: [ $0F, $30, $21, $11 ] }")
+            .expect("the explicit palette parses");
+        let Item::Asset(asset) = &program.items[0].value else {
+            panic!("expected an asset item");
+        };
+        assert_eq!(
+            asset.fields[0].value.value,
+            AssetValue::List(vec!["$0F".into(), "$30".into(), "$21".into(), "$11".into()])
+        );
+    }
+
     #[test]
     fn parses_an_asset_item_with_no_block() {
         let program = parse("asset image picture = png(\"p.png\")").expect("the item parses");

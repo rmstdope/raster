@@ -244,6 +244,13 @@ impl Analyzer {
                     &AssetValue::Word("true".into()),
                     "only `dedup: true` is supported yet",
                 ),
+                // §8.1 of the specification defines this and this release does
+                // not build it. An author copying that block verbatim must not
+                // be told they invented it.
+                "compress" => self.not_in_this_release(
+                    field.name.span,
+                    "only `kind`, `palette` and `dedup` are supported yet",
+                ),
                 _ => self.error(
                     field.name.span,
                     "unknown asset field; this release knows `kind`, `palette` and `dedup`",
@@ -800,7 +807,15 @@ impl Analyzer {
             Expression::Member { base, member } => {
                 let base_type = self.expression_type(base);
                 if base_type == ValueType::Asset {
-                    if !asset_member(&member.value) {
+                    if spec_only_asset_member(&member.value) {
+                        // Defined by §8.1 and not built yet, which is a
+                        // different thing from a member nobody has heard of.
+                        self.not_in_this_release(
+                            member.span,
+                            "only `tiles`, `nametable`, `attributes` and `palette` \
+                             are supported yet",
+                        );
+                    } else if !asset_member(&member.value) {
                         self.error(
                             member.span,
                             format!(
@@ -810,9 +825,15 @@ impl Analyzer {
                             ),
                         );
                     }
-                    // A block of ROM data, not a value: `Unknown` is what stops
-                    // anything in this release doing arithmetic on one, and it
-                    // already suppresses the cascade a wrong member would cause.
+                    // A block of ROM data rather than a value. `Unknown` is the
+                    // language's "do not build on this" type: it suppresses the
+                    // cascade a wrong member would otherwise cause. It does not
+                    // by itself forbid arithmetic — `require_integer` and
+                    // `ensure_compatible` both accept `Unknown` deliberately —
+                    // so `picture.tiles + 1` analyzes clean today and is caught
+                    // only by lowering's blanket refusal of the item. Giving
+                    // these members a type that holds once that refusal is
+                    // lifted belongs to the bead that gives them a consumer.
                     return ValueType::Unknown;
                 }
                 if base_type != ValueType::Namespace {
@@ -1182,6 +1203,14 @@ fn parse_number(value: &str) -> Option<u32> {
     } else {
         value.parse().ok()
     }
+}
+
+/// The members §8.1 of the specification defines that this release does not
+/// build. `raster_assets` counts its tiles, so `tile_count` is a value rather
+/// than a block, and giving it a type is the job of the bead that gives these
+/// members a consumer.
+fn spec_only_asset_member(member: &str) -> bool {
+    member == "tile_count"
 }
 
 /// The four blocks an image asset exposes, which are exactly the four accessors

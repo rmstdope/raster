@@ -34,9 +34,19 @@ impl AssetSource for NoAssets {
 }
 
 /// Every asset the program declared, decoded and encoded, by name.
-pub struct Assets {
+///
+/// Crate-private until something reads it: nothing consumes a decoded picture in
+/// this release, and exporting it would put `raster_assets::NesBackground` into
+/// `rasterc`'s public API a bead before anything needs it there.
+pub(crate) struct Assets {
     /// In declaration order, so a later bead lays them out predictably.
-    pub images: Vec<(String, NesBackground)>,
+    ///
+    /// Built and not yet read: encoding is what reports a picture that needs
+    /// more than 256 tiles or more than four sub-palettes, so it must happen
+    /// whether or not anything consumes the result. `raster-fl4.5.3` is what
+    /// reads this, and lifts the allow with it.
+    #[allow(dead_code)]
+    pub(crate) images: Vec<(String, NesBackground)>,
 }
 
 /// Why one asset could not be built, at the span of the path that named it.
@@ -45,9 +55,9 @@ pub struct Assets {
 /// stays out of the business of clamping offsets — `compile.rs` does that once,
 /// for every stage, and this stage goes through the same path as the rest.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AssetError {
-    pub message: String,
-    pub span: Span,
+pub(crate) struct AssetError {
+    pub(crate) message: String,
+    pub(crate) span: Span,
 }
 
 /// Read and decode every `asset` item, or report why one could not be.
