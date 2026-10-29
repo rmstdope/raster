@@ -882,3 +882,119 @@ fn refuses_the_explicit_palette_by_name() {
         "[ $0F, $30, $21, $11 ]"
     );
 }
+
+const RETURN_IN_AN_IRQ_HANDLER: &str = "an `irq` handler cannot `return`";
+
+fn irq_frame(handler: &str) -> String {
+    format!("main {{ }}\nframe bars using irq {{\n    at scanline 60 {{ {handler} }}\n}}\n")
+}
+
+#[test]
+fn return_inside_an_irq_handler_gets_its_own_refusal_spanned_on_the_return() {
+    let source = irq_frame("return");
+    let diagnostics = errors_with_spans(&source);
+
+    assert_eq!(diagnostics.len(), 1, "{:?}", diagnostics);
+    let error = &diagnostics[0];
+    assert_eq!(error.message, RETURN_IN_AN_IRQ_HANDLER);
+    assert_eq!(
+        error.label.as_deref(),
+        Some("`return` jumps past the handler's `RTI`")
+    );
+    assert_eq!(
+        error.notes,
+        [
+            "a handler ends by acknowledging the interrupt, arming the next\n\
+             event and running `RTI`; a `return` skips all three, so no later\n\
+             event in the schedule runs",
+            "let the handler run to its last statement instead",
+        ]
+    );
+    assert_eq!(
+        &source[error.span.start as usize..error.span.end as usize],
+        "return"
+    );
+}
+
+#[test]
+fn every_return_in_an_irq_handler_is_refused_whatever_it_returns() {
+    let diagnostics = errors_with_spans(&irq_frame("return 1\n return\n return"));
+    assert_eq!(diagnostics.len(), 3, "{:?}", diagnostics);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|error| error.message == RETURN_IN_AN_IRQ_HANDLER)
+    );
+}
+
+/// A `return`'s value makes no difference to the refusal, so it is not also judged against a
+/// return type the handler does not have (one error per `return`) - but it is still read, so an
+/// unknown name in it is still reported, and the span is the whole statement, value included.
+#[test]
+fn a_return_value_in_an_irq_handler_is_read_but_not_typed_against_the_handler() {
+    let source = irq_frame("return missing");
+    let diagnostics = errors_with_spans(&source);
+
+    assert_eq!(diagnostics.len(), 2, "{:?}", diagnostics);
+    assert_eq!(diagnostics[0].message, RETURN_IN_AN_IRQ_HANDLER);
+    assert_eq!(
+        &source[diagnostics[0].span.start as usize..diagnostics[0].span.end as usize],
+        "return missing"
+    );
+    assert!(
+        diagnostics[1].message.contains("missing"),
+        "{:?}",
+        diagnostics[1]
+    );
+}
+
+#[test]
+fn a_cycles_block_inside_an_irq_handler_keeps_the_timed_block_sentence() {
+    let diagnostics = errors_with_spans(&irq_frame("cycles(20) pad { return }"));
+    assert_eq!(diagnostics.len(), 1, "{:?}", diagnostics);
+    assert_eq!(diagnostics[0].message, RETURN_IN_A_TIMED_BLOCK);
+    assert!(diagnostics[0].label.is_none());
+}
+
+#[test]
+fn return_in_a_timed_frame_handler_keeps_the_timed_block_sentence() {
+    let diagnostics =
+        errors_with_spans("main { }\nframe bars using timed {\n    at scanline 60 { return }\n}\n");
+    assert_eq!(diagnostics.len(), 1, "{:?}", diagnostics);
+    assert_eq!(diagnostics[0].message, RETURN_IN_A_TIMED_BLOCK);
+}
+
+#[test]
+fn a_call_stays_refused_in_an_irq_handler() {
+    let source =
+        "fn helper() { }\nmain { }\nframe bars using irq {\n    at scanline 60 { helper() }\n}\n";
+    let diagnostics = errors_with_spans(source);
+    assert_eq!(diagnostics.len(), 1, "{:?}", diagnostics);
+    assert!(
+        diagnostics[0]
+            .message
+            .starts_with("`helper` cannot be called inside a timed block yet"),
+        "{:?}",
+        diagnostics[0]
+    );
+    assert_eq!(diagnostics[0].refusal, Refusal::TimedRegionCost);
+}
+
+#[test]
+fn if_and_while_stay_refused_in_an_irq_handler() {
+    for (statement, expected) in [
+        (
+            "if true { }",
+            "branch arms inside a timed block cannot yet be balanced, because each path through them costs a different number of cycles",
+        ),
+        (
+            "while true { }",
+            "a `while` loop's trip count cannot be proven inside a timed block",
+        ),
+    ] {
+        let diagnostics = errors_with_spans(&irq_frame(statement));
+        assert_eq!(diagnostics.len(), 1, "{statement}: {:?}", diagnostics);
+        assert_eq!(diagnostics[0].message, expected);
+        assert_eq!(diagnostics[0].refusal, Refusal::TimedRegionCost);
+    }
+}

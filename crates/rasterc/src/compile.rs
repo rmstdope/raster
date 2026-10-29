@@ -79,12 +79,7 @@ pub fn compile_source_with_assets(
             source,
         )
     })?;
-    let typed = analyze(&syntax).map_err(|errors| {
-        spanned(
-            errors.into_iter().map(|e| (e.message, e.span, e.refusal)),
-            source,
-        )
-    })?;
+    let typed = analyze(&syntax).map_err(|errors| analyzed(errors, source))?;
     // Nothing consumes the decoded pictures yet, and dropping them here is the
     // honest end of this stage: the file has been read, decoded and encoded, so
     // every real problem with it has been reported, and lowering refuses the
@@ -199,6 +194,24 @@ fn warned(warnings: Vec<raster_ir::LowerWarning>, source: &str) -> Vec<Diagnosti
             diagnostic
         })
         .collect()
+}
+
+/// Semantic errors, as diagnostics. Most mirror their message under the carets, as `spanned`
+/// does; one that carries a label and notes of its own keeps them.
+fn analyzed(errors: Vec<raster_sema::SemanticError>, source: &str) -> Vec<Diagnostic> {
+    noted(
+        errors
+            .into_iter()
+            .map(|error| {
+                let span =
+                    Span::clamped(error.span.start as usize, error.span.end as usize, source);
+                let label = error.label.unwrap_or_else(|| error.message.clone());
+                let mut diagnostic = Diagnostic::error(error.message, span, label);
+                diagnostic.notes = error.notes;
+                (diagnostic, error.refusal)
+            })
+            .collect(),
+    )
 }
 
 /// Lowering's errors, as diagnostics. Unlike a parse or a semantic error, one
