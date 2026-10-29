@@ -2308,3 +2308,257 @@ fn an_asset_does_not_reach_the_rom_yet() {
         "asset image picture = png(\"art/picture.png\")"
     );
 }
+
+// ---- raster-72o: a `cycles` block that can start with NMI on ----
+
+const KNOWN_ON_HEADLINE: &str =
+    "NMI can be on when this block runs, and a `cycles` block cannot afford one";
+const UNKNOWN_HEADLINE: &str = "rasterc cannot tell whether NMI is on when this block runs";
+
+fn block_warnings(source: &str) -> Vec<raster_ir::LowerWarning> {
+    lower_source(source).warnings
+}
+
+fn slice<'a>(source: &'a str, warning: &raster_ir::LowerWarning) -> &'a str {
+    &source[warning.span.start as usize..warning.span.end as usize]
+}
+
+#[test]
+fn a_cycles_block_with_nmi_known_on_is_a_warning() {
+    let source = "var g: u8\nmain {\n\
+         ppu.ctrl = $88\n\
+         sync exact\n\
+         cycles(114) pad {\n\
+         ppu.mask = $1e\n\
+         }\n\
+         }";
+    let warnings = block_warnings(source);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let warning = &warnings[0];
+    assert_eq!(warning.message, KNOWN_ON_HEADLINE);
+    assert_eq!(warning.label, "this block claims 114 cycles");
+    assert_eq!(slice(source, warning), "cycles(114) pad");
+    assert_eq!(
+        warning.notes,
+        [
+            "`ppu.ctrl` holds $88 when this block starts, and bit 7 is NMI;\nthe `sei` around a timed block cannot mask an NMI",
+            "each NMI taken inside costs the block 13 cycles; clear bit 7\nbefore the block to keep its count",
+        ]
+    );
+}
+
+#[test]
+fn an_at_most_block_says_at_most() {
+    let warnings =
+        block_warnings("var g: u8\nmain {\nppu.ctrl = $80\ncycles(<= 28) pad { g = 1 }\n}");
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].label, "this block claims at most 28 cycles");
+}
+
+#[test]
+fn a_cycles_block_after_a_value_rasterc_cannot_fold_is_a_cannot_tell_warning() {
+    let source = "var g: u8\nvar flags: u8\nmain {\nppu.ctrl = flags\ncycles(114) pad { g = 1 }\n}";
+    let warnings = block_warnings(source);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].message, UNKNOWN_HEADLINE);
+    assert_eq!(warnings[0].label, "this block claims 114 cycles");
+    assert_eq!(
+        warnings[0].notes,
+        [
+            "the last write to `ppu.ctrl` before this block is not a value\nrasterc can see, so bit 7 is unknown",
+            "bit 7 is NMI, and each NMI taken inside costs the block 13 cycles;\nwriting a constant with bit 7 clear keeps its count",
+        ]
+    );
+}
+
+#[test]
+fn a_cycles_block_where_paths_disagree_is_a_cannot_tell_warning() {
+    let warnings = block_warnings(
+        "var g: u8\nvar c: u8\nmain {\nif c != 0 { ppu.ctrl = $88 } else { ppu.ctrl = $08 }\n\
+         cycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].message, UNKNOWN_HEADLINE);
+    assert_eq!(
+        warnings[0].notes[0],
+        "`ppu.ctrl` is written with bit 7 set on some paths into this\nblock and not others, so bit 7 is unknown"
+    );
+}
+
+#[test]
+fn paths_that_all_leave_bit_7_clear_are_silent() {
+    let warnings = block_warnings(
+        "var g: u8\nvar c: u8\nmain {\nif c != 0 { ppu.ctrl = $08 } else { ppu.ctrl = $08 }\n\
+         cycles(114) pad { g = 1 }\n}",
+    );
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_block_is_silent_with_no_ppu_ctrl_write_or_a_clear_one() {
+    for body in ["", "ppu.ctrl = $08\n"] {
+        let source = format!("var g: u8\nmain {{\n{body}cycles(114) pad {{ g = 1 }}\n}}");
+        assert!(block_warnings(&source).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn a_cycles_question_mark_block_claims_no_count_and_is_silent() {
+    let warnings =
+        block_warnings("var g: u8\nmain {\nppu.ctrl = $88\ncycles(?) probe { g = 1 }\n}");
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_block_reached_only_before_nmi_is_enabled_is_silent() {
+    let warnings =
+        block_warnings("var g: u8\nmain {\ncycles(114) pad { g = 1 }\nppu.ctrl = $88\n}");
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_loop_that_enables_nmi_after_the_block_warns_the_block() {
+    let source = "var g: u8\nmain {\nvar n: u8 = 3\nwhile n != 0 {\ncycles(114) pad { g = 1 }\nppu.ctrl = $88\nn = n - 1\n}\n}";
+    let warnings = block_warnings(source);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].message, UNKNOWN_HEADLINE);
+    assert_eq!(
+        warnings[0].notes[0],
+        "`ppu.ctrl` is written with bit 7 set on some paths into this\nblock and not others, so bit 7 is unknown"
+    );
+}
+
+#[test]
+fn irq_and_timed_handler_blocks_are_silent_in_main_and_frame_terms() {
+    let irq = block_warnings(
+        "var g: u8\nmain {\nppu.ctrl = $88\nppu.mask = $1e\n}\n\
+         frame bars using irq {\nat scanline 60 { cycles(<= 28) pad { g = 1 } }\n}",
+    );
+    assert!(irq.is_empty(), "{irq:?}");
+
+    let timed = block_warnings(
+        "var g: u8\nmain {\nppu.ctrl = $88\nppu.mask = $1e\n}\n\
+         frame bars using timed {\nevery 8 scanlines from 0 to 239 { cycles(<= 28) pad { g = 1 } }\n}",
+    );
+    assert_eq!(timed.len(), 1, "{timed:?}");
+    assert_eq!(
+        timed[0].message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+}
+
+#[test]
+fn a_block_in_a_called_function_warns_once_however_often_it_is_called() {
+    let source = "var g: u8\nfn spin() {\ncycles(114) pad { g = 1 }\n}\n\
+                  main {\nppu.ctrl = $88\nspin()\nspin()\n}";
+    let warnings = block_warnings(source);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(slice(source, &warnings[0]), "cycles(114) pad");
+}
+
+#[test]
+fn several_blocks_warn_in_source_order_after_the_frame_warning() {
+    let source = "var g: u8\nfn first() {\ncycles(10) pad { g = 1 }\n}\n\
+                  main {\nppu.ctrl = $88\ncycles(20) pad { g = 1 }\nfirst()\n}\n\
+                  frame bars using timed {\nevery 8 scanlines from 0 to 239 { ppu.mask = $1e }\n}";
+    let warnings = block_warnings(source);
+
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert_eq!(
+        warnings[0].message,
+        "this program enables NMI, and a `timed` frame cannot afford one"
+    );
+    assert_eq!(slice(source, &warnings[1]), "cycles(10) pad");
+    assert_eq!(slice(source, &warnings[2]), "cycles(20) pad");
+}
+
+#[test]
+fn a_call_inside_an_expression_that_enables_nmi_reaches_the_block_after_it() {
+    let warnings = block_warnings(
+        "var g: u8\nfn enable() -> u8 {\nppu.ctrl = $88\nreturn 1\n}\n\
+         main {\ng = enable()\ncycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].message, KNOWN_ON_HEADLINE);
+}
+
+#[test]
+fn a_block_in_a_function_called_from_an_expression_is_judged() {
+    let source = "var g: u8\nfn spin() -> u8 {\ncycles(114) pad { g = 1 }\nreturn 1\n}\n\
+                  main {\nppu.ctrl = $88\nvar x: u8 = spin()\n}";
+    let warnings = block_warnings(source);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(slice(source, &warnings[0]), "cycles(114) pad");
+}
+
+#[test]
+fn call_sites_with_different_nmi_states_make_the_block_conditional() {
+    let warnings = block_warnings(
+        "var g: u8\nfn spin() {\ncycles(114) pad { g = 1 }\n}\n\
+         main {\nspin()\nppu.ctrl = $88\nspin()\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].message, UNKNOWN_HEADLINE);
+    assert!(warnings[0].notes[0].contains("on some paths into this"));
+}
+
+#[test]
+fn an_unfoldable_write_on_one_path_beats_a_clear_one() {
+    let warnings = block_warnings(
+        "var g: u8\nvar flags: u8\nvar c: u8\nmain {\n\
+         if c != 0 { ppu.ctrl = flags } else { ppu.ctrl = $08 }\n\
+         cycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].notes[0].contains("not a value"));
+}
+
+#[test]
+fn a_function_that_returns_early_joins_its_returns_with_falling_off_the_end() {
+    let warnings = block_warnings(
+        "var g: u8\nfn maybe() {\nif g != 0 {\nppu.ctrl = $88\nreturn\n}\n}\n\
+         main {\nmaybe()\ncycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].notes[0].contains("on some paths into this"));
+}
+
+#[test]
+fn two_set_values_name_the_one_reached_first_in_source_order() {
+    let warnings = block_warnings(
+        "var g: u8\nvar c: u8\nmain {\n\
+         if c != 0 { ppu.ctrl = $88 } else { ppu.ctrl = $90 }\n\
+         cycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].notes[0].contains("holds $88"), "{warnings:?}");
+}
+
+#[test]
+fn a_block_warning_prints_after_a_bank_warning() {
+    let warnings = block_warnings(
+        "var g: u8\nmain {\nppu.ctrl = $88\ncycles(114) pad { g = 1 }\nmmc3.bank_select = $80\n}",
+    );
+
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert_eq!(
+        warnings[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(warnings[1].message, KNOWN_ON_HEADLINE);
+}

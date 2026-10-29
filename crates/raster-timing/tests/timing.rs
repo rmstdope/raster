@@ -764,3 +764,36 @@ fn a_ppu_ctrl_rasterc_cannot_prove_is_its_own_verdict() {
         Some(TimedFrameNmi::Conditional)
     );
 }
+
+/// What `ppu.ctrl` holds as a `cycles` block starts is judged per path: a stored constant either
+/// has bit 7 or does not, and anything rasterc cannot fold is unknown.
+#[test]
+fn a_stored_ppu_ctrl_is_judged_by_bit_7() {
+    use raster_timing::NmiAtEntry;
+
+    assert_eq!(
+        NmiAtEntry::stored(Some(0x88)),
+        NmiAtEntry::On { ctrl: 0x88 }
+    );
+    assert_eq!(NmiAtEntry::stored(Some(0x08)), NmiAtEntry::Clear);
+    assert_eq!(NmiAtEntry::stored(Some(0x00)), NmiAtEntry::Clear);
+    assert_eq!(NmiAtEntry::stored(None), NmiAtEntry::Unproven);
+}
+
+/// Where paths meet, equal facts stay, an unfoldable write wins, and set-on-some-paths is its
+/// own verdict. Two set values keep the earlier one: all paths have bit 7 set either way.
+#[test]
+fn paths_meeting_join_their_nmi_facts() {
+    use raster_timing::NmiAtEntry::{Clear, Conditional, On, Unproven};
+
+    assert_eq!(Clear.join(Clear), Clear);
+    assert_eq!(On { ctrl: 0x88 }.join(On { ctrl: 0x88 }), On { ctrl: 0x88 });
+    assert_eq!(On { ctrl: 0x88 }.join(On { ctrl: 0x90 }), On { ctrl: 0x88 });
+    assert_eq!(Clear.join(On { ctrl: 0x88 }), Conditional);
+    assert_eq!(On { ctrl: 0x88 }.join(Clear), Conditional);
+    assert_eq!(Conditional.join(On { ctrl: 0x88 }), Conditional);
+    assert_eq!(Conditional.join(Clear), Conditional);
+    assert_eq!(Unproven.join(Clear), Unproven);
+    assert_eq!(Clear.join(Unproven), Unproven);
+    assert_eq!(Conditional.join(Unproven), Unproven);
+}

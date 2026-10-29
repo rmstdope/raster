@@ -1049,3 +1049,39 @@ fn a_bare_source_file_name_resolves_assets_beside_it() {
         "got {stderr}"
     );
 }
+
+#[test]
+fn a_cycles_block_with_nmi_on_prints_its_warning_and_still_writes_a_rom() {
+    let directory = Scratch::new("nmiblock");
+    let input = directory.path().join("demo.raster");
+    let output = directory.path().join("demo.nes");
+    fs::write(
+        &input,
+        "main {\n    ppu.ctrl = $88\n    sync exact\n    cycles(114) pad {\n        ppu.mask = $1e\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert!(output.exists());
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: NMI can be on when this block runs, and a `cycles` block cannot afford one\n",
+                " --> {path}:4:5\n",
+                "  |\n",
+                "4 |     cycles(114) pad {{\n",
+                "  |     ^^^^^^^^^^^^^^^ this block claims 114 cycles\n",
+                "  = note: `ppu.ctrl` holds $88 when this block starts, and bit 7 is NMI;\n",
+                "          the `sei` around a timed block cannot mask an NMI\n",
+                "  = note: each NMI taken inside costs the block 13 cycles; clear bit 7\n",
+                "          before the block to keep its count\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+    assert!(stdout.ends_with(" warnings  1\n"), "got:\n{stdout}");
+}
