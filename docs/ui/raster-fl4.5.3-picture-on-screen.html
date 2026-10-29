@@ -1,0 +1,168 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Picture on screen</title><style>
+:root{--bg:#f6f6f8;--fg:#22242c;--dim:#666b7a;--card:#fff;--line:#d9dce6;--src:#eceef4}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0e13;--fg:#d8dae4;--dim:#8b90a2;--card:#111219;--line:#262a36;--src:#171922}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,"Segoe UI",system-ui,sans-serif}
+main{max-width:60rem;margin:0 auto;padding:2rem 16px 4rem}
+h1{font-size:1.3rem;margin:0 0 .3rem}.sub{color:var(--dim);margin:0 0 1.4rem;max-width:52em}
+h2{font-size:.85rem;margin:2rem 0 .4rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+.term{background:#12131a;color:#d8dae4;border-radius:8px;padding:1rem 1.1rem;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow-x:auto;border:1px solid #000}
+.term .e{color:#ff6b6b;font-weight:700}.term .w{color:#ffcf6b;font-weight:700}.term .g{color:#7c8296}.term .n{color:#6fd3e8}.term .ok{color:#8fd694;font-weight:700}
+.src{background:var(--src);border:1px solid var(--line);border-radius:8px;padding:.9rem 1.1rem;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow-x:auto}
+.cost{border-left:3px solid var(--line);padding-left:.9rem;margin:1rem 0;color:var(--dim);max-width:52em}
+.screen{width:256px;height:240px;border:6px solid #333;border-radius:6px;background:linear-gradient(135deg,#1a3a8a,#4ab0e0 45%,#f0d070 46%,#c04020);display:flex;align-items:end;justify-content:center;color:#fff;font:12px ui-monospace,monospace;padding-bottom:6px;box-sizing:border-box}
+.n{color:#0a7d94;font-weight:600}
+</style></head><body><main>
+<h1>raster-fl4.5.3 — the decoded picture reaches the ROM and appears on screen</h1><p class="sub">The agreed experience, one section per decision. Each section is the variant the designer chose.</p><style>section{border-top:1px solid var(--line);margin-top:2.5rem;padding-top:.5rem}</style>
+<section>
+<h1>Option A — the tiles are burned into the cartridge's tile ROM</h1>
+<p class="sub">What <code>chrrom bank 0 { picture.tiles }</code> says is what the cartridge gets: the tiles sit in the cartridge's own tile memory from power-on. Nothing copies them at start-up. Rows in blue are new or changed.</p>
+<h2>Source</h2>
+<div class="src">asset image picture = png("art/picture.png") { kind: background  palette: auto(4)  dedup: true }
+
+chrrom bank 0 { picture.tiles }
+
+fn init() {
+    ppu.mask = $00
+    wait vblank
+    wait vblank
+    load_palette(picture.palette)
+    load_nametable(picture.nametable, picture.attributes)
+    ppu.ctrl = $80
+    ppu.mask = $0A
+}</div>
+<h2>rasterc demo.raster</h2>
+<div class="term"><span class="ok"> Compiled</span>  demo.raster -> demo.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+<span class="n">      chr  8 KiB ROM, 1 bank of 8 KiB</span>
+<span class="n">   bank 0  picture.tiles, 112 tiles, 1792 of 8192 bytes</span>
+    fixed  $E000-$FFFF, 1406 of 8186 bytes used
+    yours  1274 bytes
+  runtime  132 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $E09F, irq $E09F</div>
+<h2>In the emulator</h2>
+<div class="screen">art/picture.png, tile for tile</div>
+<p class="cost">The emulator's header view shows "CHR ROM 8 KiB", matching the keyword. Start-up is instant. The 1792 bytes of tiles don't use any program space.</p>
+</section>
+<section>
+<h1>Option A — one row per tile bank</h1>
+<p class="sub">The build summary gives each <code>chrrom</code> bank its own row, naming what's in it and how full it is. Two pictures are shown here to make the shape visible.</p>
+<div class="term"><span class="ok"> Compiled</span>  demo.raster -> demo.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB ROM, 1 bank of 8 KiB
+<span class="n">   bank 0  picture.tiles + font.tiles, 160 tiles, 2560 of 8192 bytes</span>
+    fixed  $E000-$FFFF, 1406 of 8186 bytes used
+    yours  1274 bytes
+  runtime  132 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $E09F, irq $E09F</div>
+<p class="cost">This answers "how full is my tile memory". Once there are many banks the summary grows by one row per bank.</p>
+</section>
+<section>
+<h1>Option A — a picture placed second in a bank just works</h1>
+<p class="sub">Here the font's 48 tiles come first, so the picture's tiles start at tile 48. The compiler shifts the picture's nametable so it still points at the right tiles. You don't have to think about the order.</p>
+<div class="src">chrrom bank 0 { font.tiles, picture.tiles }
+
+fn init() {
+    load_palette(picture.palette)
+    load_nametable(picture.nametable, picture.attributes)   // already points at tiles 48–159
+}</div>
+<h2>rasterc demo.raster</h2>
+<div class="term"><span class="ok"> Compiled</span>  demo.raster -> demo.nes
+      chr  8 KiB ROM, 1 bank of 8 KiB
+   bank 0  font.tiles + picture.tiles, 160 tiles, 2560 of 8192 bytes
+   ...</div>
+<div class="screen">picture, correct</div>
+<p class="cost">There's one limit you can still hit: a picture's tiles must not cross the 256-tile line between the two pattern tables in a bank. That gets its own error (see the words drawing).</p>
+</section>
+<section>
+<h1>Option A — skipped bank numbers become empty banks</h1>
+<p class="sub">The source places tiles in bank 0 and bank 2 and nothing in bank 1. The cartridge gets three banks, and the empty one is shown in the summary.</p>
+<div class="src">chrrom bank 0 { picture.tiles }
+chrrom bank 2 { sprites.tiles }</div>
+<div class="term"><span class="ok"> Compiled</span>  demo.raster -> demo.nes
+      chr  24 KiB ROM, 3 banks of 8 KiB
+   bank 0  picture.tiles, 112 tiles, 1792 of 8192 bytes
+   bank 1  empty
+   bank 2  sprites.tiles, 64 tiles, 1024 of 8192 bytes
+   ...</div>
+<p class="cost">Bank numbers in the source mean what they say, so bank-switching code can rely on them. The empty bank still costs 8 KiB of cartridge, but the summary shows it.</p>
+</section>
+<section>
+<h1>Option A — refused: the picture is loaded but its tiles were never placed</h1>
+<p class="sub">The developer calls <code>load_nametable(picture…)</code> but forgets <code>chrrom bank 0 { picture.tiles }</code>. On screen that would show garbage or blank tiles.</p>
+<div class="src">asset image picture = png("art/picture.png") { kind: background }
+
+fn init() {
+    load_palette(picture.palette)
+    load_nametable(picture.nametable, picture.attributes)
+}</div>
+<h2>rasterc demo.raster</h2>
+<div class="term"><span class="e">error</span>: `picture`'s tiles are not in any `chrrom` bank
+  --> demo.raster:5:20
+   |
+ 5 |     load_nametable(picture.nametable, picture.attributes)
+   |                    <span class="e">^^^^^^^^^^^^^^^^^</span> this nametable points at tiles that are not on the cartridge
+   |
+   = help: add `chrrom bank 0 { picture.tiles }`
+
+error: could not compile demo.raster (1 error)</div>
+<p class="cost">There's no ROM until the line is added. This catches the mistake before anything reaches the emulator.</p>
+</section>
+<section>
+<h1>Option A — short: what is wrong, where, and the fix</h1><p class="sub">The same shape as every error raster prints today: one headline, the line with the culprit underlined, and one <code>help</code> line. All four new errors are shown.</p>
+<div class="term"><span class="e">error</span>: `chrrom bank 0` is full: 576 tiles, and a bank holds 512
+  --> demo.raster:7:17
+   |
+ 7 | chrrom bank 0 { picture.tiles, font.tiles, sprites.tiles }
+   |                 <span class="e">^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^</span> 9216 of 8192 bytes
+   |
+   = help: move some of these to `chrrom bank 1`</div>
+
+<div class="term"><span class="e">error</span>: `font.tiles` crosses into the second pattern table
+  --> demo.raster:7:32
+   |
+ 7 | chrrom bank 0 { picture.tiles, font.tiles }
+   |                                <span class="e">^^^^^^^^^^</span> tiles 240–287; a picture must sit within tiles 0–255 or 256–511
+   |
+   = help: give `font.tiles` its own bank, or place it first</div>
+
+<div class="term"><span class="e">error</span>: `load_palette` takes a palette, not tiles
+  --> demo.raster:10:18
+   |
+10 |     load_palette(picture.tiles)
+   |                  <span class="e">^^^^^^^^^^^^^</span> this is `picture`'s tiles
+   |
+   = help: did you mean `picture.palette`?</div>
+
+<div class="term"><span class="e">error</span>: `load_nametable` takes a nametable, then its attributes
+  --> demo.raster:11:20
+   |
+11 |     load_nametable(picture.attributes, picture.nametable)
+   |                    <span class="e">^^^^^^^^^^^^^^^^^^</span> this is `picture`'s attributes
+   |
+   = help: write `load_nametable(picture.nametable, picture.attributes)`</div>
+<p class="cost">Concise, so an experienced NES developer reads each in a glance. Someone new to the NES has to look up "pattern table" elsewhere.</p>
+</section>
+<section>
+<h1>Option B — a warning when rendering is plainly on</h1>
+<p class="sub">When the compiler can see, in the same function, a <code>ppu.mask</code> write that turns rendering on and nothing turning it off before the call, it warns. Where it can't tell, it stays quiet.</p>
+<div class="src">fn init() {
+    ppu.mask = $0A                                         // rendering on
+    load_nametable(picture.nametable, picture.attributes)
+}</div>
+<div class="term"><span class="w">warning</span>: `load_nametable` runs while rendering is on
+  --> demo.raster:3:5
+   |
+ 2 |     ppu.mask = $0A
+   |     <span class="g">-------------- rendering turned on here</span>
+ 3 |     load_nametable(picture.nametable, picture.attributes)
+   |     <span class="w">^^^^^^^^^^^^^^</span> 1024 writes cannot finish inside one vblank; the screen will tear
+   |
+   = help: call it before `ppu.mask = $0A`, or set `ppu.mask = $00` first
+
+<span class="ok"> Compiled</span>  demo.raster -> demo.nes  (1 warning)</div>
+<p class="cost">Catches the commonest version of the mistake before the emulator does. Calls from another function, or after a loop, go unchecked.</p>
+</section>
+</main></body></html>
