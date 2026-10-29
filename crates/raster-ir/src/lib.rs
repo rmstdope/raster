@@ -2934,7 +2934,7 @@ impl Lowerer {
                 "PPU addresses run $0000 to $3FFF",
                 vec![format!(
                     "the PPU ignores the top two bits, so this would set ${:04X}",
-                    value & u32::from(PPU_ADDRESS_MAX)
+                    value & PPU_ADDRESS_MAX
                 )],
             );
             return;
