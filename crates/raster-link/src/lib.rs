@@ -101,7 +101,7 @@ impl FixedBankItem {
 ///
 /// # Panics
 ///
-/// Panics if `items` holds a [`FixedBankItem::Data`] block; `raster-codegen` emits none.
+/// Panics if `items` holds a [`FixedBankItem::Data`] block.
 pub fn instructions(items: &[FixedBankItem]) -> Vec<Instruction> {
     items
         .iter()
