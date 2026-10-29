@@ -40,6 +40,7 @@ pub enum Item {
     Frame(Frame),
     Main(Block),
     Asset(Asset),
+    ChrRom(ChrRomBank),
     Other(Block),
 }
 
@@ -74,6 +75,23 @@ pub struct Asset {
     pub loader: Spanned<String>,
     pub path: Spanned<String>,
     pub fields: Vec<AssetField>,
+    pub span: Span,
+}
+
+/// A `chrrom bank N { picture.tiles, ... }` item: one 8 KiB bank of CHR ROM and
+/// what is placed in it, in source order.
+///
+/// The entries are expressions, kept as parsed: that each of them names an
+/// asset's `tiles` is `raster-sema`'s question, so a wrong one is refused with
+/// a message naming it rather than a parse error naming a token.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChrRomBank {
+    /// The bank number as spelled (`2`, `$1F`).
+    pub number: Spanned<String>,
+    pub entries: Vec<Spanned<Expression>>,
+    /// What is inside the braces, first entry to last, which is what a "this
+    /// bank is full" error underlines. The braces' own span when it is empty.
+    pub contents: Span,
     pub span: Span,
 }
 

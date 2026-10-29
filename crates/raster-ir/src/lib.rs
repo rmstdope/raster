@@ -1780,6 +1780,10 @@ impl Lowerer {
                     "an `asset` does not reach the ROM yet",
                     Refusal::AssetNotPlaced,
                 ),
+                // `rasterc` lays the banks out and checks them before lowering
+                // starts; nothing here depends on where a picture's tiles went
+                // except the nametable it was handed.
+                Item::ChrRom(_) => {}
                 Item::Other(_) => self.error(item.span, "this top-level item is not supported"),
             }
         }
