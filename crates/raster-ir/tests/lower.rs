@@ -1992,6 +1992,27 @@ fn a_handler_ppu_ctrl_write_rasterc_cannot_fold_is_a_warning() {
     );
 }
 
+/// One fault, one message, for `ppu.ctrl` as for the bank select: a handler write whose value was
+/// refused lowers to a placeholder, so the NMI warning about it stands aside until the read is fixed.
+#[test]
+fn a_handler_ppu_ctrl_write_whose_value_was_refused_does_not_also_warn() {
+    let source = "main {\n\
+         ppu.ctrl = $08\n\
+         ppu.mask = $1e\n\
+         }\n\
+         frame bars using timed {\n\
+         every 8 scanlines from 0 to 239 { ppu.ctrl = ppu.mask | $80 }\n\
+         }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+
+    let failure = lower(&typed).expect_err("$2001 does not read back");
+
+    assert_eq!(failure.errors.len(), 1);
+    assert_eq!(failure.errors[0].message, "`ppu.mask` cannot be read");
+    assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
+}
+
 /// An IRQ chain re-synchronizes on every scanline it fires, so NMI costs it nothing it cannot
 /// recover — and §13's own flagship example turns NMI on. It has to keep compiling quietly.
 #[test]
