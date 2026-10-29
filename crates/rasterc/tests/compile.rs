@@ -1452,3 +1452,31 @@ fn the_specifications_named_register_block_compiles_without_warnings() {
 fn a_sixteen_bit_write_to_the_address_latch_is_still_refused() {
     assert!(compile_source("main {\n    ppu.addr = $3F00\n}\n").is_err());
 }
+
+/// One name for the construct: a `cycles` block is a block, never a region. The only "region"
+/// left in the specification is §1's ordinary English and the TV standard in the target header.
+#[test]
+fn the_specification_names_the_construct_a_block_never_a_region() {
+    let spec = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/raster-language-spec.md"
+    ));
+    // Joined so a word wrapped across two lines is still seen.
+    let flat = spec.split_whitespace().collect::<Vec<_>>().join(" ");
+    let stray = flat
+        .split(|c| c == '.' || c == '|')
+        .filter(|sentence| sentence.to_lowercase().contains("region"))
+        .filter(|sentence| {
+            !sentence.contains("this region costs exactly N cycles")
+                && !sentence.contains("region:")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        stray.is_empty(),
+        "the specification still says region: {stray:?}"
+    );
+    assert!(
+        spec.contains("**rasterc today:** stricter — a timed block that writes a PPU register"),
+        "§6.6's note is marked stricter"
+    );
+}
