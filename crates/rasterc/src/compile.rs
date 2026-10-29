@@ -123,12 +123,13 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
             source,
         )
     })?;
-    // Warnings first, then errors: a warning is about what the author wrote
-    // before the stage gave up, and the errors are why it did.
     let mut ir = lower(&typed).map_err(|failure| {
-        let mut diagnostics = warned(failure.warnings, source);
-        diagnostics.extend(lowered(failure.errors, source));
-        diagnostics
+        failed(
+            failure.warnings,
+            &[],
+            lowered(failure.errors, source),
+            source,
+        )
     })?;
     // Every failing stage after lowering reports the warnings lowering found,
     // for the reason the whole run does: the author who fixes the error is the
@@ -136,32 +137,13 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
     let lower_warnings = std::mem::take(&mut ir.warnings);
     let warnings = warned(lower_warnings.clone(), source);
     let output = generate_with_isa(&ir, LEGAL_ISA).map_err(|error| {
-        // One fault, one message: a warning saying what a block *spends* is
-        // about a padding that never happened once the block is refused, and
-        // printing it beside the refusal puts two different numbers for one
-        // block in front of the author. Every timing error refuses its region —
-        // over budget, short of an exact budget with no `pad`, unpaddable — so
-        // the test is the error's span rather than its variant, which is also
-        // what keeps a refusal of one block from withdrawing another block's
-        // warning.
-        let refused: Option<Vec<raster_syntax::Span>> = match &error {
-            CodegenError::Timing { span, .. } => Some(vec![*span]),
+        // Every timing error refuses its region, so its span is the block refused.
+        let refused: Vec<raster_syntax::Span> = match &error {
+            CodegenError::Timing { span, .. } => vec![*span],
             CodegenError::FrameHandlersOverBudget { errors, .. } => {
-                Some(errors.iter().map(|(_, span)| *span).collect())
+                errors.iter().map(|(_, span)| *span).collect()
             }
-            _ => None,
-        };
-        let mut kept = match refused {
-            None => warnings.clone(),
-            Some(spans) => warned(
-                lower_warnings
-                    .into_iter()
-                    .filter(|warning| {
-                        !(warning.assumes_budget_met && spans.contains(&warning.span))
-                    })
-                    .collect(),
-                source,
-            ),
+            _ => Vec::new(),
         };
         // Every handler is measured before the build gives up, so a handler overrun shows the whole
         // table beside one diagnostic per handler that is over.
@@ -171,20 +153,25 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
             stopped_by,
         } = error
         {
-            kept.extend(
-                errors
-                    .into_iter()
-                    .map(|(error, span)| timing_diagnostic(error, span, source)),
-            );
+            let mut found: Vec<Diagnostic> = errors
+                .into_iter()
+                .map(|(error, span)| timing_diagnostic(error, span, source))
+                .collect();
             if let Some(other) = stopped_by {
-                kept.push(codegen_diagnostic(*other, source));
+                found.push(codegen_diagnostic(*other, source));
             }
             return Failure {
-                diagnostics: kept,
+                diagnostics: failed(lower_warnings.clone(), &refused, found, source),
                 frame: budget,
             };
         }
-        beside(&kept, codegen_diagnostic(error, source)).into()
+        failed(
+            lower_warnings.clone(),
+            &refused,
+            vec![codegen_diagnostic(error, source)],
+            source,
+        )
+        .into()
     })?;
     // Only `using timed` pays the three-frame pass the fixed-bank note describes; an `irq`
     // frame emits its handlers once.
@@ -192,8 +179,17 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
         .frame
         .as_ref()
         .is_some_and(|frame| frame.strategy == FrameStrategy::Timed);
-    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA)
-        .map_err(|error| beside(&warnings, link_diagnostic(error, timed_frame)))?;
+    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA).map_err(
+        |error| {
+            // A link failure refuses no timed block, so nothing is withdrawn.
+            failed(
+                lower_warnings,
+                &[],
+                vec![link_diagnostic(error, timed_frame)],
+                source,
+            )
+        },
+    )?;
 
     Ok(Rom {
         image: rom.image,
@@ -224,11 +220,31 @@ fn spanned(
     )
 }
 
-/// One stage's error, behind the warnings found before it. Warnings first and
-/// errors after, the same order `compile_source` gives a failed lowering.
-fn beside(warnings: &[Diagnostic], error: Diagnostic) -> Vec<Diagnostic> {
-    let mut diagnostics = warnings.to_vec();
-    diagnostics.push(error);
+/// What the author sees when a stage at or after lowering fails: the warnings
+/// lowering found that still hold, then the stage's errors. The one home of the
+/// rule for which warnings survive a failure.
+///
+/// Warnings first, then errors: a warning is about what the author wrote before
+/// the stage gave up, and the errors are why it did.
+///
+/// `refused` holds the spans of the timed blocks the failing stage refused, if any.
+/// One fault, one message: a warning saying what a block *spends* is about a
+/// padding that never happened once the block is refused, so a budget-dependent
+/// warning at that span is withdrawn. The test is the span rather than the error
+/// variant: every timing error refuses its region (over budget, short of an exact
+/// budget with no `pad`, unpaddable), and the span also keeps one block's refusal from withdrawing another's warning.
+fn failed(
+    warnings: Vec<raster_ir::LowerWarning>,
+    refused: &[raster_syntax::Span],
+    errors: Vec<Diagnostic>,
+    source: &str,
+) -> Vec<Diagnostic> {
+    let kept = warnings
+        .into_iter()
+        .filter(|warning| !(warning.assumes_budget_met && refused.contains(&warning.span)))
+        .collect();
+    let mut diagnostics = warned(kept, source);
+    diagnostics.extend(errors);
     diagnostics
 }
 
@@ -508,6 +524,72 @@ fn internal_compiler_error(error: &impl std::fmt::Debug) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn warning(at: (u32, u32), assumes_budget_met: bool) -> raster_ir::LowerWarning {
+        raster_ir::LowerWarning {
+            message: format!(
+                "w{}-{}",
+                at.0,
+                if assumes_budget_met {
+                    "budget"
+                } else {
+                    "written"
+                }
+            ),
+            label: String::new(),
+            notes: Vec::new(),
+            span: raster_syntax::Span::new(at.0, at.1),
+            assumes_budget_met,
+        }
+    }
+
+    fn messages(diagnostics: &[Diagnostic]) -> Vec<&str> {
+        diagnostics.iter().map(|d| d.message.as_str()).collect()
+    }
+
+    const SOURCE: &str = "0123456789012345678901234567890";
+
+    #[test]
+    fn failed_keeps_every_warning_when_no_block_is_refused() {
+        let diagnostics = failed(
+            vec![warning((0, 2), true), warning((3, 5), false)],
+            &[],
+            vec![Diagnostic::without_span("boom")],
+            SOURCE,
+        );
+        assert_eq!(messages(&diagnostics), ["w0-budget", "w3-written", "boom"]);
+    }
+
+    #[test]
+    fn failed_withdraws_only_the_budget_dependent_warning_at_the_refused_span() {
+        let diagnostics = failed(
+            vec![
+                warning((0, 2), true),
+                warning((0, 2), false),
+                warning((3, 5), true),
+            ],
+            &[raster_syntax::Span::new(0, 2)],
+            vec![Diagnostic::without_span("boom")],
+            SOURCE,
+        );
+        // The first is about the refused block's padding; the second is about what
+        // the author wrote; the third belongs to another block.
+        assert_eq!(messages(&diagnostics), ["w0-written", "w3-budget", "boom"]);
+    }
+
+    #[test]
+    fn failed_puts_warnings_before_every_error() {
+        let diagnostics = failed(
+            vec![warning((3, 5), false)],
+            &[],
+            vec![
+                Diagnostic::without_span("e1"),
+                Diagnostic::without_span("e2"),
+            ],
+            SOURCE,
+        );
+        assert_eq!(messages(&diagnostics), ["w3-written", "e1", "e2"]);
+    }
 
     /// Each kind of note is said once, beside the first refusal of its kind, in the
     /// order the errors arrive. No single run can hold an asset refusal (semantic
