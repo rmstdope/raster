@@ -405,7 +405,7 @@ picks based on the target mapper and the schedule's shape, and reports its choic
 
 | Strategy | Mechanism | Notes | rasterc today |
 |---|---|---|---|
-| `using irq` | MMC3 scanline counter | Preferred on MMC3. Each entry programs `$C000`/`$C001` for the delta to the next event, `$E001` to enable, and acknowledges via `$E000`/`$E001` in the handler. | **as designed** — and it is the one strategy that is built for MMC3 |
+| `using irq` | MMC3 scanline counter | Preferred on MMC3. Each entry programs `$C000`/`$C001` for the delta to the next event, `$E001` to enable, and acknowledges via `$E000`/`$E001` in the handler. | **as designed** — the only built strategy that uses the MMC3 counter |
 | `using timed` | Cycle-counted delay loop from a synced frame start | Works on any mapper including NROM. Costs the whole frame's CPU time. | **as designed** — and it is what an omitted `using` clause means |
 | `using sprite0` | Sprite 0 hit polling | One split only, position determined by sprite placement. | **not built** |
 | `using hybrid` | Sprite 0 for the first split, IRQ chain after | Common demo idiom. | **not built** |
@@ -455,12 +455,13 @@ enforces at compile time:
 - Handlers must acknowledge (`$E000` then `$E001`) before returning, which is emitted
   automatically.
 
-**rasterc today:** built. All four of these are done for you under `using irq`:
-the A12 check, the rendering check, the latch computation and the automatic
-acknowledge. **stricter** — the A12 check is refused rather than guessed where
-the compiler cannot read the value: it needs a constant `ppu.ctrl` before the
-frame, and 8x16 sprites are refused because their pattern table cannot be
-checked. A handler that turns rendering off is refused too.
+**rasterc today:** built. The rendering check, the latch computation and the
+automatic acknowledge are done for you under `using irq`, and so is the A12
+check, in part. **stricter** — the compiler refuses what it cannot read: both
+`ppu.ctrl` and `ppu.mask` must be constants before the frame, 8x16 sprites are
+refused because their pattern table cannot be checked, and a handler that stores
+a constant mask with rendering off is refused (a computed mask only warns).
+The CHR layout is not read; the reset runtime fixes it.
 
 ---
 
