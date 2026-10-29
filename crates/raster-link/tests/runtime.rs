@@ -187,6 +187,39 @@ fn reset_leaves_r7_selected_for_the_lowering_pass() {
     );
 }
 
+/// The message when `$FFFA` does not land on the runtime's `RTI`.
+fn nmi_not_rti_message(resolved: u16, found: u8) -> String {
+    format!(
+        "$FFFA resolved to ${resolved:04X}, where the byte is ${found:02X}, not the runtime's `RTI`.\n\n\
+         NMI is the one interrupt the I flag cannot mask, so a program can take one at\n\
+         any point in `main` by setting bit 7 of `ppu.ctrl`. That is safe today only\n\
+         because $FFFA runs none of the program's own code. Pointing it anywhere else\n\
+         means a handler can run between two of `main`'s statements, which spec\n\
+         section 9.4 says cannot happen — and which rasterc's MMC3 bank tracking\n\
+         relies on. See `nothing_unmasks_irqs_before_main_has_run` in raster-codegen."
+    )
+}
+
+#[test]
+fn the_nmi_failure_message_names_the_address_and_the_byte_in_uppercase_hex() {
+    let first = |a, b| {
+        nmi_not_rti_message(a, b)
+            .lines()
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        first(0xE0C4, 0x4C),
+        "$FFFA resolved to $E0C4, where the byte is $4C, not the runtime's `RTI`."
+    );
+    assert_eq!(
+        first(0xE000, 0x00),
+        "$FFFA resolved to $E000, where the byte is $00, not the runtime's `RTI`."
+    );
+    assert!(nmi_not_rti_message(0xE000, 0).contains("\n\nNMI is the one interrupt"));
+}
+
 #[test]
 fn the_nmi_vector_is_always_the_runtimes_own_handler() {
     // `Some(Label(0))` is the case that matters: a program with a `frame ... using
@@ -200,14 +233,8 @@ fn the_nmi_vector_is_always_the_runtimes_own_handler() {
         assert_eq!(
             fixed_bank(&rom.image)[offset],
             0x40, // RTI
-            "$FFFA resolved to ${:04x}, where the byte is not the runtime's `RTI`.\n\n\
-             NMI is the one interrupt the I flag cannot mask, so a program can take one at\n\
-             any point in `main` by setting bit 7 of `ppu.ctrl`. That is safe today only\n\
-             because $FFFA runs none of the program's own code. Pointing it anywhere else\n\
-             means a handler can run between two of `main`'s statements, which spec\n\
-             section 9.4 says cannot happen — and which rasterc's MMC3 bank tracking\n\
-             relies on. See `nothing_unmasks_irqs_before_main_has_run` in raster-codegen.",
-            rom.vectors.nmi,
+            "{}",
+            nmi_not_rti_message(rom.vectors.nmi, fixed_bank(&rom.image)[offset]),
         );
     }
 }
