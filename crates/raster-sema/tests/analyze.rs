@@ -516,7 +516,7 @@ fn return_inside_a_frame_handler_is_refused_like_any_other_timed_block() {
 
 /// Every refusal a timed block raises, and the kind it must carry.
 ///
-/// A `TimedRegionCost` refusal is a cost-model gap: the construct is fine, and a region costed as
+/// A `TimedRegionCost` refusal is a cost-model gap: the construct is fine, and a timed block costed as
 /// straight-line code cannot price it, so `rasterc` says so beside the diagnostic. The four
 /// `Rejected` ones deliberately say nothing — two hardware waits have no cost to measure ever, so
 /// "once their cost can be measured" would promise what the compiler cannot deliver, and `sync

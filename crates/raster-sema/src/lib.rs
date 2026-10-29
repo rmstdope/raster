@@ -572,7 +572,7 @@ impl Analyzer {
         self.timed_regions.last().filter(|region| region.block)
     }
 
-    /// Refuse something whose cost a straight-line region cannot charge.
+    /// Refuse something whose cost a straight-line timed block cannot charge.
     fn reject_in_timed_block(&mut self, span: Span, message: &str) {
         if self.in_timed_region() {
             self.cannot_be_costed(span, message.to_owned());

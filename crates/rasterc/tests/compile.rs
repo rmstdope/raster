@@ -1465,10 +1465,12 @@ fn the_specification_names_the_construct_a_block_never_a_region() {
     let flat = spec.split_whitespace().collect::<Vec<_>>().join(" ");
     let stray = flat
         .split(['.', '|'])
-        .filter(|sentence| sentence.to_lowercase().contains("region"))
         .filter(|sentence| {
-            !sentence.contains("this region costs exactly N cycles")
-                && !sentence.contains("region:")
+            let kept = sentence
+                .replace("this region costs exactly N cycles", "")
+                .replace("region: ntsc", "")
+                .replace("region: dual", "");
+            kept.to_lowercase().contains("region")
         })
         .collect::<Vec<_>>();
     assert!(
