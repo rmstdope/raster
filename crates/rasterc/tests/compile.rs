@@ -1,8 +1,12 @@
 use raster_diag::Severity;
 use rasterc::compile_source;
 
-mod common;
-use common::{cycles_fixture, demo_source};
+#[path = "common/cycles.rs"]
+mod cycles_fixtures;
+#[path = "common/demo.rs"]
+mod demo;
+use cycles_fixtures::cycles_fixture;
+use demo::demo_source;
 
 #[test]
 fn compiles_the_demo_to_the_same_rom_as_m1() {

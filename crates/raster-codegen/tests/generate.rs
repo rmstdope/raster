@@ -144,7 +144,7 @@ fn instruction_position(
                     instruction,
                     relocation,
                 } if instruction.opcode == opcode
-                    && relocation_target.map_or(true, |target| {
+                    && relocation_target.is_none_or(|target| {
                         relocation.as_ref().is_some_and(|relocation| relocation.target == target)
                     })
             )
