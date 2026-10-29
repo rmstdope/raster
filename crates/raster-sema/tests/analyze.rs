@@ -201,7 +201,7 @@ fn validates_function_bounds_employs_and_integer_contexts() {
 }
 
 #[test]
-fn rejects_unprovable_timed_region() {
+fn rejects_unprovable_timed_block() {
     let diagnostics = errors(
         r#"
             fn helper() { }
@@ -235,7 +235,7 @@ fn rejects_unprovable_timed_region() {
 }
 
 #[test]
-fn accepts_a_provable_timed_region() {
+fn accepts_a_provable_timed_block() {
     let program = parse(
         r#"
             var count: u8
@@ -514,9 +514,9 @@ fn return_inside_a_frame_handler_is_refused_like_any_other_timed_block() {
     assert_eq!(diagnostics[0].message, RETURN_IN_A_TIMED_BLOCK);
 }
 
-/// Every refusal a timed region raises, and the kind it must carry.
+/// Every refusal a timed block raises, and the kind it must carry.
 ///
-/// A `TimedRegionCost` refusal is a cost-model gap: the construct is fine, and a region costed as
+/// A `TimedRegionCost` refusal is a cost-model gap: the construct is fine, and a timed block costed as
 /// straight-line code cannot price it, so `rasterc` says so beside the diagnostic. The four
 /// `Rejected` ones deliberately say nothing — two hardware waits have no cost to measure ever, so
 /// "once their cost can be measured" would promise what the compiler cannot deliver, and `sync
@@ -539,7 +539,7 @@ fn return_inside_a_frame_handler_is_refused_like_any_other_timed_block() {
 /// this sentence — a machine-readable list in the spec was considered and declined, because it
 /// puts a block of construct names in front of an author.
 #[test]
-fn every_timed_region_refusal_carries_the_kind_that_decides_its_note() {
+fn every_timed_block_refusal_carries_the_kind_that_decides_its_note() {
     use raster_diag::Refusal::{Rejected, TimedRegionCost};
 
     let cases: &[(Refusal, &str, &str)] = &[

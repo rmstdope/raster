@@ -306,7 +306,7 @@ For a cycle count to be provable, the compiler restricts what may appear. A `fra
 handler (§7) is a timed block and obeys the same rules.
 
 **Today the restriction is one sentence: a timed block is straight-line code.**
-rasterc costs a region by adding up its instructions, so anything whose generated code
+rasterc costs a block by adding up its instructions, so anything whose generated code
 can move the program counter elsewhere is refused. The designed rules below are the
 relaxations a cost model that survives control flow would buy.
 
@@ -316,8 +316,8 @@ relaxations a cost model that survives control flow would buy.
 | **2. Branches must be balanced.** Both arms of an `if` must cost the same, or the block must be `pad`, in which case the compiler pads the cheaper arm. An `if` without an `else` is padded to the cost of the taken path. | **stricter** — `if` is refused outright; nothing balances arms yet. |
 | **3. Page-crossing penalties are resolved, not assumed.** Indexed addressing that may cross a page boundary costs an extra cycle. The compiler either proves no crossing occurs (via alignment) or accounts for the worst case and tells you which it did. `align 256` on a variable forces the safe layout. | **stricter** — always the worst case, and it does not say which. There is no `align` in the language, and no source construct reaches the penalty yet: the code generator emits no indexed addressing mode at all. |
 | **4. Calls must be timed.** A function called inside a `cycles` block must itself carry a cycle annotation. Whether cycle cost should compose across function boundaries at all, and how, is §15 question 1; this rule is the shape that question has not yet settled. | **stricter** — a call inside a block is refused, and a function carrying a cycle annotation is refused when it is lowered, so the shape this rule describes does not compile today. |
-| **5. No interrupts, unless declared.** An IRQ or NMI firing inside a timed block destroys its timing. The compiler inserts `sei` around timed blocks by default; `cycles(N) interruptible { }` opts out for blocks that are themselves interrupt handlers. | **as designed for IRQ** — the `php`/`sei` … `plp` bracket costs nine cycles and is charged to the region's own budget, so the annotation is the region's wall-clock cost while no NMI lands inside it. The I flag cannot mask NMI: rasterc warns when NMI can be on as a block in `main` starts, and says so when it cannot tell. A block in a `using irq` handler is not warned, since the handler runs on visible scanlines and NMI does not; a `using timed` frame is warned as a whole (section 7.1). |
-| **6. A region must be straight-line.** Generated code that can go anywhere but the next instruction — a branch, a jump, a `jsr`, an `rts`, an `rti` or a `brk` — is a compile error whatever construct produced it. | **as designed** — enforced on the emitted instructions, so a construct nobody has thought of is caught too. `return`, the arithmetic of §5, every `wait` form and `sync exact` are each refused earlier and by name, so the message points at your source rather than at an opcode. |
+| **5. No interrupts, unless declared.** An IRQ or NMI firing inside a timed block destroys its timing. The compiler inserts `sei` around timed blocks by default; `cycles(N) interruptible { }` opts out for blocks that are themselves interrupt handlers. | **as designed for IRQ** — the `php`/`sei` … `plp` bracket costs nine cycles and is charged to the block's own budget, so the annotation is the block's wall-clock cost while no NMI lands inside it. The I flag cannot mask NMI: rasterc warns when NMI can be on as a block in `main` starts, and says so when it cannot tell. A block in a `using irq` handler is not warned, since the handler runs on visible scanlines and NMI does not; a `using timed` frame is warned as a whole (section 7.1). |
+| **6. A timed block must be straight-line.** Generated code that can go anywhere but the next instruction — a branch, a jump, a `jsr`, an `rts`, an `rti` or a `brk` — is a compile error whatever construct produced it. | **as designed** — enforced on the emitted instructions, so a construct nobody has thought of is caught too. `return`, the arithmetic of §5, every `wait` form and `sync exact` are each refused earlier and by name, so the message points at your source rather than at an opcode. |
 
 Rule 6 is a floor rather than an ambition: rules 1–4 are the work of lifting it. These
 restrictions apply *only inside* `cycles` blocks. The rest of the program is compiled
@@ -327,7 +327,7 @@ conventionally with full optimization.
 
 Every one of the rules above is a case where an ordinary optimizing compiler would
 make a silent choice that changes duration. Raster's position is that inside a timed
-region, "I cannot prove this" must be a compile error and not a shrug. The
+block, "I cannot prove this" must be a compile error and not a shrug. The
 consequence — the one architectural commitment the whole project rests on — is that
 **the backend carries a cycle-cost model through every pass**, and any optimization
 that cannot report its effect on cycle count is disabled inside timed blocks.
@@ -346,7 +346,7 @@ handful of bytes regardless of N.
 
 **rasterc today:** every `wait` form is refused *inside* a timed block, because a
 wait spends its cycles in a loop and a block is costed as straight-line code; widen
-the budget and let `pad` fill it instead. Outside a region, `wait cycles(N)` is built
+the budget and let `pad` fill it instead. Outside a timed block, `wait cycles(N)` is built
 for any N ≥ 2; `wait vblank` and `wait scanline` are not built.
 
 ### 6.6 Frame sync and jitter
@@ -364,8 +364,9 @@ de-jitter sequence. `sync exact` is required before any `cycles` block that the
 compiler can see writes to a PPU register during rendering; omitting it is an error
 with a note explaining why.
 
-**rasterc today:** as designed, and enforced — a timed block that writes a PPU
-register with no preceding `sync exact` is refused. A `frame` handler is entered
+**rasterc today:** stricter — a timed block that writes a PPU register is refused
+unless a `sync exact` comes earlier in the same list of statements, whether or not the
+screen is rendering; one further out does not count. A `frame` handler is entered
 already synchronized and needs none of its own.
 
 ---

@@ -572,8 +572,8 @@ impl Analyzer {
         self.timed_regions.last().filter(|region| region.block)
     }
 
-    /// Refuse something whose cost a straight-line region cannot charge.
-    fn reject_in_timed_region(&mut self, span: Span, message: &str) {
+    /// Refuse something whose cost a straight-line timed block cannot charge.
+    fn reject_in_timed_block(&mut self, span: Span, message: &str) {
         if self.in_timed_region() {
             self.cannot_be_costed(span, message.to_owned());
         }
@@ -717,7 +717,7 @@ impl Analyzer {
                 } else if let Some(block) = self.innermost_cycles_block() {
                     // The two sentences differ by one clause because an `interruptible` block emits no
                     // `PHP`/`SEI`/`PLP`, so there is no interrupt flag left masked when the `return`
-                    // jumps out. `reject_in_timed_region` takes one fixed message and cannot say both.
+                    // jumps out. `reject_in_timed_block` takes one fixed message and cannot say both.
                     let message = if block.interruptible {
                         "`return` inside a timed block jumps out before the block has spent its \
                          budget, so it belongs after the block rather than inside one"
@@ -1008,12 +1008,12 @@ impl Analyzer {
             // Each of these lowers to a `DEX`/`BNE` loop over one of its operands, so its cost
             // is a loop's cost however constant the operands are. A straight-line region would
             // charge a single pass: `v * 3` was predicted at 38 cycles and spends 69.
-            Operator::Star | Operator::Slash | Operator::Percent => self.reject_in_timed_region(
+            Operator::Star | Operator::Slash | Operator::Percent => self.reject_in_timed_block(
                 operator.span,
                 "multiplication, division and remainder inside a timed block compile to loops \
                  whose cost is not yet proven",
             ),
-            Operator::ShiftLeft | Operator::ShiftRight => self.reject_in_timed_region(
+            Operator::ShiftLeft | Operator::ShiftRight => self.reject_in_timed_block(
                 operator.span,
                 "a shift inside a timed block compiles to a loop whose cost is not yet proven",
             ),
