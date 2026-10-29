@@ -1085,3 +1085,64 @@ fn a_cycles_block_with_nmi_on_prints_its_warning_and_still_writes_a_rom() {
     );
     assert!(stdout.ends_with(" warnings  1\n"), "got:\n{stdout}");
 }
+
+/// The whole stderr for the register names the specification once used: three
+/// errors in source order, no "this release compiles" note beside the two
+/// `oam` renames, and no ROM.
+#[test]
+fn the_register_names_the_specification_used_are_refused_with_one_error_each() {
+    let scratch = Scratch::new("register-names");
+    let input = scratch.path().join("names.raster");
+    fs::write(
+        &input,
+        "main {\n    oam.addr = 0\n    oam.dma = $02\n    apu.pulse1.volume = $BF\n}\n",
+    )
+    .expect("the fixture is writable");
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert_eq!(stdout, "");
+    assert_eq!(stderr.matches("there is no `oam` namespace").count(), 2);
+    assert!(stderr.contains("$2003 is spelled `ppu.oam_addr`"));
+    assert!(stderr.contains("$4014 is spelled `ppu.oam_dma`"));
+    assert!(stderr.contains("the `apu` registers are not supported yet"));
+    assert!(!stderr.contains("OAM DMA is not supported"));
+    assert!(stderr.ends_with(&format!(
+        "error: could not compile {} (3 errors)\n",
+        input.display()
+    )));
+    assert!(!scratch.path().join("names.nes").exists());
+}
+
+/// A write-only register alone on a line: one error, four notes, no ROM.
+#[test]
+fn a_write_only_register_alone_on_a_line_prints_one_error_with_four_notes() {
+    let scratch = Scratch::new("bare-write-only");
+    let input = scratch.path().join("bare.raster");
+    fs::write(&input, "main {\n    mmc3.irq_disable\n}\n").expect("the fixture is writable");
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    let name = input.display();
+    assert_eq!(
+        stderr,
+        format!(
+            "error: `mmc3.irq_disable` cannot be read\n\
+             \x20--> {name}:2:5\n\
+             \x20 |\n\
+             2 |     mmc3.irq_disable\n\
+             \x20 |     ^^^^^^^^^^^^^^^^ $E000 is a write-only port\n\
+             \x20 = note: a register on a line by itself is read, so this reads $E000\n\
+             \x20 = note: reading $E000 returns a byte of your own program from the PRG\n\
+             \x20         bank mapped there, not the last value written\n\
+             \x20 = note: keep what you wrote in a variable of your own\n\
+             \x20         and write the whole value\n\
+             \x20 = note: to write it, give it a value: `mmc3.irq_disable = <value>`\n\
+             \n\
+             error: could not compile {name} (1 error)\n"
+        )
+    );
+    assert!(!scratch.path().join("bare.nes").exists());
+}

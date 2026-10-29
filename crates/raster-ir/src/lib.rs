@@ -594,6 +594,10 @@ enum ReadSite {
     /// There is no read on that line at all, so the refusal says which operator
     /// made one. Carries the operator as the author wrote it.
     CompoundAssignment(&'static str),
+    /// The register stands alone as a statement: `mmc3.irq_disable` on a line of
+    /// its own. Nothing on the line looks like a read, so the refusal says that
+    /// it is one, and names the likely slip: a write with its value left off.
+    BareStatement,
 }
 
 /// How many OAM DMAs a block starts, at any depth.
@@ -2606,6 +2610,16 @@ impl Lowerer {
                 return;
             }
         }
+        // A register alone on a line. Judged here, where the shape is known, so
+        // it is one error: lowering it as a value would refuse a write-only port
+        // and then refuse the statement for not being a call, over the same
+        // carets.
+        if let SyntaxExpression::Member { base, member } = &expression.value {
+            if let Some(register) = self.register(base, member) {
+                self.bare_register_statement(register, expression.span);
+            }
+            return;
+        }
         match self.lower_value(expression) {
             Value::Call {
                 target,
@@ -2933,8 +2947,20 @@ impl Lowerer {
                 register.address()
             ));
         }
+        if let ReadSite::BareStatement = site {
+            notes.push(format!(
+                "a register on a line by itself is read, so this reads ${:04X}",
+                register.address()
+            ));
+        }
         notes.push(dead_read_note(register));
         notes.push(WRITE_THE_WHOLE_VALUE.to_owned());
+        if let ReadSite::BareStatement = site {
+            notes.push(format!(
+                "to write it, give it a value: `{} = <value>`",
+                register.name()
+            ));
+        }
         self.refuse_with(
             span,
             format!("`{}` cannot be read", register.name()),
@@ -2942,6 +2968,23 @@ impl Lowerer {
             notes,
         );
         None
+    }
+
+    /// A register standing alone as a statement. A write-only port gets the
+    /// refusal every read of it gets, with notes that say why this is a read;
+    /// a port that reads back is told to keep the byte. Neither is a statement
+    /// this release can build, and nothing here is coming later.
+    fn bare_register_statement(&mut self, register: Register, span: Span) {
+        if register.is_write_only() {
+            let _ = self.read_register(register, span, ReadSite::BareStatement);
+            return;
+        }
+        self.refuse_with(
+            span,
+            "a register read cannot stand on its own as a statement",
+            format!("assign it to a variable: `var s: u8 = {}`", register.name()),
+            Vec::new(),
+        );
     }
 
     /// A read of `$2007`, which reads back but not the byte you just addressed.

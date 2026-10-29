@@ -2604,3 +2604,101 @@ fn a_frame_remembers_whether_its_strategy_was_written() {
     assert!(!omitted.strategy_written);
     assert_eq!(omitted.strategy, raster_ir::FrameStrategy::Timed);
 }
+
+/// A register standing alone on a line is a read whose byte is thrown away, and
+/// this release has no such statement. One error, saying what to do instead.
+#[test]
+fn a_readable_register_alone_on_a_line_is_one_error_with_no_notes() {
+    for name in ["ppu.status", "ppu.oam_data", "ppu.data"] {
+        let errors = lower_errors(&format!("main {{\n    {name}\n}}\n"));
+
+        assert_eq!(errors.len(), 1, "{name}: {errors:?}");
+        assert_eq!(
+            errors[0].message,
+            "a register read cannot stand on its own as a statement"
+        );
+        assert_eq!(
+            errors[0].label.as_deref(),
+            Some(format!("assign it to a variable: `var s: u8 = {name}`").as_str())
+        );
+        assert!(errors[0].notes.is_empty(), "{name}");
+        assert_eq!(errors[0].refusal, Refusal::Rejected);
+        assert_eq!(errors[0].span.end - errors[0].span.start, name.len() as u32);
+    }
+}
+
+/// A write-only register alone on a line gets the refusal every other read of
+/// it gets, framed by two notes: why this is a read, and the likely slip.
+#[test]
+fn a_write_only_register_alone_on_a_line_gets_the_read_refusal_once() {
+    let errors = lower_errors("main {\n    mmc3.irq_disable\n}\n");
+
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, "`mmc3.irq_disable` cannot be read");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$E000 is a write-only port")
+    );
+    assert_eq!(
+        errors[0].notes,
+        [
+            "a register on a line by itself is read, so this reads $E000",
+            "reading $E000 returns a byte of your own program from the PRG\nbank mapped there, not the last value written",
+            "keep what you wrote in a variable of your own\nand write the whole value",
+            "to write it, give it a value: `mmc3.irq_disable = <value>`",
+        ]
+    );
+    assert_eq!(errors[0].refusal, Refusal::Rejected);
+}
+
+#[test]
+fn a_ppu_write_only_register_alone_on_a_line_uses_the_ppu_note() {
+    let errors = lower_errors("main {\n    ppu.ctrl\n}\n");
+
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, "`ppu.ctrl` cannot be read");
+    assert_eq!(
+        errors[0].notes,
+        [
+            "a register on a line by itself is read, so this reads $2000",
+            "reading $2000 returns whatever was last on the PPU's data bus,\nnot the last value written",
+            "keep what you wrote in a variable of your own\nand write the whole value",
+            "to write it, give it a value: `ppu.ctrl = <value>`",
+        ]
+    );
+}
+
+#[test]
+fn the_dma_port_alone_on_a_line_is_refused_like_any_write_only_port() {
+    let errors = lower_errors("main {\n    ppu.oam_dma\n}\n");
+
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, "`ppu.oam_dma` cannot be read");
+    assert_eq!(errors[0].notes.len(), 4);
+    assert!(errors[0].notes[1].contains("$4014 does not read back at all"));
+}
+
+#[test]
+fn several_bare_registers_are_one_error_each_in_source_order() {
+    let errors = lower_errors("main {\n    ppu.status\n    ppu.ctrl\n    ppu.data\n}\n");
+
+    assert_eq!(errors.len(), 3, "{errors:?}");
+    assert_eq!(
+        errors[0].message,
+        "a register read cannot stand on its own as a statement"
+    );
+    assert_eq!(errors[1].message, "`ppu.ctrl` cannot be read");
+    assert_eq!(
+        errors[2].message,
+        "a register read cannot stand on its own as a statement"
+    );
+    assert!(errors[0].span.start < errors[1].span.start);
+    assert!(errors[1].span.start < errors[2].span.start);
+}
+
+#[test]
+fn a_bare_ppu_data_statement_raises_no_buffer_warning() {
+    let failure = lower_failure("main {\n    ppu.data\n}\n");
+    assert_eq!(failure.errors.len(), 1);
+    assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
+}
