@@ -2272,6 +2272,7 @@ impl Lowerer {
                 span,
                 assumes_budget_met: false,
                 secondary: None,
+                help: None,
             });
         }
     }
@@ -3164,6 +3165,7 @@ impl Lowerer {
                 span: register_span,
                 assumes_budget_met: false,
                 secondary: None,
+                help: None,
             });
         }
     }

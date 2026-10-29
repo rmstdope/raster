@@ -1272,7 +1272,14 @@ fn an_apu_status_warning_prints_and_is_counted() {
             path = input.display()
         )
     );
-    assert_eq!(stdout, summary_of(&input, &output, 8, " warnings  1\n"));
+    assert_eq!(
+        stdout,
+        summary_of(&input, &output, 8, " warnings  1\n").replacen(
+            "\n   mapper",
+            "  (1 warning)\n   mapper",
+            1
+        )
+    );
 }
 
 /// The frame interrupt warning needs an `irq` chain, and is counted once.
