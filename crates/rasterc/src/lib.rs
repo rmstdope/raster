@@ -5,6 +5,7 @@ use std::{
 };
 
 mod assets;
+mod chr;
 mod compile;
 mod report;
 

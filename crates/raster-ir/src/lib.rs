@@ -391,6 +391,32 @@ pub struct FrameEvent {
     pub span: Span,
 }
 
+/// The decoded pictures a program names, as lowering needs them.
+///
+/// `raster-ir` does not decode PNGs or lay out CHR banks; `rasterc` does both
+/// and hands over the result, so `load_nametable` can be lowered to bytes that
+/// already point at where the tiles landed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Pictures {
+    pub by_name: BTreeMap<String, Picture>,
+    /// The lowest `chrrom bank` number the program does not declare, which is
+    /// what the "tiles are not in any bank" help suggests.
+    pub next_free_bank: u32,
+}
+
+/// One `asset image`: the blocks `load_palette` and `load_nametable` upload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Picture {
+    /// Sixteen bytes for `$3F00`.
+    pub palette: Vec<u8>,
+    /// Sixty-four bytes for `$23C0`.
+    pub attributes: Vec<u8>,
+    /// 960 tile indices for `$2000`, already shifted to where the picture's
+    /// tiles sit in their pattern table. `None` when no `chrrom` bank holds the
+    /// picture's tiles, so there is nothing for a nametable to point at.
+    pub nametable: Option<Vec<u8>>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Program {
     pub places: Vec<PlaceDefinition>,
