@@ -400,8 +400,10 @@ budget is the window the schedule leaves it.
 
 ### 7.1 Lowering strategies
 
-The `using` clause selects how the schedule is realised. If omitted, the compiler
-picks based on the target mapper and the schedule's shape, and reports its choice.
+The `using` clause selects how the schedule is realised. If omitted, the frame is
+`timed`, whatever the schedule's shape: the compiler never turns an omitted `using`
+into `irq`. The build summary reports the strategy every frame was built with, and
+marks an omitted one `by default` (section 7.2).
 
 | Strategy | Mechanism | Notes | rasterc today |
 |---|---|---|---|
@@ -429,14 +431,18 @@ bit 7 is set or where it cannot see the value. The ROM is still written.
 ### 7.2 What the compiler verifies
 
 For each event the compiler checks that the handler body fits its available window
-and reports a per-event budget table:
+and reports a per-event budget table after the build summary:
 
 ```
-frame main (using irq, mmc3)
-  scanline   0   handler  38 cycles   window 113   ok
-  scanline  64   handler  21 cycles   window  28   ok   (hblank)
-  scanline  96   handler  34 cycles   window  28   OVER BY 6
+frame main (using timed, mmc3)
+  scanline   0  handler  38 cycles   window 114   76 spare
+  scanline  64  handler 120 cycles   window 114   OVER BY 6
 ```
+
+A frame whose `using` was omitted reads `(using timed by default, mmc3)`. An `every`
+event is one row, named as the source names it (`scanline  96-200 every 8`). The
+verdict is the room left (`N spare`, `0 spare` included) or `OVER BY N`; when
+handlers are over their windows the table is also printed after the errors.
 
 That table is the artifact the language exists to produce.
 

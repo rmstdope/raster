@@ -4,7 +4,7 @@
 //! source is testable from a string.
 
 use crate::assets::{resolve_assets, AssetSource, NoAssets};
-use raster_codegen::{generate_with_isa, CodegenError};
+use raster_codegen::{generate_with_isa, CodegenError, FrameBudget};
 use raster_diag::{Diagnostic, Refusal, Span};
 use raster_ir::{lower, FrameStrategy};
 use raster_link::{link_mmc3_program, mmc3_reset_runtime_bytes, InterruptVectors, LinkError};
@@ -50,6 +50,26 @@ pub struct Rom {
     /// The hazards the compiler saw and did not refuse. A ROM with warnings is
     /// still a ROM: these are printed, and counted, and the build succeeds.
     pub warnings: Vec<Diagnostic>,
+    /// The frame's per-event budget table, for a program that has a frame.
+    pub frame: Option<FrameBudget>,
+}
+
+/// Why a build failed: every diagnostic of the failing stage, and the frame's budget table when
+/// the failure is its handlers being over their windows - the one failure that leaves every
+/// handler measured.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Failure {
+    pub diagnostics: Vec<Diagnostic>,
+    pub frame: Option<FrameBudget>,
+}
+
+impl From<Vec<Diagnostic>> for Failure {
+    fn from(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            diagnostics,
+            frame: None,
+        }
+    }
 }
 
 /// Compile `source` into a ROM, or into every diagnostic the first failing stage
@@ -71,6 +91,11 @@ pub fn compile_source_with_assets(
     source: &str,
     assets: &dyn AssetSource,
 ) -> Result<Rom, Vec<Diagnostic>> {
+    build(source, assets).map_err(|failure| failure.diagnostics)
+}
+
+/// [`compile_source_with_assets`], keeping what a failure knows beyond its diagnostics.
+pub fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failure> {
     let syntax = parse(source).map_err(|errors| {
         spanned(
             errors
@@ -113,21 +138,39 @@ pub fn compile_source_with_assets(
         // the test is the error's span rather than its variant, which is also
         // what keeps a refusal of one block from withdrawing another block's
         // warning.
-        let refused = match &error {
-            CodegenError::Timing { span, .. } => Some(*span),
+        let refused: Option<Vec<raster_syntax::Span>> = match &error {
+            CodegenError::Timing { span, .. } => Some(vec![*span]),
+            CodegenError::FrameHandlersOverBudget { errors, .. } => {
+                Some(errors.iter().map(|(_, span)| *span).collect())
+            }
             _ => None,
         };
-        let kept = match refused {
+        let mut kept = match refused {
             None => warnings.clone(),
-            Some(span) => warned(
+            Some(spans) => warned(
                 lower_warnings
                     .into_iter()
-                    .filter(|warning| !(warning.assumes_budget_met && warning.span == span))
+                    .filter(|warning| {
+                        !(warning.assumes_budget_met && spans.contains(&warning.span))
+                    })
                     .collect(),
                 source,
             ),
         };
-        beside(&kept, codegen_diagnostic(error, source))
+        // Every handler is measured before the build gives up, so a handler overrun shows the whole
+        // table beside one diagnostic per handler that is over.
+        if let CodegenError::FrameHandlersOverBudget { errors, budget } = error {
+            kept.extend(
+                errors
+                    .into_iter()
+                    .map(|(error, span)| timing_diagnostic(error, span, source)),
+            );
+            return Failure {
+                diagnostics: kept,
+                frame: Some(budget),
+            };
+        }
+        beside(&kept, codegen_diagnostic(error, source)).into()
     })?;
     // Only `using timed` pays the three-frame pass the fixed-bank note describes; an `irq`
     // frame emits its handlers once.
@@ -145,6 +188,7 @@ pub fn compile_source_with_assets(
         vectors: rom.vectors,
         reports: output.reports,
         warnings,
+        frame: output.frame,
     })
 }
 
