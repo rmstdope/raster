@@ -1,0 +1,46 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Return in irq — Option A — headline, label and notes</title>
+<style>
+:root{--bg:#f6f6f4;--fg:#1d1d1b;--dim:#6b6b66;--term:#111;--tfg:#e8e8e3;--tdim:#9a9a92;--rule:#d8d8d2}
+@media (prefers-color-scheme:dark){:root{--bg:#1a1a18;--fg:#e8e8e3;--dim:#9a9a92;--rule:#33332f}}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px 16px;max-width:920px;margin:auto}
+h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:28px 0 6px}p{margin:4px 0 10px;color:var(--dim)}
+pre{background:var(--term);color:var(--tfg);padding:14px 16px;border-radius:6px;overflow-x:auto;font:13px/1.45 ui-monospace,Menlo,monospace;margin:0}
+.d{color:var(--tdim)}
+</style></head><body>
+<h1>Option A — headline, label and notes</h1><p>What an NES developer sees when a handler in a <code>using irq</code> schedule contains <code>return</code>. Plain terminal text — no colour carries meaning.</p>
+<h2>The refusal</h2>
+<pre>error: an `irq` handler cannot `return`
+ <span class="d">--></span> bars.raster:8:9
+  <span class="d">|</span>
+<span class="d">8 |</span>         return
+  <span class="d">|</span>         ^^^^^^ `return` jumps past the handler's `RTI`
+  <span class="d">=</span> note: a handler ends by acknowledging the interrupt, arming the next
+          event and running `RTI`; a `return` skips all three, so no later
+          event in the schedule runs
+  <span class="d">=</span> note: let the handler run to its last statement instead
+
+error: could not compile bars.raster (1 error)</pre>
+<h2>Unchanged: the same <code>return</code> under <code>using timed</code></h2>
+<p>A timed handler really does mask interrupts, so its sentence stays as it is.</p>
+<pre>error: `return` inside a timed block jumps out before the block has spent its budget and before the interrupt flag is restored, so it belongs after the block rather than inside one
+ <span class="d">--></span> bars.raster:8:9
+  <span class="d">|</span>
+<span class="d">8 |</span>         return
+  <span class="d">|</span>         ^^^^^^ `return` inside a timed block jumps out before the block has spent its budget and before the interrupt flag is restored, so it belongs after the block rather than inside one</pre>
+<h2>For comparison: the two other refusals an <code>irq</code> handler already earns</h2>
+<pre>error: an `irq` handler exceeds its hblank
+ <span class="d">--></span> bars.raster:7:5
+  <span class="d">|</span>
+<span class="d">7 |</span>     at scanline 60 {
+  <span class="d">|</span>     ^^^^^^^^^^^^^^^^ handler costs 78 cycles, the hblank leaves 9
+  <span class="d">=</span> note: the MMC3 asserts its interrupt near the end of the scanline before ...
+
+error: an `irq` handler cannot turn rendering off
+ <span class="d">--></span> bars.raster:7:5
+  <span class="d">|</span>
+<span class="d">7 |</span>     at scanline 60 {
+  <span class="d">|</span>     ^^^^^^^^^^^^^^^^ `ppu.mask = $00` clears both rendering bits
+  <span class="d">=</span> note: the MMC3 counter clocks on PPU fetches, so rendering off stops
+          the chain, and no handler runs to start it again</pre>
+</body></html>
