@@ -17,7 +17,6 @@ use raster_6502::Instruction;
 use raster_codegen::generate_with_isa;
 use raster_emu::{cycles_between, Window};
 use raster_ir::lower;
-use raster_link::FixedBankItem;
 use raster_sema::analyze;
 use raster_syntax::parse;
 use raster_timing::{delay_cycles, plan_delay};
@@ -43,16 +42,7 @@ fn emitted(source: &str) -> Vec<Instruction> {
     // The same ISA policy `compile_source` builds a ROM under, so this measures what ships.
     let output = generate_with_isa(&lower(&typed).expect("the fixture lowers"), true)
         .expect("the fixture generates");
-    output
-        .program
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
-            FixedBankItem::Label(_) => None,
-            FixedBankItem::Data(_) => unreachable!("raster-codegen emits no data blocks"),
-        })
-        .collect()
+    raster_link::instructions(&output.program.items)
 }
 
 /// The instructions between the region's `SEI` and `PLP` — exactly what was analysed.

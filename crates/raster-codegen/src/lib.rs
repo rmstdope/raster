@@ -654,14 +654,7 @@ impl Generator<'_> {
         }
         self.statements(body, halt_label)?;
 
-        let mut instructions: Vec<_> = self.output.items[start..]
-            .iter()
-            .filter_map(|item| match item {
-                FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
-                FixedBankItem::Label(_) => None,
-                FixedBankItem::Data(_) => unreachable!("raster-codegen emits no data blocks"),
-            })
-            .collect();
+        let mut instructions: Vec<_> = raster_link::instructions(&self.output.items[start..]);
         // The `PLP` closing the region is measured before it is emitted, so the padding that makes
         // the budget can be placed ahead of it.
         let restore = implied(PLP);
