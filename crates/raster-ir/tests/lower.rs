@@ -3751,3 +3751,38 @@ fn a_frame_counter_write_is_silent_with_bit_6_set_without_a_chain_or_with_an_unk
         assert!(program.warnings.is_empty(), "{source}: {:?}", program.warnings);
     }
 }
+
+#[test]
+fn a_plain_read_of_each_write_only_apu_register_gives_its_own_address() {
+    for (_register, name, address, write_only, _read_only) in &REGISTERS[17..] {
+        if !write_only {
+            continue;
+        }
+        let errors = lower_errors(&format!("main {{ var v: u8 = {name} }}"));
+        assert_eq!(errors.len(), 1, "{name}");
+        assert_eq!(errors[0].message, format!("`{name}` cannot be read"));
+        let expected = if *name == "apu.frame_counter" {
+            "$4017 reads controller 2, not the frame counter".to_owned()
+        } else {
+            format!("${address:04X} is a write-only port")
+        };
+        assert_eq!(
+            errors[0].label.as_deref(),
+            Some(expected.as_str()),
+            "{name}"
+        );
+    }
+}
+
+/// A refused read lowers to a placeholder `0`, which has bit 6 clear: without
+/// the stand-aside the refusal would be followed by a warning about a byte the
+/// author never wrote.
+#[test]
+fn a_frame_counter_write_whose_value_was_refused_does_not_also_warn() {
+    let source = format!(
+        "main {{\n ppu.ctrl = $08\n ppu.mask = $1e\n apu.frame_counter = apu.pulse1.volume\n}}\n{IRQ_FRAME}"
+    );
+    let failure = lower_failure(&source);
+    assert_eq!(failure.errors.len(), 1, "{:?}", failure.errors);
+    assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
+}

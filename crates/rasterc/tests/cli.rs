@@ -1214,52 +1214,98 @@ fn the_register_names_the_specification_used_are_refused_with_one_error_each() {
     assert!(!scratch.path().join("names.nes").exists());
 }
 
-/// The mockup's wording for the three APU warnings' neighbour: the DMC error,
-/// whole, with the note listing `apu.*`.
+/// The DMC error, whole: the note listing `apu.*`, the count, and no ROM.
 #[test]
 fn the_dmc_error_prints_whole_with_the_note_listing_apu() {
     let scratch = Scratch::new("apu-dmc");
     let input = scratch.path().join("dmc.raster");
     fs::write(&input, "main {\n    apu.dmc.level = 64\n}\n").expect("the fixture is writable");
 
-    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
 
     assert_eq!(result, Err(1));
-    assert!(stderr.starts_with(&format!(
-        concat!(
-            "error: the DMC registers are not supported yet\n",
-            " --> {path}:2:5\n",
-            "  |\n",
-            "2 |     apu.dmc.level = 64\n",
-            "  |     ^^^^^^^^^^^^^ how sample playback's cycle theft meets timed blocks is still open (§15.2)\n",
-            "  = note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
-            "          arithmetic, and `ppu.*` / `mmc3.*` / `apu.*` register writes; timed\n",
-        ),
-        path = input.display()
-    )), "got:\n{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "error: the DMC registers are not supported yet\n",
+                " --> {path}:2:5\n",
+                "  |\n",
+                "2 |     apu.dmc.level = 64\n",
+                "  |     ^^^^^^^^^^^^^ how sample playback's cycle theft meets timed blocks is still open (§15.2)\n",
+                "  = note: this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
+                "          arithmetic, and `ppu.*` / `mmc3.*` / `apu.*` register writes; timed\n",
+                "          blocks with `cycles`, `pad`, `sync exact` and `wait cycles`; and\n",
+                "          one `frame` of `every ... scanlines` events\n",
+                "\n",
+                "error: could not compile {path} (1 error)\n",
+            ),
+            path = input.display()
+        )
+    );
 }
 
-/// A warning for the APU counts in the summary like every other.
+/// A warning for the APU counts in the summary like every other, and the whole
+/// stderr is the one diagnostic.
 #[test]
 fn an_apu_status_warning_prints_and_is_counted() {
     let scratch = Scratch::new("apu-warning");
     let input = scratch.path().join("status.raster");
+    let output = scratch.path().join("status.nes");
     fs::write(&input, "main {\n    apu.status = $1F\n}\n").expect("the fixture is writable");
 
     let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
 
     assert_eq!(result, Ok(()));
-    assert!(stderr.starts_with(&format!(
-        concat!(
-            "warning: bit 4 of `apu.status` starts DMC playback\n",
-            " --> {path}:2:5\n",
-            "  |\n",
-            "2 |     apu.status = $1F\n",
-            "  |     ^^^^^^^^^^ its cycle theft is not modelled yet; every `cycles` budget assumes it is off\n",
-        ),
-        path = input.display()
-    )), "got:\n{stderr}");
-    assert!(stdout.ends_with(" warnings  1\n"), "got:\n{stdout}");
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: bit 4 of `apu.status` starts DMC playback\n",
+                " --> {path}:2:5\n",
+                "  |\n",
+                "2 |     apu.status = $1F\n",
+                "  |     ^^^^^^^^^^ its cycle theft is not modelled yet; every `cycles` budget assumes it is off\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+    assert_eq!(stdout, summary_of(&input, &output, 8, " warnings  1\n"));
+}
+
+/// The frame interrupt warning needs an `irq` chain, and is counted once.
+#[test]
+fn an_apu_frame_counter_warning_under_an_irq_chain_prints_and_is_counted() {
+    let scratch = Scratch::new("apu-frame-counter");
+    let input = scratch.path().join("irq.raster");
+    let output = scratch.path().join("irq.nes");
+    fs::write(
+        &input,
+        "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n    apu.frame_counter = $00\n}\nframe bars using irq {\n    at scanline 60 { ppu.mask = $1e }\n}\n",
+    )
+    .expect("the fixture is writable");
+
+    let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: this write turns the APU frame interrupt on\n",
+                " --> {path}:4:5\n",
+                "  |\n",
+                "4 |     apu.frame_counter = $00\n",
+                "  |     ^^^^^^^^^^^^^^^^^ bit 6 is clear, so it fires into this program's scanline handlers\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+    assert!(stdout.contains(" warnings  1\n"), "got:\n{stdout}");
+    assert!(output.exists());
 }
 
 /// A write-only register alone on a line: one error, four notes, no ROM.

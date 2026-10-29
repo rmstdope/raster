@@ -3,6 +3,10 @@
 //! The data lives here and the judging with it, so `Analyzer::member_type` asks
 //! one question — "is this a real APU register, and if not, say so once".
 
+use raster_syntax::{Expression, Spanned};
+
+use super::ValueType;
+
 /// The channels with registers this release has, and those registers. The DMC
 /// is deliberately absent: it is refused as not supported yet.
 pub(crate) const CHANNELS: [(&str, &[&str]); 4] = [
@@ -74,10 +78,6 @@ pub(crate) fn english_list(names: &[&str]) -> String {
         None => String::new(),
     }
 }
-
-use raster_syntax::{Expression, Spanned};
-
-use super::ValueType;
 
 impl super::Analyzer {
     /// A name directly under `apu`: `apu.status`, `apu.pulse1`, `apu.volume`.

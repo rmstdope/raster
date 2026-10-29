@@ -184,13 +184,13 @@ impl Register {
 
     /// Whether a read of this port returns anything to do with the register.
     ///
-    /// Three of the seventeen can be read: $2002, $2004 and $2007. A read of
-    /// any other returns whatever was last on the PPU's data bus, or — at $8000
-    /// and above — a byte of the PRG bank the mapper has at that address, which
-    /// is a byte of the program itself, or — at $4014 — whatever was last on
-    /// the CPU bus.
+    /// Four of the thirty-three can be read: $2002, $2004, $2007 and $4015. A read of
+    /// any other returns whatever was last on the PPU's data bus, or — at $4000
+    /// to $4017 — whatever was last on the CPU bus (and at $4017 the state of
+    /// controller 2), or — at $8000 and above — a byte of the PRG bank the
+    /// mapper has at that address, which is a byte of the program itself.
     ///
-    /// Both sides are listed rather than `!matches!(...)` on the three, so the
+    /// Both sides are listed rather than `!matches!(...)` on the four, so the
     /// match stays exhaustive with no `_` arm: a register added later cannot
     /// inherit a verdict nobody chose, because the compiler will not build
     /// until someone decides.
@@ -231,7 +231,7 @@ impl Register {
 
     /// Whether a write to this port reaches the register at all.
     ///
-    /// One of the seventeen is read-only: $2002, the PPU's status port, which the
+    /// One of the thirty-three is read-only: $2002, the PPU's status port, which the
     /// CPU can only read. The PPU discards a store to it entirely — there is no
     /// register behind the address to hold the value, and no flag or latch the
     /// store moves.
@@ -752,7 +752,7 @@ const BANK_SELECT_MODE_NOTE: &str = "bits 6 and 7 take effect from whichever ban
 
 /// The lowest MMC3 port address. At or above it a named register sits in the
 /// PRG window the mapper banks, so a read there is a read of the program;
-/// below it, among the sixteen, every named register is a PPU port.
+/// below it, every named register is a PPU or APU port.
 const MMC3_PORT_BASE: u16 = 0x8000;
 
 /// Whether `address` is one of the APU's own registers, `$4000` to `$4017`.
@@ -1059,7 +1059,7 @@ const DELETE_THE_LINE: &str = "there is no value that makes this store do someth
 
 /// What a write to a read-only port actually does.
 ///
-/// One shape today, because $2002 is the only read-only port among the sixteen.
+/// One shape today, because $2002 is the only read-only port there is.
 /// `is_read_only`'s exhaustive match is what forces whoever adds a second one to
 /// come back and decide whether this sentence still fits.
 fn dead_write_note(register: Register) -> String {
@@ -1087,7 +1087,7 @@ enum WriteSite {
 /// pair half written.
 ///
 /// Not `Register`: only these two can open a pair, and a match over all
-/// sixteen would carry fourteen arms nobody can reach.
+/// thirty-three would carry thirty-one arms nobody can reach.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LatchPair {
     Address,
@@ -2251,10 +2251,8 @@ impl Lowerer {
         }
     }
 
-    /// Warn where a `cycles` block in `main`, or in anything `main` runs, can start with NMI on.
-    ///
-    /// Frame handlers are never walked: an IRQ handler runs on visible scanlines and
-    /// re-synchronizes, and a `timed` frame is warned about as a whole.
+    /// Warn at each `apu.frame_counter` write that leaves the APU frame interrupt on, when the
+    /// program has an `irq` chain for it to fire into. A `timed` frame or no frame is silent.
     fn check_apu_frame_interrupt(&mut self) {
         let writes = std::mem::take(&mut self.frame_counter_writes);
         let has_irq_chain = self
@@ -2278,6 +2276,10 @@ impl Lowerer {
         }
     }
 
+    /// Warn where a `cycles` block in `main`, or in anything `main` runs, can start with NMI on.
+    ///
+    /// Frame handlers are never walked: an IRQ handler runs on visible scanlines and
+    /// re-synchronizes, and a `timed` frame is warned about as a whole.
     fn check_block_nmi(&mut self) {
         if !self.errors.is_empty() {
             return;
@@ -3776,7 +3778,7 @@ impl Lowerer {
     ///
     /// Both ways to read a register come here — naming it in an expression, and
     /// a compound assignment reading its own destination — so the two cannot
-    /// drift apart. A write never comes here: every one of the sixteen may
+    /// drift apart. A write never comes here: every writable register may
     /// still be written, and this changes nothing about a write.
     fn read_register(&mut self, register: Register, span: Span, site: ReadSite) -> Option<Value> {
         if register == Register::PpuData {
@@ -3839,7 +3841,7 @@ impl Lowerer {
 
     /// A read of `$2007`, which reads back but not the byte you just addressed.
     ///
-    /// Unlike the thirteen ports raster-1t9 refuses, this one has a sequence
+    /// Unlike the write-only ports raster-1t9 refuses, this one has a sequence
     /// that is correct — read twice, keep the second — so a plain read is a
     /// warning rather than a refusal. A compound assignment is refused: its
     /// read happens inside the statement, where no second read can reach it.

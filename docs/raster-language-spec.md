@@ -683,15 +683,15 @@ rather than warning about it. `ppu.status` is the mirror of that: `$2002`
 is a status port the CPU can only read, the PPU ignores a store to it
 completely, and a write is refused for the same reason.
 
-`apu.status` ($4015) is the one sound register that reads back: a read gives
-the length-counter and interrupt flags, and clears the frame-interrupt flag.
-`apu.frame_counter` is written at $4017, and a read of $4017 is refused because
-it reads controller 2.
-
 That includes the read or write a compound assignment makes for you.
 `ppu.mask += $18` reads `$2001` before it writes, and `ppu.status += 1`
 writes `$2002` after it reads; both are refused. Keep what you wrote in a
 variable of your own and write the whole value.
+
+`apu.status` ($4015) is the one sound register that reads back: a read gives
+the length-counter and interrupt flags, and clears the frame-interrupt flag.
+`apu.frame_counter` is written at $4017, and a read of $4017 is refused because
+it reads controller 2.
 
 `ppu.data` reads back, but not the byte you just addressed. A $2007
 read hands you the byte the previous read fetched and loads the byte

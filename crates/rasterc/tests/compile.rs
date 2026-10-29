@@ -1565,6 +1565,18 @@ fn the_specifications_register_table_lists_every_apu_register() {
         let row = format!("| `{name}` | `{address}` | {read} | **allowed** |");
         assert!(section.contains(&row), "§9.5 lacks the row {row}");
     }
+    // The table is one row per register: the heading, the rule and thirty-three
+    // rows. `raster_ir::Register` has no list to iterate from here, so a new
+    // register fails this count and sends its author to this table and to
+    // `REGISTERS` in `raster-ir/tests/lower.rs`.
+    assert_eq!(
+        section
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .count(),
+        33,
+        "§9.5 has one row per register"
+    );
     assert!(
         !section.contains("Seventeen") && !section.contains("Thirty-three"),
         "§9.5 keeps no register count"
