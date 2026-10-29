@@ -532,15 +532,17 @@ mod tests {
         assert!(notes[2..].iter().all(Vec::is_empty), "{notes:?}");
     }
 
-    /// The figures are a real overflow: 1700 `ppu.mask = 1` statements compile
-    /// to 8635 bytes, of which 449 are over the bank. Pinned here rather than
+    /// The figures are a real overflow: 1700 `ppu.mask = 1` statements (5 bytes
+    /// each, plus the 3-byte halt loop) on top of the reset runtime. Pinned here rather than
     /// through `compile_source` so the strings are asserted without a 1700-line
     /// fixture, and so a codegen change elsewhere cannot silently move them.
     #[test]
     fn the_overflow_refusal_says_how_many_of_the_author_s_own_bytes_have_to_go() {
+        let actual = 1700 * 5 + 3 + mmc3_reset_runtime_bytes();
+        let over = actual - 8186;
         let diagnostic = link_diagnostic(
             LinkError::FixedBankTooLarge {
-                actual: 8635,
+                actual,
                 maximum: 8186,
             },
             false,
@@ -553,9 +555,9 @@ mod tests {
         assert_eq!(
             diagnostic.notes,
             [
-                "8635 bytes of code, and $E000-$FFFF holds 8186",
+                &format!("{actual} bytes of code, and $E000-$FFFF holds 8186"),
                 &format!(
-                    "{} of those are the reset runtime, so 449 bytes of your own\nhave to go",
+                    "{} of those are the reset runtime, so {over} bytes of your own\nhave to go",
                     mmc3_reset_runtime_bytes()
                 ),
                 "PRG bank switching is not supported yet, so all code lives\nin the fixed bank",

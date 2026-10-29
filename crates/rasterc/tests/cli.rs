@@ -33,7 +33,7 @@ fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
 fn summary_of(input: &Path, output: &Path, yours: usize, trailing: &str) -> String {
     let runtime = raster_link::mmc3_reset_runtime_bytes();
     let code_len = runtime + yours;
-    let handler = 0xE000 + u16::try_from(code_len - 1).unwrap();
+    let handler = raster_link::MMC3_FIXED_BANK_START + u16::try_from(code_len - 1).unwrap();
     format!(
         " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, {code_len} of 8186 bytes used\n    yours  {yours} bytes\n  runtime  {runtime} bytes, the reset sequence around your program\n    entry  reset $E000, nmi ${handler:04X}, irq ${handler:04X}\n{trailing}",
         input.display(),

@@ -126,7 +126,7 @@ fn interrupt_epilogue() -> Vec<FixedBankItem> {
 
 /// The bytes [`link_mmc3_program`] adds around every program: the reset
 /// prologue at the front of the fixed bank and the interrupt handler at the
-/// back. 132 today, and the same 132 for every program this compiler builds.
+/// back: the prologue plus one `RTI`, the same for every program this compiler builds.
 ///
 /// Measured from the item lists the linker actually emits rather than written
 /// down as a constant, so it cannot drift from them. `entry` decides a
