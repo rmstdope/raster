@@ -409,3 +409,29 @@ fn the_refusal_counts_every_item_and_not_the_walk_to_the_first_label() {
         })
     );
 }
+
+#[test]
+fn instructions_flattens_instructions_and_skips_labels() {
+    let add = instruction(0xe8, Implied);
+    let sub = instruction(0xca, Implied);
+    let items = vec![
+        FixedBankItem::Label(Label(0)),
+        FixedBankItem::Instruction {
+            instruction: add,
+            relocation: None,
+        },
+        FixedBankItem::Label(Label(1)),
+        FixedBankItem::Instruction {
+            instruction: sub,
+            relocation: None,
+        },
+    ];
+
+    assert_eq!(raster_link::instructions(&items), vec![add, sub]);
+}
+
+#[test]
+#[should_panic(expected = "data block")]
+fn instructions_refuses_a_data_block() {
+    raster_link::instructions(&[FixedBankItem::Data(vec![0x01])]);
+}

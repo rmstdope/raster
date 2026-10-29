@@ -92,6 +92,27 @@ impl FixedBankItem {
     }
 }
 
+/// The instructions in `items`, in order, without their labels or relocations.
+///
+/// This is the one place that decides what a non-instruction item means to a caller that wants
+/// only instructions. A data block is refused rather than skipped: a block silently dropped from
+/// the instructions a timed region is measured over would be a wrong cycle count, not a visible
+/// failure.
+///
+/// # Panics
+///
+/// Panics if `items` holds a [`FixedBankItem::Data`] block.
+pub fn instructions(items: &[FixedBankItem]) -> Vec<Instruction> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+            FixedBankItem::Label(_) => None,
+            FixedBankItem::Data(_) => unreachable!("a data block has no instructions"),
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RelocatableProgram {
     pub items: Vec<FixedBankItem>,
