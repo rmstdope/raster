@@ -927,6 +927,27 @@ fn every_return_in_an_irq_handler_is_refused_whatever_it_returns() {
     );
 }
 
+/// A `return`'s value makes no difference to the refusal, so it is not also judged against a
+/// return type the handler does not have (one error per `return`) - but it is still read, so an
+/// unknown name in it is still reported, and the span is the whole statement, value included.
+#[test]
+fn a_return_value_in_an_irq_handler_is_read_but_not_typed_against_the_handler() {
+    let source = irq_frame("return missing");
+    let diagnostics = errors_with_spans(&source);
+
+    assert_eq!(diagnostics.len(), 2, "{:?}", diagnostics);
+    assert_eq!(diagnostics[0].message, RETURN_IN_AN_IRQ_HANDLER);
+    assert_eq!(
+        &source[diagnostics[0].span.start as usize..diagnostics[0].span.end as usize],
+        "return missing"
+    );
+    assert!(
+        diagnostics[1].message.contains("missing"),
+        "{:?}",
+        diagnostics[1]
+    );
+}
+
 #[test]
 fn a_cycles_block_inside_an_irq_handler_keeps_the_timed_block_sentence() {
     let diagnostics = errors_with_spans(&irq_frame("cycles(20) pad { return }"));
@@ -944,7 +965,23 @@ fn return_in_a_timed_frame_handler_keeps_the_timed_block_sentence() {
 }
 
 #[test]
-fn call_if_and_while_stay_refused_in_an_irq_handler() {
+fn a_call_stays_refused_in_an_irq_handler() {
+    let source =
+        "fn helper() { }\nmain { }\nframe bars using irq {\n    at scanline 60 { helper() }\n}\n";
+    let diagnostics = errors_with_spans(source);
+    assert_eq!(diagnostics.len(), 1, "{:?}", diagnostics);
+    assert!(
+        diagnostics[0]
+            .message
+            .starts_with("`helper` cannot be called inside a timed block yet"),
+        "{:?}",
+        diagnostics[0]
+    );
+    assert_eq!(diagnostics[0].refusal, Refusal::TimedRegionCost);
+}
+
+#[test]
+fn if_and_while_stay_refused_in_an_irq_handler() {
     for (statement, expected) in [
         (
             "if true { }",

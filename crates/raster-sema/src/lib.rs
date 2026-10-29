@@ -625,9 +625,6 @@ impl Analyzer {
                 }
             }
             Statement::Return(value) => {
-                // The two sentences differ by one clause because an `interruptible` block emits no
-                // `PHP`/`SEI`/`PLP`, so there is no interrupt flag left masked when the `return`
-                // jumps out. `reject_in_timed_region` takes one fixed message and cannot say both.
                 if self
                     .innermost_cycles_block()
                     .is_some_and(|block| block.irq_handler)
@@ -652,6 +649,9 @@ impl Analyzer {
                     }
                     return;
                 } else if let Some(block) = self.innermost_cycles_block() {
+                    // The two sentences differ by one clause because an `interruptible` block emits no
+                    // `PHP`/`SEI`/`PLP`, so there is no interrupt flag left masked when the `return`
+                    // jumps out. `reject_in_timed_region` takes one fixed message and cannot say both.
                     let message = if block.interruptible {
                         "`return` inside a timed block jumps out before the block has spent its \
                          budget, so it belongs after the block rather than inside one"
