@@ -375,6 +375,8 @@ pub struct Frame {
     /// The `using` clause, which is what a diagnostic about the strategy underlines. A frame that
     /// omitted the clause carries the frame's own span here.
     pub strategy_span: Span,
+    /// Whether the source wrote `using`. The build summary says `by default` when it did not.
+    pub strategy_written: bool,
 }
 
 /// One scheduled handler, and the visible scanline it runs on.
@@ -382,6 +384,9 @@ pub struct Frame {
 pub struct FrameEvent {
     pub scanline: u32,
     pub body: Vec<Statement>,
+    /// The event as the source names it - `scanline 60`, or `scanline 96-200 every 8` - which every
+    /// occurrence of one `every` shares, so a report can show it as the one row it is.
+    pub label: String,
     /// The event in the source, which is what a budget diagnostic about this handler underlines.
     pub span: Span,
 }
@@ -1708,6 +1713,7 @@ impl Lowerer {
                             events.push(FrameEvent {
                                 scanline,
                                 body,
+                                label: format!("scanline {scanline}"),
                                 span: event.span,
                             });
                         }
@@ -1741,11 +1747,13 @@ impl Lowerer {
                     // The body is lowered once and cloned per occurrence, so its writes are
                     // warned about once — at the first scanline the schedule reaches them.
                     self.tag_handler_ctrl_writes(collected, from);
+                    let label = format!("scanline {from}-{to} every {interval_value}");
                     let mut scanline = Some(from);
                     while let Some(current) = scanline.filter(|&current| current <= to) {
                         events.push(FrameEvent {
                             scanline: current,
                             body: body.clone(),
+                            label: label.clone(),
                             span: event.span,
                         });
                         // An interval wider than the picture is one occurrence, not a wrap: `to` is
@@ -1774,6 +1782,7 @@ impl Lowerer {
             events,
             span,
             strategy_span,
+            strategy_written: frame.strategy.is_some(),
         });
     }
 

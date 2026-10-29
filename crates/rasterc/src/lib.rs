@@ -9,6 +9,7 @@ mod compile;
 mod report;
 
 pub use assets::{AssetSource, DirectoryAssets, NoAssets};
+use compile::build;
 pub use compile::{compile_source, compile_source_with_assets, Rom};
 
 const USAGE: &str = "Usage: rasterc <INPUT.raster> [-o <OUTPUT.nes>]\n";
@@ -124,10 +125,12 @@ fn compile(
         }
     };
 
-    let rom = match compile_source_with_assets(&source, &DirectoryAssets::beside(input)) {
+    let rom = match build(&source, &DirectoryAssets::beside(input)) {
         Ok(rom) => rom,
         Err(found) => {
-            write(stderr, &report::diagnostics(input, &source, &found))?;
+            let found_report =
+                report::diagnostics(input, &source, &found.diagnostics, found.frame.as_ref());
+            write(stderr, &found_report)?;
             return Err(1);
         }
     };

@@ -5,8 +5,9 @@ use raster_6502::{
     Instruction,
 };
 use raster_ir::{
-    BinaryOperator, Comparison, Condition, CycleConstraint, Destination, Frame, FrameStrategy,
-    Label as IrLabel, Main, Place, Program, Register, Statement, UnaryOperator, Value,
+    BinaryOperator, Comparison, Condition, CycleConstraint, Destination, Frame, FrameEvent,
+    FrameStrategy, Label as IrLabel, Main, Place, Program, Register, Statement, UnaryOperator,
+    Value,
 };
 use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, RelocationKind};
 use raster_syntax::Span;
@@ -30,6 +31,33 @@ pub struct CodegenOutput {
     pub zero_page: BTreeMap<Place, u8>,
     /// The measured cost of each `cycles(?)` region, in the order the regions were generated.
     pub reports: Vec<(String, u32)>,
+    /// What each event of the program's `frame` costs against the window its strategy gives it
+    /// (spec section 7.2), or nothing when the program has no frame.
+    pub frame: Option<FrameBudget>,
+}
+
+/// The per-event budget table of spec section 7.2.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameBudget {
+    pub name: String,
+    pub strategy: FrameStrategy,
+    /// Whether the source wrote `using`; the summary says `by default` when it did not.
+    pub strategy_written: bool,
+    /// One row per event the frame block writes, in source order. An `every` is one row.
+    pub rows: Vec<EventBudget>,
+}
+
+/// One event of a frame, and what its handler costs against the window it is given.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventBudget {
+    /// The event as the source names it, `scanline 60` or `scanline 96-200 every 8`.
+    pub label: String,
+    /// The handler's worst case: the figure the over-budget diagnostic prints for it. A timed
+    /// handler's includes the save, mask and restore of the interrupt flag it is wrapped in.
+    pub handler_cycles: u32,
+    /// The cycles the strategy gives the handler: the hblank for `irq`, the tightest scanline
+    /// budget any occurrence of the event gets for `timed`.
+    pub window_cycles: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +81,18 @@ pub enum CodegenError {
     Timing {
         error: TimingError,
         span: Span,
+    },
+    /// One or more of a frame's handlers is over its window. Every handler was measured, so the
+    /// budget table is complete; each error is the one that handler earns on its own, in source
+    /// order.
+    ///
+    /// `budget` is `None`, and `stopped_by` the error that ended emission, when something else
+    /// went wrong after some handlers had overrun: the overruns are still told, but a table of a
+    /// frame that was not fully measured is not.
+    FrameHandlersOverBudget {
+        errors: Vec<(TimingError, Span)>,
+        budget: Option<FrameBudget>,
+        stopped_by: Option<Box<CodegenError>>,
     },
 }
 
@@ -138,6 +178,8 @@ pub fn generate_with_isa(
         legal_isa,
         reports: Vec::new(),
         irq: None,
+        frame_rows: Vec::new(),
+        frame_overruns: Vec::new(),
     };
 
     for function in &program.functions {
@@ -146,10 +188,30 @@ pub fn generate_with_isa(
         generator.emit(0x60, Implied, None);
     }
 
-    generator.main(main, &program.global_initializers, program.frame.as_ref())?;
+    if let Err(error) = generator.main(main, &program.global_initializers, program.frame.as_ref()) {
+        if generator.frame_overruns.is_empty()
+            || matches!(error, CodegenError::FrameHandlersOverBudget { .. })
+        {
+            return Err(error);
+        }
+        let mut errors = std::mem::take(&mut generator.frame_overruns);
+        errors.sort_by_key(|(_, span)| span.start);
+        return Err(CodegenError::FrameHandlersOverBudget {
+            errors,
+            budget: None,
+            stopped_by: Some(Box::new(error)),
+        });
+    }
     let reports = std::mem::take(&mut generator.reports);
     let irq = generator.irq.map(link_label);
+    let frame = program.frame.as_ref().map(|frame| FrameBudget {
+        name: frame.name.clone(),
+        strategy: frame.strategy,
+        strategy_written: frame.strategy_written,
+        rows: generator.take_rows(),
+    });
     Ok(CodegenOutput {
+        frame,
         program: generator.output,
         main: link_label(main.label),
         irq,
@@ -185,6 +247,17 @@ struct Generator<'a> {
     reports: Vec<(String, u32)>,
     /// The entry an IRQ chain dispatches from, once one has been emitted.
     irq: Option<IrLabel>,
+    /// The frame's rows so far, one per event, each remembering the span that folds its
+    /// occurrences together.
+    frame_rows: Vec<FrameRow>,
+    /// The handlers found over their windows, which are collected rather than raised so that every
+    /// handler is measured.
+    frame_overruns: Vec<(TimingError, Span)>,
+}
+
+struct FrameRow {
+    span: Span,
+    budget: EventBudget,
 }
 
 impl Generator<'_> {
@@ -210,6 +283,21 @@ impl Generator<'_> {
                 FrameStrategy::Irq => self.irq_frame(frame, main.halt_label)?,
             },
             None => self.jump(main.halt_label),
+        }
+        if !self.frame_overruns.is_empty() {
+            let mut errors = std::mem::take(&mut self.frame_overruns);
+            errors.sort_by_key(|(_, span)| span.start);
+            let frame = frame.expect("only a frame's handlers are collected");
+            return Err(CodegenError::FrameHandlersOverBudget {
+                errors,
+                budget: Some(FrameBudget {
+                    name: frame.name.clone(),
+                    strategy: frame.strategy,
+                    strategy_written: frame.strategy_written,
+                    rows: self.take_rows(),
+                }),
+                stopped_by: None,
+            });
         }
         Ok(())
     }
@@ -288,16 +376,18 @@ impl Generator<'_> {
             // Only the accumulator is saved. The loop these interrupt holds nothing in X or Y, and
             // `RTI` restores the flags the interrupt itself pushed.
             self.emit(PHA, Implied, None);
-            self.timed_region(
-                &CycleConstraint::AtMost(IRQ_HANDLER_BODY_CYCLES),
-                false, // pad: a short handler spends nothing filling the window
-                true,  // interruptible: the 6502 set I on entry, so PHP/SEI/PLP would be nine
-                // cycles of a window this small, spent masking what is already masked
-                &event.body,
-                event.span,
-                Some(halt_label),
-            )
-            .map_err(|error| as_irq_window_error(error, event.span))?;
+            let region = self
+                .timed_region(
+                    &CycleConstraint::AtMost(IRQ_HANDLER_BODY_CYCLES),
+                    false, // pad: a short handler spends nothing filling the window
+                    true,  // interruptible: the 6502 set I on entry, so PHP/SEI/PLP would be nine
+                    // cycles of a window this small, spent masking what is already masked
+                    &event.body,
+                    event.span,
+                    Some(halt_label),
+                )
+                .map_err(|error| as_irq_window_error(error, event.span));
+            self.measured_handler(region, event, IRQ_HANDLER_BODY_CYCLES)?;
             self.emit(LDA_IMMEDIATE, Immediate, Some(u16::from(latch)));
             // The order hardware requires: the latch, then the reload request, then the
             // acknowledgement — which also disables — and only then the re-arm. Enabling before
@@ -383,17 +473,78 @@ impl Generator<'_> {
         let events = (0..FRAMES_PER_PASS).flat_map(|_| frame.events.iter());
         for (handler, event) in pass.handlers.iter().zip(events) {
             self.delay(handler.delay_cycles, event.span)?;
-            self.timed_region(
+            let region = self.timed_region(
                 &CycleConstraint::Exact(handler.budget_cycles),
                 true,
                 false,
                 &event.body,
                 event.span,
                 Some(halt_label),
-            )?;
+            );
+            self.measured_handler(region, event, handler.budget_cycles)?;
         }
         self.delay(pass.trailing_delay_cycles, frame.span)?;
         self.jump(pass_top);
+        Ok(())
+    }
+
+    /// The rows in the order the frame block writes its events, which is not scanline order: the
+    /// schedule is sorted for emission, and the source is read top to bottom.
+    fn take_rows(&mut self) -> Vec<EventBudget> {
+        let mut rows = std::mem::take(&mut self.frame_rows);
+        rows.sort_by_key(|row| row.span.start);
+        rows.into_iter().map(|row| row.budget).collect()
+    }
+
+    /// Record what one handler cost, and keep going if it was over its window.
+    ///
+    /// Only an overrun of the handler's own region is collected - one whose span is the event's -
+    /// so a nested `cycles(n)` the author wrote that overruns still stops the build at once, with
+    /// no table to show for a frame that was not fully measured.
+    fn measured_handler(
+        &mut self,
+        region: Result<u32, CodegenError>,
+        event: &FrameEvent,
+        window: u32,
+    ) -> Result<(), CodegenError> {
+        let measured = match region {
+            Ok(measured) => measured,
+            Err(CodegenError::Timing {
+                error:
+                    error @ (TimingError::OverBudget {
+                        measured_cycles, ..
+                    }
+                    | TimingError::IrqHandlerOverHblank {
+                        measured_cycles, ..
+                    }),
+                span,
+            }) if span == event.span => {
+                // A timed event is emitted once per frame of the pass: it is one overrun.
+                if !self.frame_overruns.iter().any(|(_, seen)| *seen == span) {
+                    self.frame_overruns.push((error, span));
+                }
+                measured_cycles
+            }
+            Err(error) => return Err(error),
+        };
+        match self
+            .frame_rows
+            .iter_mut()
+            .find(|row| row.span == event.span)
+        {
+            Some(row) => {
+                row.budget.handler_cycles = row.budget.handler_cycles.max(measured);
+                row.budget.window_cycles = row.budget.window_cycles.min(window);
+            }
+            None => self.frame_rows.push(FrameRow {
+                span: event.span,
+                budget: EventBudget {
+                    label: event.label.clone(),
+                    handler_cycles: measured,
+                    window_cycles: window,
+                },
+            }),
+        }
         Ok(())
     }
 
@@ -444,7 +595,9 @@ impl Generator<'_> {
                 interruptible,
                 body,
                 span,
-            } => self.timed_region(constraint, *pad, *interruptible, body, *span, halt_label)?,
+            } => {
+                self.timed_region(constraint, *pad, *interruptible, body, *span, halt_label)?;
+            }
             Statement::Delay { cycles, span } => {
                 let plan = plan_delay(*cycles, self.legal_isa)
                     .map_err(|error| CodegenError::Timing { error, span: *span })?;
@@ -493,7 +646,7 @@ impl Generator<'_> {
         body: &[Statement],
         span: Span,
         halt_label: Option<IrLabel>,
-    ) -> Result<(), CodegenError> {
+    ) -> Result<u32, CodegenError> {
         let start = self.output.items.len();
         if !interruptible {
             self.emit(PHP, Implied, None);
@@ -535,7 +688,7 @@ impl Generator<'_> {
         if let Some(label) = report.label {
             self.reports.push((label, report.measured_cycles));
         }
-        Ok(())
+        Ok(report.measured_cycles)
     }
 
     /// Emit one piece of a planned delay.

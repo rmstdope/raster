@@ -2562,3 +2562,45 @@ fn a_block_warning_prints_after_a_bank_warning() {
     );
     assert_eq!(warnings[1].message, KNOWN_ON_HEADLINE);
 }
+
+#[test]
+fn a_frame_event_is_named_the_way_the_source_names_it() {
+    let program = lower_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 60 { ppu.addr = $01 }
+                every 8 scanlines from 96 to 112 { ppu.addr = $03 }
+            }
+        "#,
+    );
+
+    let frame = program.frame.as_ref().expect("the frame lowers");
+    assert_eq!(
+        frame
+            .events
+            .iter()
+            .map(|event| event.label.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "scanline 60",
+            "scanline 96-112 every 8",
+            "scanline 96-112 every 8",
+            "scanline 96-112 every 8",
+        ],
+    );
+}
+
+#[test]
+fn a_frame_remembers_whether_its_strategy_was_written() {
+    let written = lower_source(
+        "main { ppu.mask = 0 }\nframe bars using timed { at scanline 60 { ppu.addr = $01 } }",
+    );
+    let omitted =
+        lower_source("main { ppu.mask = 0 }\nframe bars { at scanline 60 { ppu.addr = $01 } }");
+
+    assert!(written.frame.expect("lowers").strategy_written);
+    let omitted = omitted.frame.expect("lowers");
+    assert!(!omitted.strategy_written);
+    assert_eq!(omitted.strategy, raster_ir::FrameStrategy::Timed);
+}
