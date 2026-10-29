@@ -645,6 +645,30 @@ fn an_unsure_call_before_a_bank_data_write_is_marked_and_the_advice_moves_after_
 }
 
 #[test]
+fn a_call_far_above_the_bank_data_write_elides_the_lines_between() {
+    let directory = Scratch::new("bankfar");
+    let input = directory.path().join("demo.raster");
+    fs::write(
+        &input,
+        "fn tick() { mmc3.bank_select = 7 }\nmain {\n    tick()\n    var a: u8 = 1\n    var b: u8 = 2\n    var c: u8 = 3\n    mmc3.bank_data = a\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert!(
+        stderr.contains(concat!(
+            "3 |     tick()\n",
+            "  |     ------ this call leaves R7 selected\n",
+            "...\n",
+            "7 |     mmc3.bank_data = a\n",
+        )),
+        "got:\n{stderr}"
+    );
+}
+
+#[test]
 fn a_build_that_fails_counts_its_errors_and_its_warnings() {
     let directory = Scratch::new("warnandfail");
     let input = directory.path().join("both.raster");

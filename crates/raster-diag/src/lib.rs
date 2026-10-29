@@ -211,7 +211,7 @@ pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
                 && source.source.is_char_boundary(span.end)
         })
         .map(|(span, label)| (locate(&source.source, span.start, span.end), label))
-        .filter(|(place, _)| place.number < primary.number);
+        .filter(|(place, _)| place.number <= primary.number);
 
     let gutter = " ".repeat(primary.number.to_string().len());
     let mut rendered = format!(
@@ -226,8 +226,16 @@ pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
     if let Some((place, label)) = secondary {
         rendered.push_str(&source_line(place.number, place.text, width));
         rendered.push_str(&marker_line(&place, '-', label, width));
-        let between = primary.number - place.number - 1;
-        if between <= MAX_SHOWN_BETWEEN {
+        let between = (primary.number - place.number).saturating_sub(1);
+        if place.number == primary.number {
+            // Same line: it was printed once above, and the primary marker
+            // goes under the secondary's.
+            rendered.push_str(&marker_line(&primary, '^', &diagnostic.label, width));
+            for note in &diagnostic.notes {
+                rendered.push_str(&render_note(note, &gutter));
+            }
+            return rendered;
+        } else if between <= MAX_SHOWN_BETWEEN {
             for number in place.number + 1..primary.number {
                 let text = source.source.lines().nth(number - 1).unwrap_or("");
                 rendered.push_str(&source_line(number, text, width));
@@ -286,7 +294,7 @@ fn locate(source: &str, start: usize, end: usize) -> Placed<'_> {
         .map_or(source.len(), |offset| start + offset);
     Placed {
         number,
-        text: &source[line_start..line_end],
+        text: source[line_start..line_end].trim_end_matches('\r'),
         column: source[line_start..start].chars().count() + 1,
         width: source[start..end.min(line_end)].chars().count().max(1),
     }

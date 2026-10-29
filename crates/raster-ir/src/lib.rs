@@ -490,7 +490,7 @@ enum BankSelection {
     /// path, and the call in this body that did it.
     LeftByCall { register: u8, call: Span },
     /// A select rasterc could not fold, two branches that disagree, a loop body
-    /// that can select, a call that can reach a select, or the first statement
+    /// that can select, a call whose callee can leave different registers selected, or the first statement
     /// of a body any caller or interrupt can reach.
     Unknown(Unseen),
 }
@@ -2164,6 +2164,10 @@ impl Lowerer {
         };
         if function.is_assembly {
             self.not_in_this_release(function.name.span, "`asm` functions are not supported yet");
+            // Refused, so it is an error already; callers are judged as they
+            // were before bank effects existed.
+            self.bank_effects
+                .insert(function.name.value.clone(), BankEffect::Unchanged);
             return;
         }
         if function.cycle_spec.is_some() {
@@ -2182,6 +2186,8 @@ impl Lowerer {
             );
         }
         if !self.function_return_is_supported(function) {
+            self.bank_effects
+                .insert(function.name.value.clone(), BankEffect::Unchanged);
             return;
         }
         self.enter_scope();

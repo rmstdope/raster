@@ -261,3 +261,31 @@ fn widens_the_gutter_to_the_longest_line_number_when_a_secondary_is_drawn() {
         )
     );
 }
+
+#[test]
+fn draws_a_secondary_on_the_primarys_own_line_instead_of_dropping_it() {
+    let source = SourceFile::new("demo.raster", "if pick() { w() }\n");
+    let diagnostic = Diagnostic::warning("careful", Span::new(12, 15), "primary")
+        .with_secondary(Span::new(3, 9), "secondary");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "warning: careful\n",
+            " --> demo.raster:1:13\n",
+            "  |\n",
+            "1 | if pick() { w() }\n",
+            "  |    ------ secondary\n",
+            "  |             ^^^ primary\n"
+        )
+    );
+}
+
+#[test]
+fn prints_crlf_sources_without_the_carriage_return() {
+    let source = SourceFile::new("demo.raster", "a()\r\nb\r\nw()\r\n");
+    let diagnostic = Diagnostic::warning("careful", Span::new(8, 11), "primary")
+        .with_secondary(Span::new(0, 3), "secondary");
+
+    assert!(!render(&source, &diagnostic).contains('\r'));
+}

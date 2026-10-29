@@ -2920,3 +2920,29 @@ fn uncertainty_that_does_not_come_from_a_call_keeps_its_words() {
     );
     assert!(warning.secondary.is_none());
 }
+
+#[test]
+fn a_call_inside_the_write_or_its_condition_is_marked() {
+    for source in [
+        "fn pick() -> u8 { mmc3.bank_select = 6\n return 1 }\nmain {\n mmc3.bank_data = pick()\n}",
+        "fn pick() -> u8 { mmc3.bank_select = 6\n return 1 }\nmain {\n if pick() != 0 { mmc3.bank_data = 4 }\n}",
+    ] {
+        let program = lower_source(source);
+
+        assert_eq!(program.warnings.len(), 1, "for {source:?}");
+        assert_eq!(
+            marker(source, &program.warnings[0]),
+            ("pick()".to_owned(), "this call leaves R6 selected".to_owned()),
+            "for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn a_call_to_a_function_lowering_refused_leaves_the_selection_alone() {
+    let failure = lower_failure(
+        "asm fn raw() {}\nmain {\n mmc3.bank_select = 0\n raw()\n mmc3.bank_data = 4\n}",
+    );
+
+    assert!(failure.warnings.is_empty());
+}
