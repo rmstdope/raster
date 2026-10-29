@@ -2528,8 +2528,8 @@ impl Lowerer {
                 // Q7: one fault, one message. If lowering this statement's own
                 // value refused something — a read of a write-only register,
                 // say — the statement is being rewritten, so what its value
-                // would have been is moot and the bank-select warning below is
-                // unactionable until the refusal is fixed. Counted rather than
+                // would have been is moot and the bank-select warning in
+                // `note_bank_select` is unactionable until the refusal is fixed. Counted rather than
                 // returned, so it covers a plain assignment as well as the
                 // compound arm's early `return`.
                 let errors_before = self.errors.len();
@@ -2546,7 +2546,7 @@ impl Lowerer {
                             // next one. Nothing is pushed: the statement has
                             // been refused, so it has no `Assign` to emit — and
                             // returning here is also what keeps
-                            // `bank_select_warning` below from firing on a line
+                            // `note_bank_select` from firing on a line
                             // whose read has already been refused.
                             let _ = self.lower_value(right);
                             return;
@@ -2640,7 +2640,8 @@ impl Lowerer {
     /// lowering, because whether it matters depends on the frame's strategy and
     /// `Statement::Assign` carries no span to point at later. Stands aside for
     /// `refused`: a warning about a byte the author did not write is
-    /// unactionable until the refusal is fixed.
+    /// unactionable until the refusal is fixed. Belt and braces: a refusal is an
+    /// error, and `check_timed_frame_nmi` already judges nothing while any exists.
     fn note_ppu_ctrl(
         &mut self,
         destination: Destination,
