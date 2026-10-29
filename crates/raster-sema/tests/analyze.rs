@@ -1033,7 +1033,7 @@ fn another_oam_member_gets_the_general_namespace_error() {
     assert_eq!(found[0].message, "there is no `oam` namespace");
     assert_eq!(
         found[0].label.as_deref(),
-        Some("rasterc has `ppu` and `mmc3`")
+        Some("rasterc has `ppu`, `mmc3` and `apu`")
     );
 }
 
@@ -1051,21 +1051,154 @@ fn a_variable_called_oam_is_not_told_there_is_no_namespace() {
     );
 }
 
+const APU_NAMES: [&str; 16] = [
+    "apu.pulse1.volume",
+    "apu.pulse1.sweep",
+    "apu.pulse1.timer_lo",
+    "apu.pulse1.timer_hi",
+    "apu.pulse2.volume",
+    "apu.pulse2.sweep",
+    "apu.pulse2.timer_lo",
+    "apu.pulse2.timer_hi",
+    "apu.triangle.linear",
+    "apu.triangle.timer_lo",
+    "apu.triangle.timer_hi",
+    "apu.noise.volume",
+    "apu.noise.period",
+    "apu.noise.length",
+    "apu.status",
+    "apu.frame_counter",
+];
+
 #[test]
-fn the_apu_is_not_supported_yet_whatever_the_depth() {
-    for source in ["main { apu.pulse1.volume = $BF }", "main { apu.noise = 1 }"] {
-        let found = errors_with_spans(source);
-        assert_eq!(found.len(), 1, "{source}: {found:?}");
-        assert_eq!(
-            found[0].message,
-            "the `apu` registers are not supported yet"
-        );
-        assert_eq!(
-            found[0].label.as_deref(),
-            Some("the sound driver owns the APU today (§8.3)")
-        );
-        assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+fn every_apu_register_name_analyzes() {
+    for name in APU_NAMES {
+        let program = parse(&format!("main {{ {name} = $01 }}")).expect("fixture should parse");
+        assert!(analyze(&program).is_ok(), "{name} should analyze");
     }
+}
+
+/// One error, its words, the label under the caret, and the caret covering the
+/// whole register name.
+fn assert_one_apu_error(source: &str, register: &str, message: &str, label: &str) {
+    let found = errors_with_spans(source);
+    assert_eq!(found.len(), 1, "{source}: {found:?}");
+    assert_eq!(found[0].message, message, "{source}");
+    assert_eq!(found[0].label.as_deref(), Some(label), "{source}");
+    let start = source
+        .find(register)
+        .expect("the register is in the source") as u32;
+    assert_eq!(
+        (found[0].span.start, found[0].span.end),
+        (start, start + register.len() as u32),
+        "{source}: the carets cover the whole name"
+    );
+}
+
+#[test]
+fn an_unknown_apu_channel_is_one_error() {
+    assert_one_apu_error(
+        "main { apu.pulse3.volume = $BF }",
+        "apu.pulse3.volume",
+        "unknown apu channel `pulse3`",
+        "the APU has pulse1, pulse2, triangle and noise",
+    );
+}
+
+#[test]
+fn an_unknown_register_in_a_channel_lists_that_channels_registers() {
+    for (channel, list) in [
+        ("pulse1", "volume, sweep, timer_lo and timer_hi"),
+        ("pulse2", "volume, sweep, timer_lo and timer_hi"),
+        ("triangle", "linear, timer_lo and timer_hi"),
+        ("noise", "volume, period and length"),
+    ] {
+        let register = format!("apu.{channel}.volum");
+        assert_one_apu_error(
+            &format!("main {{ {register} = $BF }}"),
+            &register,
+            &format!("unknown apu.{channel} register `volum`"),
+            &format!("{channel} has {list}"),
+        );
+    }
+}
+
+#[test]
+fn a_channel_used_as_a_register_is_one_error() {
+    assert_one_apu_error(
+        "main { apu.pulse1 = $BF }",
+        "apu.pulse1",
+        "`apu.pulse1` is a channel, not a register",
+        "write one of its registers, such as `apu.pulse1.volume`",
+    );
+}
+
+#[test]
+fn a_channel_register_named_directly_under_apu_points_at_its_channel() {
+    for (name, example) in [
+        ("volume", "apu.pulse1.volume"),
+        ("sweep", "apu.pulse1.sweep"),
+        ("timer_lo", "apu.pulse1.timer_lo"),
+        ("timer_hi", "apu.pulse1.timer_hi"),
+        ("linear", "apu.triangle.linear"),
+        ("period", "apu.noise.period"),
+        ("length", "apu.noise.length"),
+    ] {
+        let register = format!("apu.{name}");
+        assert_one_apu_error(
+            &format!("main {{ {register} = $BF }}"),
+            &register,
+            &format!("unknown apu register `{name}`"),
+            &format!("`{name}` belongs to a channel, such as `{example}`"),
+        );
+    }
+}
+
+#[test]
+fn a_name_that_belongs_to_nothing_under_apu_lists_what_apu_has() {
+    assert_one_apu_error(
+        "main { apu.foo = $BF }",
+        "apu.foo",
+        "unknown apu register `foo`",
+        "apu has the registers status and frame_counter, and the channels pulse1, pulse2, triangle and noise",
+    );
+}
+
+#[test]
+fn the_dmc_registers_are_not_supported_yet_at_any_depth() {
+    for register in ["apu.dmc.level", "apu.dmc.freq", "apu.dmc"] {
+        let source = format!("main {{ {register} = 64 }}");
+        assert_one_apu_error(
+            &source,
+            register,
+            "the DMC registers are not supported yet",
+            "how sample playback's cycle theft meets timed blocks is still open (§15.2)",
+        );
+        assert_eq!(
+            errors_with_spans(&source)[0].refusal,
+            Refusal::NotInThisRelease
+        );
+    }
+}
+
+#[test]
+fn a_register_has_no_members_under_apu_either() {
+    let found = errors_with_spans("main { apu.pulse1.volume.x = 1 }");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].message,
+        "member access requires a register namespace"
+    );
+}
+
+#[test]
+fn apu_errors_are_the_same_in_a_read() {
+    assert_one_apu_error(
+        "main { var v: u8 = apu.pulse3.volume }",
+        "apu.pulse3.volume",
+        "unknown apu channel `pulse3`",
+        "the APU has pulse1, pulse2, triangle and noise",
+    );
 }
 
 #[test]

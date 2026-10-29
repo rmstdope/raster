@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+mod apu;
+
 use raster_diag::Refusal;
 use raster_syntax::{
     AssetValue, Block, CycleBound, Declaration, Expression, FrameEvent, FramePosition, Function,
@@ -1276,6 +1278,7 @@ impl Analyzer {
         match &base.value {
             // One level on a real namespace: the check this release has always
             // made, with the message it has always used.
+            Expression::Name(_) if root.value == "apu" => self.apu_direct_type(whole, member),
             Expression::Name(_) => {
                 if register_member(&root.value, &member.value) {
                     ValueType::U8
@@ -1288,6 +1291,12 @@ impl Analyzer {
                 }
             }
             // `ppu.oam.addr`: report the deepest wrong step and nothing here.
+            Expression::Member {
+                base: inner,
+                member: inner_member,
+            } if root.value == "apu" && matches!(inner.value, Expression::Name(_)) => {
+                self.apu_channel_type(whole, inner_member, member)
+            }
             Expression::Member {
                 base: inner,
                 member: inner_member,
@@ -1348,18 +1357,6 @@ impl Analyzer {
                 format!("there is no `{}` namespace", root.value),
                 format!("{port} is spelled `{spelling}`"),
             );
-            return ValueType::Unknown;
-        }
-
-        // Hardware the specification names and this release cannot reach.
-        if let Some((_, _, message, label)) = NOT_YET.iter().find(|(namespace, name, _, _)| {
-            *namespace == root.value
-                && match name {
-                    None => true,
-                    Some(name) => Some(*name) == member,
-                }
-        }) {
-            self.not_in_this_release_with(whole.span, *message, *label);
             return ValueType::Unknown;
         }
 
@@ -1641,16 +1638,16 @@ const VRAM_ADDR: &str = "vram_addr";
 /// The register namespaces this release has. Seeds the root scope in
 /// `Analyzer::new` and is what `NAMESPACE_LIST` promises, so a namespace cannot
 /// be added to one and missed by the other.
-const NAMESPACES: [&str; 2] = ["ppu", "mmc3"];
+const NAMESPACES: [&str; 3] = ["ppu", "mmc3", "apu"];
 
 /// The label under the carets when a namespace does not exist and rasterc has
 /// nothing more specific to say.
 ///
-/// Written out rather than joined from `NAMESPACES`: two names read as "`ppu`
-/// and `mmc3`" and three would not, and this module's own
+/// Written out rather than joined from `NAMESPACES`: three names read as
+/// "`ppu`, `mmc3` and `apu`" and a fourth would not, and this module's own
 /// `the_namespace_list_names_every_namespace` goes red the moment a third
 /// arrives, which is when somebody has to write the prose anyway.
-const NAMESPACE_LIST: &str = "rasterc has `ppu` and `mmc3`";
+const NAMESPACE_LIST: &str = "rasterc has `ppu`, `mmc3` and `apu`";
 
 /// Register names §9.1 of the specification used until raster-3o3, and the
 /// spelling that reaches the port today. An author reading an older draft types
@@ -1662,17 +1659,6 @@ const RENAMED: [(&str, &str, &str, &str); 3] = [
     ("oam", "data", "$2004", "ppu.oam_data"),
     ("oam", "dma", "$4014", "ppu.oam_dma"),
 ];
-
-/// Hardware the specification names as intended and this release cannot reach.
-///
-/// Each row is (namespace, the member it is about or `None` for the whole
-/// namespace, the message, the label).
-const NOT_YET: [(&str, Option<&str>, &str, &str); 1] = [(
-    "apu",
-    None,
-    "the `apu` registers are not supported yet",
-    "the sound driver owns the APU today (§8.3)",
-)];
 
 /// The leftmost `Name` of a member chain: `apu.pulse1.volume` and `apu.pulse1`
 /// both root at `apu`.

@@ -19,9 +19,9 @@ fn compiles_the_demo_to_the_same_rom_as_m1() {
 
 const SUPPORTED_SUBSET: &str = concat!(
     "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n",
-    "arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks\n",
-    "with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n",
-    "`frame` of `every ... scanlines` events"
+    "arithmetic, and `ppu.*` / `mmc3.*` / `apu.*` register writes; timed\n",
+    "blocks with `cycles`, `pad`, `sync exact` and `wait cycles`; and\n",
+    "one `frame` of `every ... scanlines` events"
 );
 
 #[test]
@@ -1433,7 +1433,7 @@ fn the_specifications_named_register_block_compiles_without_warnings() {
         .expect("§9.1 opens with a fenced block");
     assert_eq!(
         block.trim().lines().count(),
-        12,
+        13,
         "the agreed block: {block}"
     );
 
@@ -1481,4 +1481,105 @@ fn the_specification_names_the_construct_a_block_never_a_region() {
         spec.contains("**rasterc today:** stricter — a timed block that writes a PPU register"),
         "§6.6's note is marked stricter"
     );
+}
+
+/// `apu.pulse1.volume = $BF` is `LDA #$BF` then `STA $4000`: the store is the
+/// absolute form of the opcode to the register's address.
+#[test]
+fn an_apu_register_write_stores_to_its_address() {
+    let rom = compile_source("main {\n    apu.pulse1.volume = $BF\n}\n")
+        .expect("apu.pulse1.volume compiles");
+
+    assert!(
+        rom.image
+            .windows(3)
+            .any(|bytes| bytes == [0x8d, 0x00, 0x40]),
+        "the ROM stores to $4000"
+    );
+    assert!(rom.warnings.is_empty(), "{:?}", rom.warnings);
+}
+
+#[test]
+fn the_dmc_registers_are_refused_with_the_release_note_naming_apu() {
+    let diagnostics = compile_source("main {\n    apu.dmc.level = 64\n}\n")
+        .expect_err("the DMC registers are not built");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "the DMC registers are not supported yet"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "how sample playback's cycle theft meets timed blocks is still open (§15.2)"
+    );
+    assert_eq!(diagnostics[0].notes, [SUPPORTED_SUBSET]);
+}
+
+#[test]
+fn an_apu_warning_still_builds_the_rom_and_counts_once() {
+    let rom = compile_source("main {\n    apu.status = $1F\n}\n")
+        .expect("a warning does not fail the build");
+
+    assert_eq!(rom.warnings.len(), 1);
+    assert_eq!(
+        rom.warnings[0].message,
+        "bit 4 of `apu.status` starts DMC playback"
+    );
+}
+
+/// §9.5 is the table an author checks a register against, so it names every
+/// APU register with the address and verdicts the compiler gives it, and it
+/// keeps no register count to go stale.
+#[test]
+fn the_specifications_register_table_lists_every_apu_register() {
+    let spec = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/raster-language-spec.md"
+    ));
+    let section = spec
+        .split("### 9.5 Which registers read and which accept writes")
+        .nth(1)
+        .expect("§9.5 is in the specification")
+        .split("\n---\n")
+        .next()
+        .expect("§9.5 ends at a rule");
+    for (name, address, read) in [
+        ("apu.pulse1.volume", "$4000", "refused"),
+        ("apu.pulse1.sweep", "$4001", "refused"),
+        ("apu.pulse1.timer_lo", "$4002", "refused"),
+        ("apu.pulse1.timer_hi", "$4003", "refused"),
+        ("apu.pulse2.volume", "$4004", "refused"),
+        ("apu.pulse2.sweep", "$4005", "refused"),
+        ("apu.pulse2.timer_lo", "$4006", "refused"),
+        ("apu.pulse2.timer_hi", "$4007", "refused"),
+        ("apu.triangle.linear", "$4008", "refused"),
+        ("apu.triangle.timer_lo", "$400A", "refused"),
+        ("apu.triangle.timer_hi", "$400B", "refused"),
+        ("apu.noise.volume", "$400C", "refused"),
+        ("apu.noise.period", "$400E", "refused"),
+        ("apu.noise.length", "$400F", "refused"),
+        ("apu.status", "$4015", "**allowed**"),
+        ("apu.frame_counter", "$4017", "refused"),
+    ] {
+        let row = format!("| `{name}` | `{address}` | {read} | **allowed** |");
+        assert!(section.contains(&row), "§9.5 lacks the row {row}");
+    }
+    // The table is one row per register: the heading, the rule and thirty-three
+    // rows. `raster_ir::Register` has no list to iterate from here, so a new
+    // register fails this count and sends its author to this table and to
+    // `REGISTERS` in `raster-ir/tests/lower.rs`.
+    assert_eq!(
+        section
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .count(),
+        33,
+        "§9.5 has one row per register"
+    );
+    assert!(
+        !section.contains("Seventeen") && !section.contains("Thirty-three"),
+        "§9.5 keeps no register count"
+    );
+    assert!(section.contains("`apu.status` ($4015) is the one sound register that reads back"));
 }
