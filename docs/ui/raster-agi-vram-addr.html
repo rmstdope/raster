@@ -1,0 +1,114 @@
+<!doctype html><meta charset="utf-8"><title>raster-agi — vram_addr, the one-line PPU address</title>
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 70rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:56em; }
+  h2 { font-size: 1.05rem; margin: 2.4rem 0 .3rem; letter-spacing:-.01em; }
+  h3 { font-size: .82rem; margin: 1.3rem 0 .35rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.3rem 0 .7rem; max-width:60em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:.9rem 1.1rem;
+          font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; margin:.4rem 0; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto; }
+  .src .add { color:#1f7a3d; font-weight:600; }
+  .src .cmt { color:#7a8090; }
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:60em; }
+  .card { border:1px solid #dcdfe8; border-radius:10px; padding:1.1rem 1.3rem 1.4rem; margin:1rem 0 0; background:#fff; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.6rem;}
+  code { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  hr { border:0; border-top:1px solid #dfe2ea; margin:2.4rem 0 0; }
+  table { border-collapse: collapse; margin:.6rem 0; font-size:.86rem; width:100%; }
+  th, td { border:1px solid #d9dce6; padding:.4rem .6rem; text-align:left; vertical-align:top; }
+  th { background:#eceef4; font-weight:600; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h3, .note, .cost { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; } .cost { border-color:#2a2d3a; }
+    .card { background:#131521; border-color:#262a36; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+    .src .add { color:#7fce97; } .src .cmt { color:#767c8e; }
+    th, td { border-color:#262a36; } th { background:#1b1e27; }
+  }
+</style>
+<main>
+<h1>vram_addr — setting a PPU address in one line</h1>
+<p class="sub">Agreed so far: a convenience name <code>vram_addr</code> beside <code>backdrop</code> (§9.3) takes the whole 16-bit address and expands to the two $2006 writes, high then low, back to back with nothing between them. Always plain writes and always 12 cycles, with no scroll handling. <code>ppu.addr</code> stays the raw byte port, unchanged.</p>
+
+<h2>The happy path</h2>
+<div class="src">vram_addr = $3F00           <span class="cmt">// palette</span>
+ppu.data  = $0F
+vram_addr = $2000 + 32*4 + 2  <span class="cmt">// a constant expression is fine</span></div>
+<h3>What lands in the ROM</h3>
+<div class="src">LDA #$3F
+STA $2006
+LDA #$00
+STA $2006      <span class="cmt">; 12 cycles, counted in any timed block like any other write</span></div>
+
+<h2>State — above $3FFF (error)</h2>
+<div class="term"><span class="e">error</span>: $4000 is outside the PPU address space
+  <span class="g">--></span> demo.raster:12:13
+   <span class="g">|</span>
+12 <span class="g">|</span> vram_addr = $4000
+   <span class="g">|</span>             <span class="e">^^^^^</span> PPU addresses run $0000 to $3FFF
+   <span class="g">|</span>
+   <span class="g">=</span> note: the PPU ignores the top two bits, so this would set $0000</div>
+
+<h2>State — a variable (16-bit values are not in this release)</h2>
+<div class="term"><span class="e">error</span>: vram_addr needs a constant address in this release
+  <span class="g">--></span> demo.raster:12:13
+   <span class="g">|</span>
+12 <span class="g">|</span> vram_addr = row
+   <span class="g">|</span>             <span class="e">^^^</span> `row` is a variable
+   <span class="g">|</span>
+   <span class="g">=</span> help: to set an address from a variable, write the two bytes to ppu.addr, high byte first</div>
+
+<h2>State — a 16-bit number on the raw port</h2>
+<div class="card" id="w1"><span class="tag">WORDING 1 — CHOSEN</span>
+<div class="term"><span class="e">error</span>: ppu.addr is written one byte at a time
+  <span class="g">--></span> demo.raster:12:12
+   <span class="g">|</span>
+12 <span class="g">|</span> ppu.addr = $3F00
+   <span class="g">|</span>            <span class="e">^^^^^</span> $3F00 does not fit in a byte
+   <span class="g">|</span>
+   <span class="g">=</span> help: to set the whole address in one line, write `vram_addr = $3F00`</div></div>
+<div class="card" id="w2"><span class="tag">WORDING 2 — rejected</span>
+<div class="term"><span class="e">error</span>: $3F00 is too big for ppu.addr, which takes one byte
+  <span class="g">--></span> demo.raster:12:12
+   <span class="g">|</span>
+12 <span class="g">|</span> ppu.addr = $3F00
+   <span class="g">|</span>            <span class="e">^^^^^</span> use vram_addr for a whole address
+   <span class="g">|</span>
+   <span class="g">=</span> help: `vram_addr = $3F00`</div></div>
+
+<h2>State — a short number, e.g. <code>vram_addr = $3F</code></h2>
+<div class="card" id="s1"><span class="tag">OPTION 1 — CHOSEN — silent: it sets $003F</span>
+<div class="note">$0000–$00FF is the start of pattern table 0, which is a real place to write CHR RAM. Nothing is printed.</div></div>
+<div class="card" id="s2"><span class="tag">OPTION 2 — rejected — warn</span>
+<div class="term"><span class="e">warning</span>: vram_addr = $3F sets address $003F
+  <span class="g">--></span> demo.raster:12:13
+   <span class="g">|</span>
+12 <span class="g">|</span> vram_addr = $3F
+   <span class="g">|</span>             <span class="e">^^^</span> did you mean $3F00? write $003F to keep this and silence the warning</div>
+<p class="cost">Cost: anyone writing CHR RAM at the bottom of the address space has to write leading zeros.</p></div>
+
+<h2>State — something between two raw ppu.addr writes</h2>
+<div class="note">Unchanged: today's warning stays. With <code>vram_addr</code> this can't happen.</div>
+
+<h2>What the spec says</h2>
+<h3>§9.1 example</h3>
+<div class="src">ppu.addr   = $3F            // high byte, then low
+ppu.addr   = $00</div>
+<div class="note">Unchanged. The "rasterc today" note that promises <code>ppu.addr = $3F00</code> is removed.</div>
+<h3>§9.3 (added)</h3>
+<div class="src">vram_addr = $3F00               // the $2006 pair, high byte then low</div>
+<div class="note"><code>vram_addr</code> is a virtual register. Assigning a constant address to it compiles to the two $2006 writes, high byte first, with nothing in between, so nothing can reset the latch halfway. It costs 12 cycles wherever it is. It does not restore the scroll: written while the screen is drawing, it moves the scroll, just like the raw pair does. Addresses run $0000 to $3FFF.</div>
+</main>
