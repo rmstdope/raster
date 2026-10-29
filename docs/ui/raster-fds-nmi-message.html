@@ -1,0 +1,19 @@
+<!doctype html><meta charset=utf-8><title>Option B — name the byte, uppercase hex (recommended)</title>
+<style>body{background:#111;color:#ddd;font:15px/1.5 ui-monospace,Menlo,monospace;max-width:860px;margin:24px auto;padding:0 16px}
+h1{font-size:18px;color:#fff}.n{color:#aaa;font-family:system-ui}.term{background:#000;border:1px solid #333;padding:14px;white-space:pre-wrap;margin:10px 0 24px}.e{color:#f77}h2{font-size:15px;color:#9cf}</style>
+<h1>Option B — name the byte, uppercase hex (recommended)</h1><p class=n>The test message changes to match the original drawing. Address and byte both print in uppercase hex, like the spec writes them.</p>
+<h2>Case 1 · $FFFA points at a handler's JMP</h2>
+<div class=term><span class=e>thread 'the_nmi_vector_is_always_the_runtimes_own_handler' panicked at ...</span>
+$FFFA resolved to $E0C4, where the byte is $4C, not the runtime's `RTI`.
+
+NMI is the one interrupt the I flag cannot mask, so a program can take one at
+any point in `main` by setting bit 7 of `ppu.ctrl`. That is safe today only
+because $FFFA runs none of the program's own code. Pointing it anywhere else
+means a handler can run between two of `main`'s statements, which spec
+section 9.4 says cannot happen — and which rasterc's MMC3 bank tracking
+relies on. See `nothing_unmasks_irqs_before_main_has_run` in raster-codegen.</div>
+<h2>Case 2 · $FFFA points at the start of the bank, empty byte</h2>
+<div class=term><span class=e>thread 'the_nmi_vector_is_always_the_runtimes_own_handler' panicked at ...</span>
+$FFFA resolved to $E000, where the byte is $00, not the runtime's `RTI`.
+
+(explanation as above)</div>
