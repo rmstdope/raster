@@ -1191,3 +1191,21 @@ fn vram_addr_in_a_timed_region_requires_sync_exact_like_any_ppu_write() {
         "got {found:?}"
     );
 }
+
+#[test]
+fn declaring_vram_addr_at_the_top_level_says_it_is_built_in() {
+    let found = errors("var vram_addr: u8 = 1\nmain {\n}\n");
+    assert_eq!(
+        found,
+        ["`vram_addr` is a built-in virtual register and cannot be declared"]
+    );
+}
+
+#[test]
+fn a_local_named_vram_addr_in_a_timed_region_needs_no_sync_exact() {
+    let program = parse(
+        "main {\n    var vram_addr: u8 = 1\n    cycles(30) pad {\n        vram_addr = 2\n    }\n}\n",
+    )
+    .expect("parses");
+    analyze(&program).expect("a variable is not a PPU write");
+}

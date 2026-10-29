@@ -224,7 +224,12 @@ impl Analyzer {
             .expect("analyzer always has a root scope")
             .get(&name.value)
             .map(|previous| previous.span);
-        if let Some(previous_span) = previous_span {
+        if name.value == VRAM_ADDR && self.vram_addr_is_register() && self.scopes.len() == 1 {
+            self.error(
+                name.span,
+                "`vram_addr` is a built-in virtual register and cannot be declared",
+            );
+        } else if let Some(previous_span) = previous_span {
             self.error(
                 name.span,
                 format!(
@@ -238,6 +243,13 @@ impl Analyzer {
                 .expect("analyzer always has a root scope")
                 .insert(name.value.clone(), symbol);
         }
+    }
+
+    /// Whether `vram_addr` at this point is the virtual register and not
+    /// something the author declared under that name in an inner scope.
+    fn vram_addr_is_register(&self) -> bool {
+        self.lookup(VRAM_ADDR)
+            .is_some_and(|symbol| symbol.span == Span::default())
     }
 
     fn lookup(&self, name: &str) -> Option<&Symbol> {
@@ -557,7 +569,7 @@ impl Analyzer {
         for (index, statement) in block.statements.iter().enumerate() {
             if let Statement::Cycles { spec, body, .. } = &statement.value
                 && !self.synchronized
-                && writes_ppu_register(body)
+                && writes_ppu_register(body, self.vram_addr_is_register())
                 && !block.statements[..index].iter().any(is_sync_exact)
             {
                 self.error(
@@ -1511,12 +1523,12 @@ fn asset_member(member: &str) -> bool {
     matches!(member, "tiles" | "nametable" | "attributes" | "palette")
 }
 
-/// The register namespaces this release has. Seeds the root scope in
-/// `Analyzer::new` and is what `NAMESPACE_LIST` promises, so a namespace cannot
-/// be added to one and missed by the other.
 /// The one virtual register this release has (spec §9.3). Reserved at the root.
 const VRAM_ADDR: &str = "vram_addr";
 
+/// The register namespaces this release has. Seeds the root scope in
+/// `Analyzer::new` and is what `NAMESPACE_LIST` promises, so a namespace cannot
+/// be added to one and missed by the other.
 const NAMESPACES: [&str; 2] = ["ppu", "mmc3"];
 
 /// The label under the carets when a namespace does not exist and rasterc has
@@ -1610,29 +1622,31 @@ fn register_member(namespace: &str, member: &str) -> bool {
 }
 
 /// Whether a block assigns to a PPU register, at any depth.
-fn writes_ppu_register(block: &Block) -> bool {
+fn writes_ppu_register(block: &Block, vram_addr: bool) -> bool {
     block
         .statements
         .iter()
         .any(|statement| match &statement.value {
-            Statement::Expression(expression) => is_ppu_register_write(expression),
-            Statement::Block(body) | Statement::Loop(body) => writes_ppu_register(body),
+            Statement::Expression(expression) => is_ppu_register_write(expression, vram_addr),
+            Statement::Block(body) | Statement::Loop(body) => writes_ppu_register(body, vram_addr),
             Statement::If {
                 then_body,
                 else_body,
                 ..
             } => {
-                writes_ppu_register(then_body)
-                    || else_body.as_ref().is_some_and(writes_ppu_register)
+                writes_ppu_register(then_body, vram_addr)
+                    || else_body
+                        .as_ref()
+                        .is_some_and(|body| writes_ppu_register(body, vram_addr))
             }
             Statement::While { body, .. }
             | Statement::For { body, .. }
-            | Statement::Cycles { body, .. } => writes_ppu_register(body),
+            | Statement::Cycles { body, .. } => writes_ppu_register(body, vram_addr),
             _ => false,
         })
 }
 
-fn is_ppu_register_write(expression: &Spanned<Expression>) -> bool {
+fn is_ppu_register_write(expression: &Spanned<Expression>, vram_addr: bool) -> bool {
     let Expression::Infix { left, operator, .. } = &expression.value else {
         return false;
     };
@@ -1646,7 +1660,7 @@ fn is_ppu_register_write(expression: &Spanned<Expression>) -> bool {
     ) {
         return false;
     }
-    if matches!(&left.value, Expression::Name(name) if name.value == VRAM_ADDR) {
+    if vram_addr && matches!(&left.value, Expression::Name(name) if name.value == VRAM_ADDR) {
         return true;
     }
     let Expression::Member { base, .. } = &left.value else {
