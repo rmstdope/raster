@@ -1359,16 +1359,38 @@ const ASSET_SUBSET: &str = concat!(
 
 #[test]
 fn every_asset_refusal_says_what_the_release_reads_for_assets() {
-    for source in [
-        "asset sound jingle = png(\"p.png\")\nmain { }\n",
-        "asset image picture = fam(\"p.fam\")\nmain { }\n",
-        "asset image picture = png(\"p.png\") { kind: sprites }\nmain { }\n",
-        "asset image picture = png(\"p.png\") { palette: auto(2) }\nmain { }\n",
-        "asset image picture = png(\"p.png\") { dedup: false }\nmain { }\n",
-        "asset image picture = png(\"p.png\") { compress: none }\nmain { }\n",
-        "asset image picture = png(\"p.png\")\nmain { picture.tile_count }\n",
+    for (source, message) in [
+        (
+            "asset sound jingle = png(\"p.png\")\nmain { }\n",
+            "only `asset image` is supported yet",
+        ),
+        (
+            "asset image picture = fam(\"p.fam\")\nmain { }\n",
+            "only `png` is supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\") { kind: sprites }\nmain { }\n",
+            "only `kind: background` is supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\") { palette: auto(2) }\nmain { }\n",
+            "only `palette: auto(4)` is supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\") { dedup: false }\nmain { }\n",
+            "only `dedup: true` is supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\") { compress: none }\nmain { }\n",
+            "only `kind`, `palette` and `dedup` are supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\")\nmain { picture.tile_count }\n",
+            "only `tiles`, `nametable`, `attributes` and `palette` are supported yet",
+        ),
     ] {
         let diagnostics = compile_source(source).expect_err("an asset construct is refused");
+        assert_eq!(diagnostics[0].message, message, "for `{source}`");
         assert_eq!(diagnostics[0].notes, [ASSET_SUBSET], "for `{source}`");
     }
 }
