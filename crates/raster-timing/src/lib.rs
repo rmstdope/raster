@@ -674,6 +674,44 @@ pub fn timed_frame_nmi(ctrl: RegisterState) -> Option<TimedFrameNmi> {
     }
 }
 
+/// What `ppu.ctrl` holds as a `cycles` block starts, as far as bit 7 goes.
+///
+/// Judged per path and joined where paths meet; `None` for a block nothing reaches is the
+/// caller's. A `cycles` block cannot afford an NMI, and the `sei` around it cannot mask one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NmiAtEntry {
+    /// Bit 7 is clear: reset leaves zero, and a constant without bit 7 keeps it so.
+    Clear,
+    /// Bit 7 is set on every path in.
+    On { ctrl: u8 },
+    /// The last write was not a constant, so bit 7 is unknown.
+    Unproven,
+    /// Bit 7 is set on some paths in and not on others.
+    Conditional,
+}
+
+impl NmiAtEntry {
+    /// The fact a store leaves: `Some` constant, or `None` for a value rasterc cannot fold.
+    pub fn stored(value: Option<u8>) -> Self {
+        match value {
+            Some(ctrl) if ctrl & PPU_CTRL_NMI != 0 => Self::On { ctrl },
+            Some(_) => Self::Clear,
+            None => Self::Unproven,
+        }
+    }
+
+    /// The fact where two paths meet. Unknown wins; set-and-clear is conditional; two set
+    /// values keep the earlier, since either shows the bit.
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unproven, _) | (_, Self::Unproven) => Self::Unproven,
+            (Self::Clear, Self::Clear) => Self::Clear,
+            (Self::On { .. }, Self::On { .. }) => self,
+            _ => Self::Conditional,
+        }
+    }
+}
+
 /// What a PPU register holds where the compiler can prove it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegisterState {

@@ -10,7 +10,7 @@ use raster_syntax::{
 };
 pub use raster_timing::CycleConstraint;
 use raster_timing::{
-    mask_enables_rendering, timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError,
+    mask_enables_rendering, timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError, NmiAtEntry,
     PpuConfiguration, RegisterState, TimedFrameNmi, NMI_CYCLES, PPU_CTRL_NMI,
 };
 
@@ -1345,6 +1345,7 @@ pub fn lower(typed: &TypedProgram) -> Result<Program, LowerFailure> {
     lowerer.lower_program(&typed.program);
     lowerer.check_mmc3_irq_frame();
     lowerer.check_timed_frame_nmi();
+    lowerer.check_block_nmi();
     if lowerer.errors.is_empty() {
         lowerer.program.warnings = lowerer.warnings;
         Ok(lowerer.program)
@@ -1892,6 +1893,39 @@ impl Lowerer {
         writes.sort_by_key(|write| write.scanline);
         for write in writes {
             if let Some(warning) = handler_nmi_warning(&write) {
+                self.warnings.push(warning);
+            }
+        }
+    }
+
+    /// Warn where a `cycles` block in `main`, or in anything `main` runs, can start with NMI on.
+    ///
+    /// Frame handlers are never walked: an IRQ handler runs on visible scanlines and
+    /// re-synchronizes, and a `timed` frame is warned about as a whole.
+    fn check_block_nmi(&mut self) {
+        if !self.errors.is_empty() {
+            return;
+        }
+        let functions: BTreeMap<Label, &Function> = self
+            .program
+            .functions
+            .iter()
+            .map(|function| (function.label, function))
+            .collect();
+        let mut walk = NmiWalk {
+            functions: &functions,
+            visiting: Vec::new(),
+            blocks: BTreeMap::new(),
+        };
+        let mut state = Some(NmiAtEntry::Clear);
+        walk.body(&self.program.global_initializers, &mut state);
+        if let Some(main) = &self.program.main {
+            walk.body(&main.statements, &mut state);
+        }
+        let mut blocks: Vec<_> = walk.blocks.into_values().collect();
+        blocks.sort_by_key(|block| block.span.start);
+        for block in blocks {
+            if let Some(warning) = block_nmi_warning(block.state, &block.constraint, block.span) {
                 self.warnings.push(warning);
             }
         }
@@ -3716,6 +3750,182 @@ fn enter_function(
         conditional,
     );
     visiting.pop();
+}
+
+/// A `cycles` block and what `ppu.ctrl` bit 7 can be on every way into it.
+struct BlockEntry {
+    constraint: CycleConstraint,
+    span: Span,
+    state: NmiAtEntry,
+}
+
+/// The walk behind [`Lowerer::check_block_nmi`]: `ppu.ctrl` bit 7 along every path of `main`.
+///
+/// `None` is a point nothing reaches. A label joins in what every jump to it carried, and a
+/// body is walked again until no label learns anything new, which is how a loop's back edge
+/// reaches the blocks at its top.
+struct NmiWalk<'a> {
+    functions: &'a BTreeMap<Label, &'a Function>,
+    visiting: Vec<Label>,
+    blocks: BTreeMap<u32, BlockEntry>,
+}
+
+fn join_nmi(left: Option<NmiAtEntry>, right: Option<NmiAtEntry>) -> Option<NmiAtEntry> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.join(right)),
+        (left, right) => left.or(right),
+    }
+}
+
+impl NmiWalk<'_> {
+    /// Walk one body from `state`, leaving what holds at its end (or on its returns) in `state`.
+    fn body(&mut self, statements: &[Statement], state: &mut Option<NmiAtEntry>) {
+        let entry = *state;
+        let mut at_labels: BTreeMap<Label, Option<NmiAtEntry>> = BTreeMap::new();
+        loop {
+            let before = at_labels.clone();
+            let mut current = entry;
+            let mut exit = None;
+            self.statements(statements, &mut current, &mut at_labels, &mut exit);
+            if at_labels == before {
+                *state = join_nmi(current, exit);
+                return;
+            }
+        }
+    }
+
+    fn statements(
+        &mut self,
+        statements: &[Statement],
+        state: &mut Option<NmiAtEntry>,
+        at_labels: &mut BTreeMap<Label, Option<NmiAtEntry>>,
+        exit: &mut Option<NmiAtEntry>,
+    ) {
+        for statement in statements {
+            match statement {
+                Statement::Label(label) => {
+                    let recorded = at_labels.get(label).copied().flatten();
+                    *state = join_nmi(*state, recorded);
+                    at_labels.insert(*label, *state);
+                }
+                Statement::Assign {
+                    destination: Destination::Register(Register::PpuCtrl),
+                    value,
+                } => {
+                    if state.is_some() {
+                        let constant = match value {
+                            Value::Constant(value) => Some(*value),
+                            _ => None,
+                        };
+                        *state = Some(NmiAtEntry::stored(constant));
+                    }
+                }
+                Statement::Call { target, .. } => self.call(*target, state),
+                Statement::Branch { if_false, .. } => {
+                    let recorded = at_labels.get(if_false).copied().flatten();
+                    at_labels.insert(*if_false, join_nmi(recorded, *state));
+                }
+                Statement::Jump { target } => {
+                    let recorded = at_labels.get(target).copied().flatten();
+                    at_labels.insert(*target, join_nmi(recorded, *state));
+                    *state = None;
+                }
+                Statement::Return(_) => {
+                    *exit = join_nmi(*exit, *state);
+                    *state = None;
+                }
+                Statement::Timed {
+                    constraint,
+                    body,
+                    span,
+                    ..
+                } => {
+                    if let (Some(entering), true) = (
+                        *state,
+                        !matches!(constraint, CycleConstraint::Report { .. }),
+                    ) {
+                        self.blocks
+                            .entry(span.start)
+                            .and_modify(|block| block.state = block.state.join(entering))
+                            .or_insert_with(|| BlockEntry {
+                                constraint: constraint.clone(),
+                                span: *span,
+                                state: entering,
+                            });
+                    }
+                    self.statements(body, state, at_labels, exit);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Step into a function: what it returns with is what the caller continues from.
+    fn call(&mut self, target: Label, state: &mut Option<NmiAtEntry>) {
+        let Some(function) = self.functions.get(&target).copied() else {
+            return;
+        };
+        if self.visiting.contains(&target) {
+            return;
+        }
+        self.visiting.push(target);
+        self.body(&function.statements, state);
+        self.visiting.pop();
+    }
+}
+
+/// The warning a `cycles` block earns when NMI can be on as it starts, if it earns one.
+fn block_nmi_warning(
+    state: NmiAtEntry,
+    constraint: &CycleConstraint,
+    span: Span,
+) -> Option<LowerWarning> {
+    let label = match constraint {
+        CycleConstraint::Exact(cycles) => format!("this block claims {cycles} cycles"),
+        CycleConstraint::AtMost(cycles) => format!("this block claims at most {cycles} cycles"),
+        CycleConstraint::Report { .. } => return None,
+    };
+    let unknown = |first: &str| LowerWarning {
+        message: "rasterc cannot tell whether NMI is on when this block runs".to_owned(),
+        label: label.clone(),
+        notes: vec![
+            first.to_owned(),
+            format!(
+                "bit 7 is NMI, and each NMI taken inside costs the block {NMI_CYCLES} cycles;\n\
+                 writing a constant with bit 7 clear keeps its count"
+            ),
+        ],
+        span,
+        assumes_budget_met: false,
+    };
+    match state {
+        NmiAtEntry::Clear => None,
+        NmiAtEntry::On { ctrl } => Some(LowerWarning {
+            message: "NMI can be on when this block runs, and a `cycles` block cannot afford one"
+                .to_owned(),
+            label,
+            notes: vec![
+                format!(
+                    "`ppu.ctrl` holds ${ctrl:02X} when this block starts, and bit 7 is NMI;\n\
+                     the `sei` around a timed block cannot mask an NMI"
+                ),
+                format!(
+                    "each NMI taken inside costs the block {NMI_CYCLES} cycles; clear bit 7\n\
+                     before the block to keep its count"
+                ),
+            ],
+            span,
+            assumes_budget_met: false,
+        }),
+        NmiAtEntry::Unproven => Some(unknown(
+            "the last write to `ppu.ctrl` before this block is not a value\n\
+             rasterc can see, so bit 7 is unknown",
+        )),
+        NmiAtEntry::Conditional => Some(unknown(
+            "`ppu.ctrl` is written with bit 7 set on some paths into this\n\
+             block and not others, so bit 7 is unknown",
+        )),
+    }
 }
 
 /// The last note both NMI warnings end with, so the two cannot drift apart.
