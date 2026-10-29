@@ -1209,3 +1209,135 @@ fn a_local_named_vram_addr_in_a_timed_region_needs_no_sync_exact() {
     .expect("parses");
     analyze(&program).expect("a variable is not a PPU write");
 }
+
+
+const PICTURE: &str = "asset image picture = png(\"art/picture.png\") { kind: background }\n";
+
+/// The errors of `PICTURE` followed by `rest`, each with the text its span covers.
+fn picture_errors(rest: &str) -> Vec<(String, String)> {
+    let source = format!("{PICTURE}{rest}");
+    let program = parse(&source).expect("fixture should parse");
+    match analyze(&program) {
+        Ok(_) => Vec::new(),
+        Err(found) => found
+            .into_iter()
+            .map(|error| {
+                (
+                    error.message,
+                    source[error.span.start as usize..error.span.end as usize].to_owned(),
+                )
+            })
+            .collect(),
+    }
+}
+
+fn pair(message: &str, text: &str) -> (String, String) {
+    (message.to_owned(), text.to_owned())
+}
+
+#[test]
+fn a_chrrom_bank_of_asset_tiles_analyzes_and_the_loads_are_calls() {
+    assert_eq!(
+        picture_errors(
+            "chrrom bank 0 { picture.tiles }\n\
+             main {\n load_palette(picture.palette)\n load_nametable(picture.nametable, picture.attributes)\n }"
+        ),
+        []
+    );
+}
+
+#[test]
+fn refuses_a_chrrom_bank_number_an_mmc3_cannot_address() {
+    assert_eq!(
+        picture_errors("chrrom bank 32 { picture.tiles }\nmain { }"),
+        [pair("an MMC3 cartridge holds banks 0 to 31", "32")]
+    );
+    assert_eq!(
+        picture_errors("chrrom bank 31 { picture.tiles }\nmain { }"),
+        []
+    );
+    assert_eq!(
+        picture_errors("chrrom bank $1F { picture.tiles }\nmain { }"),
+        []
+    );
+}
+
+#[test]
+fn refuses_a_chrrom_bank_declared_twice() {
+    let found = picture_errors("chrrom bank 1 { }\nchrrom bank 1 { }\nmain { }");
+    assert_eq!(found, [pair("`chrrom bank 1` is declared twice", "1")]);
+}
+
+#[test]
+fn refuses_anything_in_a_chrrom_bank_that_is_not_an_assets_tiles() {
+    let message = "a `chrrom` bank holds tiles, such as `picture.tiles`";
+    assert_eq!(
+        picture_errors("chrrom bank 0 { picture.nametable }\nmain { }"),
+        [pair(message, "picture.nametable")]
+    );
+    assert_eq!(
+        picture_errors("chrrom bank 0 { 7 }\nmain { }"),
+        [pair(message, "7")]
+    );
+    assert_eq!(
+        picture_errors("chrrom bank 0 { ppu.ctrl }\nmain { }"),
+        [pair(message, "ppu.ctrl")]
+    );
+    assert_eq!(
+        picture_errors("chrrom bank 0 { missing.tiles }\nmain { }"),
+        [pair("unknown name `missing`", "missing")]
+    );
+}
+
+#[test]
+fn refuses_one_assets_tiles_placed_twice() {
+    assert_eq!(
+        picture_errors(
+            "chrrom bank 0 { picture.tiles }\nchrrom bank 1 { picture.tiles }\nmain { }"
+        ),
+        [pair(
+            "`picture.tiles` is already placed in a `chrrom` bank",
+            "picture.tiles"
+        )]
+    );
+}
+
+#[test]
+fn the_load_calls_check_their_argument_count() {
+    assert_eq!(
+        picture_errors("main { load_palette() }"),
+        [pair(
+            "function `load_palette` expects 1 arguments but received 0",
+            "load_palette"
+        )]
+    );
+    assert_eq!(
+        picture_errors("main { load_nametable(picture.nametable) }"),
+        [pair(
+            "function `load_nametable` expects 2 arguments but received 1",
+            "load_nametable"
+        )]
+    );
+}
+
+#[test]
+fn the_load_calls_are_refused_inside_a_timed_block() {
+    let source = format!("{PICTURE}main {{ cycles(500) pad {{ load_palette(picture.palette) }} }}");
+    let program = parse(&source).expect("fixture should parse");
+    let found = analyze(&program).expect_err("a load is a loop");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0]
+            .message
+            .contains("`load_palette` cannot be called inside a timed block")
+    );
+    assert_eq!(found[0].refusal, Refusal::TimedRegionCost);
+}
+
+#[test]
+fn a_function_of_the_same_name_shadows_the_builtin() {
+    assert_eq!(
+        picture_errors("fn load_palette(x: u8) { }\nmain { load_palette(1) }"),
+        []
+    );
+}

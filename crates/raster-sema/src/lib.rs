@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use raster_diag::Refusal;
 use raster_syntax::{
@@ -66,6 +66,10 @@ struct Analyzer {
     /// Whether the statements being checked run from a position the compiler has synchronized —
     /// which is what a `frame` handler does, and nothing else yet.
     synchronized: bool,
+    /// The `chrrom bank N` numbers seen so far.
+    chr_banks: BTreeSet<u32>,
+    /// The assets whose tiles a `chrrom` bank has already placed.
+    placed_tiles: BTreeSet<String>,
 }
 
 /// One enclosing timed region.
@@ -130,6 +134,8 @@ impl Analyzer {
             return_type: ValueType::Void,
             timed_regions: Vec::new(),
             synchronized: false,
+            chr_banks: BTreeSet::new(),
+            placed_tiles: BTreeSet::new(),
         }
     }
 
@@ -374,6 +380,58 @@ impl Analyzer {
         }
     }
 
+    /// A `chrrom bank N { ... }`: the bank exists once, the MMC3 can address it,
+    /// and everything placed in it is some declared asset's tiles, placed once.
+    ///
+    /// How many tiles that is, and whether they fit, needs the decoded pictures
+    /// and is `rasterc`'s to judge once they exist.
+    fn check_chrrom(&mut self, bank: &raster_syntax::ChrRomBank) {
+        match parse_number(&bank.number.value) {
+            None => self.error(bank.number.span, "invalid numeric literal"),
+            Some(number) if number > MAX_CHR_BANK => self.error(
+                bank.number.span,
+                format!("an MMC3 cartridge holds banks 0 to {MAX_CHR_BANK}"),
+            ),
+            Some(number) => {
+                if !self.chr_banks.insert(number) {
+                    self.error(
+                        bank.number.span,
+                        format!("`chrrom bank {number}` is declared twice"),
+                    );
+                }
+            }
+        }
+        for entry in &bank.entries {
+            let Expression::Member { base, member } = &entry.value else {
+                self.not_tiles(entry.span);
+                continue;
+            };
+            let Expression::Name(name) = &base.value else {
+                self.not_tiles(entry.span);
+                continue;
+            };
+            match self.lookup(&name.value).map(|symbol| symbol.kind.clone()) {
+                None => self.error(name.span, format!("unknown name `{}`", name.value)),
+                Some(SymbolKind::Asset) if member.value == "tiles" => {
+                    if !self.placed_tiles.insert(name.value.clone()) {
+                        self.error(
+                            entry.span,
+                            format!(
+                                "`{}.tiles` is already placed in a `chrrom` bank",
+                                name.value
+                            ),
+                        );
+                    }
+                }
+                Some(_) => self.not_tiles(entry.span),
+            }
+        }
+    }
+
+    fn not_tiles(&mut self, span: Span) {
+        self.error(span, "a `chrrom` bank holds tiles, such as `picture.tiles`");
+    }
+
     /// The caret is on the value, which is the part the author must change.
     fn require_asset_value(
         &mut self,
@@ -448,6 +506,7 @@ impl Analyzer {
             }
             Item::Main(block) => self.check_block(block),
             Item::Asset(asset) => self.check_asset(asset),
+            Item::ChrRom(bank) => self.check_chrrom(bank),
             _ => {}
         }
     }
@@ -1139,6 +1198,9 @@ impl Analyzer {
             return ValueType::Unknown;
         };
         let Some(symbol) = self.lookup(&name.value).cloned() else {
+            if let Some(parameters) = load_builtin_arity(&name.value) {
+                return self.load_call_type(name, parameters, arguments);
+            }
             self.error(name.span, format!("unknown name `{}`", name.value));
             return ValueType::Unknown;
         };
@@ -1308,6 +1370,43 @@ impl Analyzer {
             NAMESPACE_LIST,
         );
         ValueType::Unknown
+    }
+
+    /// `load_palette` and `load_nametable`, which upload an asset's blocks and
+    /// are the language's only builtin calls. Whether each argument is the
+    /// right *block* is `raster-ir`'s question, where a diagnostic can carry a
+    /// label and a help line; here they are only checked to be names that
+    /// exist and to be as many as the call takes.
+    fn load_call_type(
+        &mut self,
+        name: &Spanned<String>,
+        parameters: usize,
+        arguments: &[Spanned<Expression>],
+    ) -> ValueType {
+        if self.in_timed_region() {
+            self.cannot_be_costed(
+                name.span,
+                format!(
+                    "`{}` cannot be called inside a timed block: it copies its data in a \
+                     loop, and a loop cannot be costed",
+                    name.value
+                ),
+            );
+        }
+        if parameters != arguments.len() {
+            self.error(
+                name.span,
+                format!(
+                    "function `{}` expects {parameters} arguments but received {}",
+                    name.value,
+                    arguments.len()
+                ),
+            );
+        }
+        for argument in arguments {
+            self.expression_type(argument);
+        }
+        ValueType::Void
     }
 
     fn ensure_assignable(&mut self, expression: &Spanned<Expression>) {
@@ -1498,6 +1597,19 @@ impl Analyzer {
         if maximum.is_some_and(|maximum| value > maximum) {
             self.error(span, "constant value overflows its declared type");
         }
+    }
+}
+
+/// The highest `chrrom bank` number: an MMC3 addresses 256 KiB of CHR, which is
+/// 32 banks of 8 KiB.
+const MAX_CHR_BANK: u32 = 31;
+
+/// How many arguments a builtin `load_*` call takes, or `None` for any other name.
+fn load_builtin_arity(name: &str) -> Option<usize> {
+    match name {
+        "load_palette" => Some(1),
+        "load_nametable" => Some(2),
+        _ => None,
     }
 }
 
