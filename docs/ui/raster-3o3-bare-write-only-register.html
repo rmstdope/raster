@@ -1,0 +1,36 @@
+<!doctype html><meta charset="utf-8"><title>raster-3o3 — a write-only register alone on a line (agreed)</title><style>
+:root{--bg:#f6f6f8;--fg:#22242c;--dim:#666b7a;--card:#fff;--line:#dcdfe8}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0e13;--fg:#d8dae4;--dim:#8b90a2;--card:#131521;--line:#262a36}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif}
+main{max-width:56rem;margin:0 auto;padding:2rem 16px 4rem}h1{font-size:1.3rem;margin:0 0 .3rem}
+h2{font-size:1rem;margin:2rem 0 .3rem}.sub,.note{color:var(--dim);font-size:.93rem;max-width:52em}
+.term{background:#12131a;color:#d8dae4;border-radius:8px;padding:.9rem 1.1rem;font:12.5px/1.5 ui-monospace,Menlo,monospace;white-space:pre;overflow-x:auto;border:1px solid #000}
+.e{color:#ff6b6b;font-weight:700}.g{color:#7c8296}.tag{display:inline-block;font:600 11px ui-monospace,monospace;padding:.3rem .5rem;border-radius:4px;background:#e3e5ec;color:#4a4f61}
+.cost{border-left:3px solid var(--line);padding-left:.9rem;margin-top:1rem;font-size:.92rem}
+</style><main><span class="tag">BARE WRITE-ONLY REGISTER</span><h1>raster-3o3 — a write-only register alone on a line (agreed)</h1><p class="sub">A bare register on its own line <em>is</em> a read, so it gets the very same refusal the compiler already gives for <code>var x: u8 = mmc3.irq_disable</code> — same message, same label, same notes — with two extra notes: first <em>why</em> this counts as a read (the same pattern as the agreed note for <code>+=</code>), last the likely slip.</p><h2>A write-only register on its own line (13 registers)</h2><div class="term"><span class="e">error</span>: `mmc3.irq_disable` cannot be read
+ <span class="g">--&gt;</span> demo.raster:2:5
+  <span class="g">|</span>
+<span class="g">2 |</span>     mmc3.irq_disable
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^^^^^^^</span> $E000 is a write-only port
+  <span class="g">=</span> note: a register on a line by itself is read, so this reads $E000
+  <span class="g">=</span> note: reading $E000 returns a byte of your own program from the PRG
+          bank mapped there, not the last value written
+  <span class="g">=</span> note: keep what you wrote in a variable of your own
+          and write the whole value
+  <span class="g">=</span> note: to write it, give it a value: `mmc3.irq_disable = &lt;value&gt;`</div><p class="cost">Cost: two new note lines. Everything above it is wording already shipped, so a write-only port gets one refusal wherever the read happens.</p><h2>The same thing on a PPU port</h2><div class="term"><span class="e">error</span>: `ppu.ctrl` cannot be read
+ <span class="g">--&gt;</span> demo.raster:2:5
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.ctrl
+  <span class="g">|</span>     <span class="e">^^^^^^^^</span> $2000 is a write-only port
+  <span class="g">=</span> note: a register on a line by itself is read, so this reads $2000
+  <span class="g">=</span> note: reading $2000 returns whatever was last on the PPU's data bus,
+          not the last value written
+  <span class="g">=</span> note: keep what you wrote in a variable of your own
+          and write the whole value
+  <span class="g">=</span> note: to write it, give it a value: `ppu.ctrl = &lt;value&gt;`</div><h2>Unchanged in every option — a register that can be read</h2>
+<div class="term"><span class="e">error</span>: a register read cannot stand on its own as a statement
+ <span class="g">--&gt;</span> demo.raster:2:5
+  <span class="g">|</span>
+<span class="g">2 |</span>     ppu.status
+  <span class="g">|</span>     <span class="e">^^^^^^^^^^</span> assign it to a variable: `var s: u8 = ppu.status`</div>
+<p class="note">Same for <code>ppu.oam_data</code> and <code>ppu.data</code>, the only three that can be read.</p></main>
