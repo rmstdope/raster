@@ -4,10 +4,13 @@
 //! source is testable from a string.
 
 use crate::assets::{resolve_assets, AssetSource, NoAssets};
+use crate::chr::{layout, ChrBankSummary, ChrError};
 use raster_codegen::{generate_with_isa, CodegenError, FrameBudget};
 use raster_diag::{Diagnostic, Refusal, Span};
-use raster_ir::{lower, FrameStrategy};
-use raster_link::{link_mmc3_program, mmc3_reset_runtime_bytes, InterruptVectors, LinkError};
+use raster_ir::{lower_with_pictures, FrameStrategy};
+use raster_link::{
+    link_mmc3_program_with_chr, mmc3_reset_runtime_bytes, InterruptVectors, LinkError,
+};
 use raster_sema::analyze;
 use raster_syntax::parse;
 use raster_timing::TimingError;
@@ -58,6 +61,9 @@ pub struct Rom {
     pub warnings: Vec<Diagnostic>,
     /// The frame's per-event budget table, for a program that has a frame.
     pub frame: Option<FrameBudget>,
+    /// One entry per 8 KiB bank of CHR ROM, empty banks included. Empty when the program has no
+    /// `chrrom`, which is CHR RAM and prints the summary it always has.
+    pub chr_banks: Vec<ChrBankSummary>,
 }
 
 /// Why a build failed: every diagnostic of the failing stage, and the frame's budget table when
@@ -111,11 +117,7 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
         )
     })?;
     let typed = analyze(&syntax).map_err(|errors| analyzed(errors, source))?;
-    // Nothing consumes the decoded pictures yet, and dropping them here is the
-    // honest end of this stage: the file has been read, decoded and encoded, so
-    // every real problem with it has been reported, and lowering refuses the
-    // item because no byte of it is placed.
-    let _assets = resolve_assets(&typed.program, assets).map_err(|errors| {
+    let assets = resolve_assets(&typed.program, assets).map_err(|errors| {
         spanned(
             errors
                 .into_iter()
@@ -123,7 +125,10 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
             source,
         )
     })?;
-    let mut ir = lower(&typed).map_err(|failure| {
+    // Whether the tiles fit their banks is a question about the decoded pictures, so it is asked
+    // here and not in `raster-sema`; the nametables it hands lowering already point at the tiles.
+    let chr = layout(&typed.program, &assets).map_err(|errors| chr_diagnostics(errors, source))?;
+    let mut ir = lower_with_pictures(&typed, &chr.pictures).map_err(|failure| {
         failed(
             failure.warnings,
             &[],
@@ -179,17 +184,22 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
         .frame
         .as_ref()
         .is_some_and(|frame| frame.strategy == FrameStrategy::Timed);
-    let rom = link_mmc3_program(&output.program, output.main, output.irq, LEGAL_ISA).map_err(
-        |error| {
-            // A link failure refuses no timed block, so nothing is withdrawn.
-            failed(
-                lower_warnings,
-                &[],
-                vec![link_diagnostic(error, timed_frame)],
-                source,
-            )
-        },
-    )?;
+    let rom = link_mmc3_program_with_chr(
+        &output.program,
+        output.main,
+        output.irq,
+        LEGAL_ISA,
+        &chr.rom,
+    )
+    .map_err(|error| {
+        // A link failure refuses no timed block, so nothing is withdrawn.
+        failed(
+            lower_warnings,
+            &[],
+            vec![link_diagnostic(error, timed_frame)],
+            source,
+        )
+    })?;
 
     Ok(Rom {
         image: rom.image,
@@ -199,7 +209,19 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
         reports: output.reports,
         warnings,
         frame: output.frame,
+        chr_banks: chr.banks,
     })
+}
+
+/// A layout mistake is a diagnostic with a label and a help line of its own.
+fn chr_diagnostics(errors: Vec<ChrError>, source: &str) -> Vec<Diagnostic> {
+    errors
+        .into_iter()
+        .map(|error| {
+            let span = Span::clamped(error.span.start as usize, error.span.end as usize, source);
+            Diagnostic::error(error.message, span, error.label).with_help(error.help)
+        })
+        .collect()
 }
 
 /// Every error from one stage, as diagnostics. `Span::clamped` is the only way
@@ -553,6 +575,7 @@ mod tests {
             notes: Vec::new(),
             span: raster_syntax::Span::new(at.0, at.1),
             assumes_budget_met,
+            help: None,
             secondary: None,
         }
     }

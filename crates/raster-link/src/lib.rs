@@ -436,7 +436,7 @@ pub fn emit_mmc3_ines_with_chr(
     vectors: InterruptVectors,
     chr_rom: &[u8],
 ) -> Result<Vec<u8>, RomError> {
-    if chr_rom.len() % CHR_ROM_BANK_SIZE != 0 {
+    if !chr_rom.len().is_multiple_of(CHR_ROM_BANK_SIZE) {
         return Err(RomError::ChrRomNotWholeBanks {
             length: chr_rom.len(),
         });

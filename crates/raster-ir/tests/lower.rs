@@ -2283,6 +2283,310 @@ fn refuses_a_second_target_block() {
     assert_eq!(errors[0].refusal, Refusal::Rejected);
 }
 
+/// An asset on its own is a declaration: it costs the ROM nothing until something loads it.
+#[test]
+fn an_asset_nothing_loads_adds_no_code_and_no_data() {
+    let program = lower_source("asset image picture = png(\"art/picture.png\")\nmain { }");
+    assert!(program.data.is_empty());
+    assert!(program.main.unwrap().statements.is_empty());
+}
+
+// ---- load_palette / load_nametable --------------------------------------------------------
+
+const PICTURE: &str = "asset image picture = png(\"p.png\")\n";
+
+fn pictures(placed: bool) -> Pictures {
+    let picture = |seed: u8| Picture {
+        palette: vec![seed; 16],
+        attributes: vec![seed + 1; 64],
+        nametable: placed.then(|| vec![seed + 2; 960]),
+    };
+    Pictures {
+        by_name: [
+            ("picture".to_owned(), picture(10)),
+            ("other".to_owned(), picture(20)),
+        ]
+        .into_iter()
+        .collect(),
+        next_free_bank: 1,
+    }
+}
+
+fn lowered_loads(body: &str) -> raster_ir::Program {
+    let source = format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}");
+    let syntax = parse(&source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    lower_with_pictures(&typed, &pictures(true)).expect("fixture should lower")
+}
+
+/// Everything a refused load reports, with the text under each span.
+fn refused_loads(body: &str, placed: bool) -> Vec<(raster_ir::LowerError, String)> {
+    let source = format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}");
+    let syntax = parse(&source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    lower_with_pictures(&typed, &pictures(placed))
+        .expect_err("fixture should not lower")
+        .errors
+        .into_iter()
+        .map(|error| {
+            let text = source[error.span.start as usize..error.span.end as usize].to_owned();
+            (error, text)
+        })
+        .collect()
+}
+
+fn block_bytes<'a>(program: &'a raster_ir::Program, block: &PpuBlock) -> &'a [u8] {
+    &program
+        .data
+        .iter()
+        .find(|data| data.label == block.data)
+        .expect("the block's data is in the program")
+        .bytes
+}
+
+#[test]
+fn load_palette_uploads_sixteen_bytes_to_3f00() {
+    let program = lowered_loads("load_palette(picture.palette)");
+    let statements = program.main.as_ref().unwrap().statements.clone();
+    let [Statement::PpuUpload { blocks }] = statements.as_slice() else {
+        panic!("expected one upload, got {statements:?}");
+    };
+    assert_eq!(blocks.len(), 1);
+    assert_eq!((blocks[0].address, blocks[0].length), (0x3f00, 16));
+    assert_eq!(block_bytes(&program, &blocks[0]), [10u8; 16]);
+}
+
+#[test]
+fn load_nametable_uploads_the_nametable_then_its_attributes() {
+    let program = lowered_loads("load_nametable(picture.nametable, picture.attributes)");
+    let statements = program.main.as_ref().unwrap().statements.clone();
+    let [Statement::PpuUpload { blocks }] = statements.as_slice() else {
+        panic!("expected one upload, got {statements:?}");
+    };
+    assert_eq!(
+        blocks
+            .iter()
+            .map(|b| (b.address, b.length))
+            .collect::<Vec<_>>(),
+        [(0x2000, 960), (0x23c0, 64)]
+    );
+    assert_eq!(block_bytes(&program, &blocks[0]), vec![12u8; 960]);
+    assert_eq!(block_bytes(&program, &blocks[1]), vec![11u8; 64]);
+}
+
+#[test]
+fn loading_the_same_block_twice_stores_it_once() {
+    let program = lowered_loads(
+        "load_palette(picture.palette)\nload_palette(picture.palette)\nload_palette(other.palette)",
+    );
+    assert_eq!(program.data.len(), 2);
+}
+
+#[test]
+fn a_wrong_member_for_load_palette_names_what_was_passed_and_what_was_meant() {
+    for (member, passed) in [
+        ("tiles", "tiles"),
+        ("nametable", "nametable"),
+        ("attributes", "attributes"),
+    ] {
+        let body = format!("load_palette(picture.{member})");
+        let found = refused_loads(&body, true);
+        assert_eq!(found.len(), 1, "{member}: {found:?}");
+        let (error, text) = &found[0];
+        assert_eq!(
+            error.message,
+            "`load_palette` takes a palette, not {passed}".replace("{passed}", passed)
+        );
+        assert_eq!(text, &format!("picture.{member}"));
+        assert_eq!(
+            error.label.as_deref(),
+            Some(format!("this is `picture`'s {passed}").as_str())
+        );
+        assert_eq!(
+            error.help.as_deref(),
+            Some("did you mean `picture.palette`?")
+        );
+    }
+}
+
+#[test]
+fn a_swapped_load_nametable_points_at_the_first_wrong_argument() {
+    let found = refused_loads(
+        "load_nametable(picture.attributes, picture.nametable)",
+        true,
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (error, text) = &found[0];
+    assert_eq!(
+        error.message,
+        "`load_nametable` takes a nametable, then its attributes"
+    );
+    assert_eq!(text, "picture.attributes");
+    assert_eq!(
+        error.label.as_deref(),
+        Some("this is `picture`'s attributes")
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("write `load_nametable(picture.nametable, picture.attributes)`")
+    );
+}
+
+#[test]
+fn load_nametable_with_another_assets_attributes_is_wrong_in_the_second_argument() {
+    let found = refused_loads("load_nametable(picture.nametable, other.attributes)", true);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].1, "other.attributes");
+    assert_eq!(
+        found[0].0.label.as_deref(),
+        Some("this is `other`'s attributes")
+    );
+    assert_eq!(
+        found[0].0.help.as_deref(),
+        Some("write `load_nametable(picture.nametable, picture.attributes)`")
+    );
+}
+
+#[test]
+fn a_non_asset_argument_is_refused_with_the_call_written_out() {
+    let found = refused_loads("load_nametable(1, 2)", true);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].1, "1");
+    assert_eq!(found[0].0.label.as_deref(), Some("this is not a nametable"));
+    assert_eq!(
+        found[0].0.help.as_deref(),
+        Some("write `load_nametable(<asset>.nametable, <asset>.attributes)`")
+    );
+    let found = refused_loads("load_palette(1)", true);
+    assert_eq!(found[0].0.label.as_deref(), Some("this is not a palette"));
+    assert_eq!(
+        found[0].0.help.as_deref(),
+        Some("write `load_palette(<asset>.palette)`")
+    );
+}
+
+#[test]
+fn a_nametable_whose_tiles_are_in_no_bank_is_refused_under_the_nametable_argument() {
+    let found = refused_loads(
+        "load_nametable(picture.nametable, picture.attributes)",
+        false,
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (error, text) = &found[0];
+    assert_eq!(
+        error.message,
+        "`picture`'s tiles are not in any `chrrom` bank"
+    );
+    assert_eq!(text, "picture.nametable");
+    assert_eq!(
+        error.label.as_deref(),
+        Some("this nametable points at tiles that are not on the cartridge")
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("add `chrrom bank 1 { picture.tiles }`")
+    );
+}
+
+#[test]
+fn a_palette_needs_no_tiles_so_it_loads_with_none_placed() {
+    let source = format!("{PICTURE}main {{ load_palette(picture.palette) }}");
+    let syntax = parse(&source).unwrap();
+    let typed = analyze(&syntax).unwrap();
+    assert!(lower_with_pictures(&typed, &pictures(false)).is_ok());
+}
+
+fn warnings_of(body: &str) -> Vec<raster_ir::LowerWarning> {
+    lowered_loads(body).warnings
+}
+
+const LOAD: &str = "load_nametable(picture.nametable, picture.attributes)";
+
+#[test]
+fn loading_a_nametable_after_rendering_is_turned_on_warns() {
+    let body = format!("ppu.mask = $0A\n{LOAD}");
+    let source = format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}");
+    let warnings = warnings_of(&body);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let warning = &warnings[0];
+    assert_eq!(
+        warning.message,
+        "`load_nametable` runs while rendering is on"
+    );
+    assert_eq!(
+        &source[warning.span.start as usize..warning.span.end as usize],
+        "load_nametable"
+    );
+    assert_eq!(
+        warning.label,
+        "1024 writes cannot finish inside one vblank; the screen will tear"
+    );
+    let raster_ir::SecondaryLabel { span, label } = warning
+        .secondary
+        .clone()
+        .expect("the ppu.mask line is marked");
+    assert_eq!(
+        &source[span.start as usize..span.end as usize],
+        "ppu.mask = $0A"
+    );
+    assert_eq!(label, "rendering turned on here");
+    assert_eq!(
+        warning.help.as_deref(),
+        Some("call it before `ppu.mask = $0A`, or set `ppu.mask = $00` first")
+    );
+}
+
+#[test]
+fn the_warning_is_silent_when_rendering_was_turned_off_in_between() {
+    assert!(warnings_of(&format!("ppu.mask = $0A\nppu.mask = $00\n{LOAD}")).is_empty());
+    assert!(warnings_of(&format!("ppu.mask = $0A\nppu.mask = $06\n{LOAD}")).is_empty());
+}
+
+#[test]
+fn the_warning_is_silent_when_the_compiler_cannot_tell() {
+    // Nothing turned rendering on, or the value is not a constant.
+    assert!(warnings_of(LOAD).is_empty());
+    assert!(warnings_of(&format!(
+        "ppu.mask = $0A\nvar x: u8 = 1\nppu.mask = x\n{LOAD}"
+    ))
+    .is_empty());
+    // After a loop, a branch or a block, whatever it did is unknown.
+    for compound in [
+        "while 1 == 2 { ppu.mask = $00 }",
+        "if 1 == 2 { ppu.mask = $00 }",
+        "for i in 0..2 { ppu.mask = $00 }",
+        "{ ppu.mask = $00 }",
+    ] {
+        assert!(
+            warnings_of(&format!("ppu.mask = $0A\n{compound}\n{LOAD}")).is_empty(),
+            "{compound}"
+        );
+    }
+    // Inside a nested block the outer state is not inherited.
+    assert!(warnings_of(&format!("ppu.mask = $0A\n{{ {LOAD} }}")).is_empty());
+}
+
+#[test]
+fn the_warning_is_silent_after_a_call_that_could_have_turned_rendering_off() {
+    let source = format!(
+        "{PICTURE}fn quiet() {{ ppu.mask = $00 }}\nmain {{\nppu.mask = $0A\nquiet()\n{LOAD}\n}}"
+    );
+    let syntax = parse(&source).unwrap();
+    let typed = analyze(&syntax).unwrap();
+    let program = lower_with_pictures(&typed, &pictures(true)).unwrap();
+    assert!(program.warnings.is_empty());
+}
+
+#[test]
+fn a_write_to_another_register_does_not_forget_that_rendering_is_on() {
+    let warnings = warnings_of(&format!("ppu.mask = $1E\nppu.ctrl = $00\n{LOAD}"));
+    assert_eq!(warnings.len(), 1);
+}
+
+#[test]
+fn load_palette_never_warns() {
+    assert!(warnings_of("ppu.mask = $0A\nload_palette(picture.palette)").is_empty());
+}
 // ---- raster-72o: a `cycles` block that can start with NMI on ----
 
 const KNOWN_ON_HEADLINE: &str =
@@ -3146,297 +3450,3 @@ fn the_raw_byte_pair_still_lowers_to_the_same_two_writes() {
         ppu_addr_writes(0x3F, 0x00)
     );
 }
-
-/// An asset on its own is a declaration: it costs the ROM nothing until something loads it.
-fn an_asset_nothing_loads_adds_no_code_and_no_data() {
-    let program = lower_source("asset image picture = png(\"art/picture.png\")\nmain { }");
-    assert!(program.data.is_empty());
-    assert!(program.main.unwrap().statements.is_empty());
-}
-
-// ---- load_palette / load_nametable --------------------------------------------------------
-
-const PICTURE: &str = "asset image picture = png(\"p.png\")\n";
-
-fn pictures(placed: bool) -> Pictures {
-    let picture = |seed: u8| Picture {
-        palette: vec![seed; 16],
-        attributes: vec![seed + 1; 64],
-        nametable: placed.then(|| vec![seed + 2; 960]),
-    };
-    Pictures {
-        by_name: [
-            ("picture".to_owned(), picture(10)),
-            ("other".to_owned(), picture(20)),
-        ]
-        .into_iter()
-        .collect(),
-        next_free_bank: 1,
-    }
-}
-
-fn lowered_loads(body: &str) -> raster_ir::Program {
-    let source = format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}");
-    let syntax = parse(&source).expect("fixture should parse");
-    lower_with_pictures(&typed, &pictures(true)).expect("fixture should lower")
-}
-/// Everything a refused load reports, with the text under each span.
-fn refused_loads(body: &str, placed: bool) -> Vec<(raster_ir::LowerError, String)> {
-    let source = format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}");
-    let syntax = parse(&source).expect("fixture should parse");
-    let typed = analyze(&syntax).expect("fixture should analyze");
-    lower_with_pictures(&typed, &pictures(placed))
-        .expect_err("fixture should not lower")
-        .errors
-        .into_iter()
-        .map(|error| {
-            let text = source[error.span.start as usize..error.span.end as usize].to_owned();
-            (error, text)
-        })
-        .collect()
-}
-
-fn block_bytes<'a>(program: &'a raster_ir::Program, block: &PpuBlock) -> &'a [u8] {
-    &program
-        .data
-        .iter()
-        .find(|data| data.label == block.data)
-        .expect("the block's data is in the program")
-        .bytes
-}
-#[test]
-fn load_palette_uploads_sixteen_bytes_to_3f00() {
-    let program = lowered_loads("load_palette(picture.palette)");
-    let statements = program.main.as_ref().unwrap().statements.clone();
-    let [Statement::PpuUpload { blocks }] = statements.as_slice() else {
-        panic!("expected one upload, got {statements:?}");
-    };
-    assert_eq!(blocks.len(), 1);
-    assert_eq!((blocks[0].address, blocks[0].length), (0x3f00, 16));
-    assert_eq!(block_bytes(&program, &blocks[0]), [10u8; 16]);
-}
-
-#[test]
-fn load_nametable_uploads_the_nametable_then_its_attributes() {
-    let program = lowered_loads("load_nametable(picture.nametable, picture.attributes)");
-    let statements = program.main.as_ref().unwrap().statements.clone();
-    let [Statement::PpuUpload { blocks }] = statements.as_slice() else {
-        panic!("expected one upload, got {statements:?}");
-    };
-        blocks
-            .iter()
-            .map(|b| (b.address, b.length))
-            .collect::<Vec<_>>(),
-        [(0x2000, 960), (0x23c0, 64)]
-    );
-    assert_eq!(block_bytes(&program, &blocks[0]), vec![12u8; 960]);
-    assert_eq!(block_bytes(&program, &blocks[1]), vec![11u8; 64]);
-}
-
-#[test]
-fn loading_the_same_block_twice_stores_it_once() {
-    let program = lowered_loads(
-        "load_palette(picture.palette)\nload_palette(picture.palette)\nload_palette(other.palette)",
-    );
-    assert_eq!(program.data.len(), 2);
-}
-
-#[test]
-fn a_wrong_member_for_load_palette_names_what_was_passed_and_what_was_meant() {
-    for (member, passed) in [
-        ("tiles", "tiles"),
-        ("nametable", "nametable"),
-        ("attributes", "attributes"),
-    ] {
-        let body = format!("load_palette(picture.{member})");
-        let found = refused_loads(&body, true);
-        assert_eq!(found.len(), 1, "{member}: {found:?}");
-        let (error, text) = &found[0];
-        assert_eq!(
-            error.message,
-            "`load_palette` takes a palette, not {passed}".replace("{passed}", passed)
-        );
-        assert_eq!(text, &format!("picture.{member}"));
-        assert_eq!(
-            error.label.as_deref(),
-            Some(format!("this is `picture`'s {passed}").as_str())
-        );
-        assert_eq!(
-            error.help.as_deref(),
-            Some("did you mean `picture.palette`?")
-        );
-    }
-}
-
-#[test]
-fn a_swapped_load_nametable_points_at_the_first_wrong_argument() {
-    let found = refused_loads(
-        "load_nametable(picture.attributes, picture.nametable)",
-        true,
-    );
-    assert_eq!(found.len(), 1, "{found:?}");
-    let (error, text) = &found[0];
-    assert_eq!(
-        error.message,
-        "`load_nametable` takes a nametable, then its attributes"
-    );
-    assert_eq!(text, "picture.attributes");
-    assert_eq!(
-        error.label.as_deref(),
-        Some("this is `picture`'s attributes")
-    );
-    assert_eq!(
-        error.help.as_deref(),
-        Some("write `load_nametable(picture.nametable, picture.attributes)`")
-    );
-}
-
-#[test]
-fn load_nametable_with_another_assets_attributes_is_wrong_in_the_second_argument() {
-    let found = refused_loads("load_nametable(picture.nametable, other.attributes)", true);
-    assert_eq!(found.len(), 1, "{found:?}");
-    assert_eq!(found[0].1, "other.attributes");
-    assert_eq!(
-        found[0].0.label.as_deref(),
-        Some("this is `other`'s attributes")
-    );
-    assert_eq!(
-        found[0].0.help.as_deref(),
-        Some("write `load_nametable(picture.nametable, picture.attributes)`")
-    );
-}
-
-#[test]
-fn a_non_asset_argument_is_refused_with_the_call_written_out() {
-    let found = refused_loads("load_nametable(1, 2)", true);
-    assert_eq!(found.len(), 1, "{found:?}");
-    assert_eq!(found[0].1, "1");
-    assert_eq!(found[0].0.label.as_deref(), Some("this is not a nametable"));
-    assert_eq!(
-        found[0].0.help.as_deref(),
-        Some("write `load_nametable(<asset>.nametable, <asset>.attributes)`")
-    );
-    let found = refused_loads("load_palette(1)", true);
-    assert_eq!(found[0].0.label.as_deref(), Some("this is not a palette"));
-    assert_eq!(
-        found[0].0.help.as_deref(),
-        Some("write `load_palette(<asset>.palette)`")
-    );
-}
-
-#[test]
-fn a_nametable_whose_tiles_are_in_no_bank_is_refused_under_the_nametable_argument() {
-    let found = refused_loads(
-        "load_nametable(picture.nametable, picture.attributes)",
-        false,
-    );
-    assert_eq!(found.len(), 1, "{found:?}");
-    let (error, text) = &found[0];
-    assert_eq!(
-        error.message,
-        "`picture`'s tiles are not in any `chrrom` bank"
-    );
-    assert_eq!(text, "picture.nametable");
-    assert_eq!(
-        error.label.as_deref(),
-        Some("this nametable points at tiles that are not on the cartridge")
-    );
-    assert_eq!(
-        error.help.as_deref(),
-        Some("add `chrrom bank 1 { picture.tiles }`")
-    );
-}
-
-#[test]
-fn a_palette_needs_no_tiles_so_it_loads_with_none_placed() {
-    let source = format!("{PICTURE}main {{ load_palette(picture.palette) }}");
-    let syntax = parse(&source).unwrap();
-    let typed = analyze(&syntax).unwrap();
-    assert!(lower_with_pictures(&typed, &pictures(false)).is_ok());
-}
-
-fn warnings_of(body: &str) -> Vec<raster_ir::LowerWarning> {
-    lowered_loads(body).warnings
-}
-
-const LOAD: &str = "load_nametable(picture.nametable, picture.attributes)";
-
-#[test]
-fn loading_a_nametable_after_rendering_is_turned_on_warns() {
-    let body = format!("ppu.mask = $0A\n{LOAD}");
-    let source = format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}");
-    let warnings = warnings_of(&body);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    let warning = &warnings[0];
-    assert_eq!(
-        warning.message,
-        "`load_nametable` runs while rendering is on"
-        &source[warning.span.start as usize..warning.span.end as usize],
-        "load_nametable"
-    );
-    assert_eq!(
-        warning.label,
-        "1024 writes cannot finish inside one vblank; the screen will tear"
-    );
-    let (span, label) = warning
-        .secondary
-        .clone()
-        .expect("the ppu.mask line is marked");
-    assert_eq!(
-        &source[span.start as usize..span.end as usize],
-        "ppu.mask = $0A"
-    assert_eq!(label, "rendering turned on here");
-        warning.help.as_deref(),
-        Some("call it before `ppu.mask = $0A`, or set `ppu.mask = $00` first")
-    );
-}
-
-#[test]
-fn the_warning_is_silent_when_rendering_was_turned_off_in_between() {
-    assert!(warnings_of(&format!("ppu.mask = $0A\nppu.mask = $00\n{LOAD}")).is_empty());
-    assert!(warnings_of(&format!("ppu.mask = $0A\nppu.mask = $06\n{LOAD}")).is_empty());
-}
-
-#[test]
-fn the_warning_is_silent_when_the_compiler_cannot_tell() {
-    // Nothing turned rendering on, or the value is not a constant.
-    assert!(warnings_of(LOAD).is_empty());
-    assert!(warnings_of(&format!(
-        "ppu.mask = $0A\nvar x: u8 = 1\nppu.mask = x\n{LOAD}"
-    ))
-    .is_empty());
-    // After a loop, a branch or a block, whatever it did is unknown.
-    for compound in [
-        "while 1 == 2 { ppu.mask = $00 }",
-        "if 1 == 2 { ppu.mask = $00 }",
-        "for i in 0..2 { ppu.mask = $00 }",
-        "{ ppu.mask = $00 }",
-    ] {
-        assert!(
-            warnings_of(&format!("ppu.mask = $0A\n{compound}\n{LOAD}")).is_empty(),
-            "{compound}"
-        );
-    }
-    // Inside a nested block the outer state is not inherited.
-    assert!(warnings_of(&format!("ppu.mask = $0A\n{{ {LOAD} }}")).is_empty());
-}
-
-#[test]
-fn the_warning_is_silent_after_a_call_that_could_have_turned_rendering_off() {
-    let source = format!(
-        "{PICTURE}fn quiet() {{ ppu.mask = $00 }}\nmain {{\nppu.mask = $0A\nquiet()\n{LOAD}\n}}"
-    let syntax = parse(&source).unwrap();
-    let typed = analyze(&syntax).unwrap();
-    let program = lower_with_pictures(&typed, &pictures(true)).unwrap();
-    assert!(program.warnings.is_empty());
-}
-
-#[test]
-fn a_write_to_another_register_does_not_forget_that_rendering_is_on() {
-    let warnings = warnings_of(&format!("ppu.mask = $1E\nppu.ctrl = $00\n{LOAD}"));
-    assert_eq!(warnings.len(), 1);
-}
-
-#[test]
-fn load_palette_never_warns() {
-    assert!(warnings_of("ppu.mask = $0A\nload_palette(picture.palette)").is_empty());
