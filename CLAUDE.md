@@ -15,32 +15,21 @@ prints usage and exits nonzero; invalid source produces concise, actionable sour
 The terminal interface is keyboard-first, has no authentication or persistent state, communicates no
 meaning by colour alone, and feels fast, streamlined, and tech.
 
-## General Instructions
+## Producer review
+
+Nothing merges red. Before delivery, a producer obtains and addresses one independent, full review of the complete diff and bead. If its changes are substantial enough to make another review useful, the producer chooses the right follow-up scope and obtains it; minor, self-contained answers need not create a review loop. Unresolved findings, a red or missing check, or a reviewer that cannot produce a usable result go to a person. Whether the navigator also takes part in the plan, the review or the merge is `navigator_gates` in `.cerebro/project.conf`; absent means none. This review satisfies the Four eye Principle below.
+
+## Work tracking
+
+Planned work is tracked in beads (`bd`), prefix `rq`; `skills/beads-workflow` carries the commands. GitHub issues are the inbox for outside requests and bug reports only. Every bead is created unranked and ranked later with the navigator; a bead is planned in one session and implemented in another.
+
+The board syncs through the Dolt remote on `origin`, not through git. A fresh clone runs `bd bootstrap` once (it refuses if a database already exists, so do not run `bd list` first); after that it is `bd dolt pull` and `bd dolt push`.
 
 ## Skills Usage
 
 Always select the appropriate skill for a specific task. Be sure to ALWAYS explicitly write in the chat what skills that are currently being used. Always follow the instructions in the skills to the letter.
 
-## Four Eye Principle
-
-Nothing merges unreviewed and nothing merges red.
-
-For a change built by an agent, GitHub Copilot's automatic review counts as the second pair of eyes
-when it has reviewed the pull request's head commit, every comment it left is answered by a change
-or a posted reply, and every check is green.
-
-Everything else needs the navigator.
-
-## Work tracking
-
-Planned work is tracked in beads (`bd`), not in GitHub issues. GitHub issues are the inbox for
-external requests and bug reports only. Every bead is created unranked at P4 and ranked later with
-the navigator; a bead is planned in one session and implemented in another.
-
-The board syncs through the Dolt remote rather than through git. A fresh clone runs `bd bootstrap`;
-after that use `bd dolt pull` and `bd dolt push`.
-
-## Development Practices
+## Development practices
 
 ### Small Increments
 
@@ -48,8 +37,12 @@ The application shall ALWAYS be developed in very small, manageable increments t
 
 ### Test-driven Development (TDD)
 
-In the development process, the application should be developed using Test-driven Development (TDD) principles. Always use the test-driven-development skill when writing code. This means that you should write tests before writing the actual implementation code. This should be the case also when fixing bugs. First write a test that reproduces the bug, then fix the bug and verify that the test passes along with all existing tests.
+In the development process, the application should be developed using Test-driven Development (TDD) principles. This means that you should write tests before writing the actual implementation code. This should be the case also when fixing bugs. First write a test that reproduces the bug, then fix the bug and verify that the test passes along with all existing tests.
 However, when trying to pinpoint a bug, you are free to add any traces, try fixes or anything else without having to write tests for that immediately. But once the issue has been pinpointed, either update existing tests or add a new test that triggers the error before applying the fix. This ensures no unnecessary modifications are done and helps to prevent regressions in the future.
+
+### Collaboration
+
+Always seek clarification from the navigator when requirements are ambiguous. Use the question UI/tool with predefined answers when possible, and a free-text option when necessary.
 
 ### Design
 
