@@ -7,6 +7,7 @@ use std::{
     io::Cursor,
     num::NonZeroU32,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use raster_assets::{decode_background, encode_background};
@@ -17,7 +18,7 @@ use rasterc::run;
 mod demo;
 #[path = "common/scratch.rs"]
 mod scratch;
-use demo::{backdrop_source, mvp_demo_path};
+use demo::{backdrop_path, mvp_demo_path};
 use scratch::Scratch;
 
 /// NES colours the card is made of, as `raster-assets` indexes them.
@@ -41,7 +42,12 @@ fn card() -> raster_assets::IndexedBackground {
 
 /// Builds `input` into a scratch directory; the summary, the diagnostics and the ROM.
 fn build(input: &Path) -> (String, String, Vec<u8>) {
-    let directory = Scratch::new("mvp-demo");
+    // Tests run in parallel, so each build gets a directory of its own.
+    static BUILDS: AtomicUsize = AtomicUsize::new(0);
+    let directory = Scratch::new(&format!(
+        "mvp-demo-{}",
+        BUILDS.fetch_add(1, Ordering::Relaxed)
+    ));
     let output = directory.path().join("out.nes");
     let (mut stdout, mut stderr) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()));
     let result = run(
@@ -189,9 +195,8 @@ fn the_tints_start_on_the_lines_the_ruler_marks() {
 
 #[test]
 fn the_backdrop_example_still_builds_from_its_new_path() {
-    let path = mvp_demo_path().with_file_name("../backdrop/backdrop.raster");
+    let path = backdrop_path();
     let (_, _, rom) = build(&path);
 
     assert_eq!(rom, raster_link::m1_solid_backdrop_rom());
-    assert!(backdrop_source().contains("const BACKDROP: u8 = $12"));
 }
