@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use raster_diag::Refusal;
+use raster_diag::{Refusal, HELP_PREFIX};
 use raster_sema::TypedProgram;
 use raster_syntax::{
     Block, CycleBound, Declaration, Expression as SyntaxExpression, Frame as SyntaxFrame,
@@ -579,6 +579,20 @@ const BANK_SELECT_MODE_NOTE: &str = "bits 6 and 7 take effect from whichever ban
 /// PRG window the mapper banks, so a read there is a read of the program;
 /// below it, among the sixteen, every named register is a PPU port.
 const MMC3_PORT_BASE: u16 = 0x8000;
+
+/// The virtual register of spec §9.3, which writes `$2006` twice.
+const VRAM_ADDR: &str = "vram_addr";
+
+/// The top of the PPU's address space. The PPU ignores the two bits above it.
+const PPU_ADDRESS_MAX: u32 = 0x3FFF;
+
+/// Why the right-hand side of `vram_addr` has no address to give.
+enum AddressFault {
+    /// Something in it is not a constant; the label says what.
+    NotConstant { span: Span, label: String },
+    /// A constant sum, product or shift that overflows, or divides by zero.
+    Arithmetic,
+}
 
 const WRITE_THE_WHOLE_VALUE: &str = "keep what you wrote in a variable of your own\n\
                                      and write the whole value";
@@ -2652,6 +2666,10 @@ impl Lowerer {
                     | Operator::StarEqual
                     | Operator::SlashEqual
             ) {
+                if self.is_vram_addr(left) {
+                    self.lower_vram_addr(left, operator, right, output);
+                    return;
+                }
                 let Some(destination) = self.lower_destination(left) else {
                     return;
                 };
@@ -2726,6 +2744,15 @@ impl Lowerer {
                 output.push(Statement::Assign { destination, value });
                 return;
             }
+        }
+        if self.is_vram_addr(expression) {
+            self.refuse_register_read(
+                VRAM_ADDR,
+                Register::PpuAddr,
+                expression.span,
+                ReadSite::BareStatement,
+            );
+            return;
         }
         // A register alone on a line. Judged here, where the shape is known, so
         // it is one error: lowering it as a value would refuse a write-only port
@@ -2843,6 +2870,132 @@ impl Lowerer {
         });
     }
 
+    /// Whether this is the virtual register `vram_addr` (spec §9.3): the bare
+    /// name, with nothing the author declared in scope under it.
+    fn is_vram_addr(&self, expression: &Spanned<SyntaxExpression>) -> bool {
+        matches!(&expression.value, SyntaxExpression::Name(name)
+            if name.value == VRAM_ADDR && self.lookup(VRAM_ADDR).is_none())
+    }
+
+    /// An assignment to `vram_addr`: the two `$2006` writes, high byte first,
+    /// as two plain statements so nothing can be scheduled between them and the
+    /// cost is the sum of two ordinary stores. A compound assignment reads its
+    /// destination, which is refused as for every write-only port.
+    fn lower_vram_addr(
+        &mut self,
+        left: &Spanned<SyntaxExpression>,
+        operator: &Spanned<Operator>,
+        right: &Spanned<SyntaxExpression>,
+        output: &mut Vec<Statement>,
+    ) {
+        if operator.value != Operator::Assign {
+            let spelling = compound_operator(operator.value).map_or("=", |(_, spelling)| spelling);
+            self.refuse_register_read(
+                VRAM_ADDR,
+                Register::PpuAddr,
+                left.span,
+                ReadSite::CompoundAssignment(spelling),
+            );
+            let _ = self.lower_value(right);
+            return;
+        }
+        let value = match self.vram_address(right) {
+            Ok(value) => value,
+            Err(AddressFault::NotConstant { span, label }) => {
+                self.refuse_with(
+                    span,
+                    "vram_addr needs a constant address in this release",
+                    label,
+                    vec![format!(
+                        "{HELP_PREFIX}to set an address from a variable, write the two bytes to \
+                         ppu.addr, high byte first"
+                    )],
+                );
+                return;
+            }
+            Err(AddressFault::Arithmetic) => {
+                self.refuse_with(
+                    right.span,
+                    "vram_addr could not work out this address",
+                    "the arithmetic overflows or divides by zero",
+                    Vec::new(),
+                );
+                return;
+            }
+        };
+        if value > PPU_ADDRESS_MAX {
+            let written = match &right.value {
+                SyntaxExpression::Number(number) => number.clone(),
+                _ => format!("${value:04X}"),
+            };
+            self.refuse_with(
+                right.span,
+                format!("{written} is outside the PPU address space"),
+                "PPU addresses run $0000 to $3FFF",
+                vec![format!(
+                    "the PPU ignores the top two bits, so this would set ${:04X}",
+                    value & u32::from(PPU_ADDRESS_MAX)
+                )],
+            );
+            return;
+        }
+        let destination = Destination::Register(Register::PpuAddr);
+        for byte in [(value >> 8) as u8, value as u8] {
+            output.push(Statement::Assign {
+                destination,
+                value: Value::Constant(byte),
+            });
+        }
+    }
+
+    /// The value of a `vram_addr` right-hand side, which must be a constant.
+    /// Evaluated without reporting, because the refusal here has its own words.
+    fn vram_address(&self, expression: &Spanned<SyntaxExpression>) -> Result<u32, AddressFault> {
+        let not_constant = || AddressFault::NotConstant {
+            span: expression.span,
+            label: "this is not a constant".to_owned(),
+        };
+        match &expression.value {
+            SyntaxExpression::Number(number) => {
+                parse_number(number).ok_or(AddressFault::Arithmetic)
+            }
+            SyntaxExpression::Name(name) => match self.lookup(&name.value) {
+                Some(Binding::Constant(value)) => Ok(u32::from(value)),
+                Some(Binding::Place(_)) => Err(AddressFault::NotConstant {
+                    span: name.span,
+                    label: format!("`{}` is a variable", name.value),
+                }),
+                None => Err(not_constant()),
+            },
+            SyntaxExpression::Prefix { operator, operand } if operator.value == Operator::Tilde => {
+                Ok(!self.vram_address(operand)?)
+            }
+            SyntaxExpression::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                let left = self.vram_address(left)?;
+                let right = self.vram_address(right)?;
+                match operator.value {
+                    Operator::Plus => left.checked_add(right),
+                    Operator::Minus => left.checked_sub(right),
+                    Operator::Star => left.checked_mul(right),
+                    Operator::Slash => left.checked_div(right),
+                    Operator::Percent => left.checked_rem(right),
+                    Operator::Ampersand => Some(left & right),
+                    Operator::Pipe => Some(left | right),
+                    Operator::Caret => Some(left ^ right),
+                    Operator::ShiftLeft => left.checked_shl(right),
+                    Operator::ShiftRight => left.checked_shr(right),
+                    _ => return Err(not_constant()),
+                }
+                .ok_or(AddressFault::Arithmetic)
+            }
+            _ => Err(not_constant()),
+        }
+    }
+
     fn lower_destination(&mut self, expression: &Spanned<SyntaxExpression>) -> Option<Destination> {
         match &expression.value {
             SyntaxExpression::Name(name) => match self.lookup(&name.value) {
@@ -2926,6 +3079,15 @@ impl Lowerer {
             SyntaxExpression::Name(name) => match self.lookup(&name.value) {
                 Some(Binding::Place(place)) => Value::Place(place),
                 Some(Binding::Constant(value)) => Value::Constant(value),
+                None if name.value == VRAM_ADDR => {
+                    self.refuse_register_read(
+                        VRAM_ADDR,
+                        Register::PpuAddr,
+                        name.span,
+                        ReadSite::Named,
+                    );
+                    Value::Constant(0)
+                }
                 None => {
                     self.error(name.span, format!("unknown value `{}`", name.value));
                     Value::Constant(0)
@@ -3071,6 +3233,15 @@ impl Lowerer {
         if !register.is_write_only() {
             return Some(Value::Register(register));
         }
+        self.refuse_register_read(register.name(), register, span, site);
+        None
+    }
+
+    /// The refusal of a read of a write-only port, in `name`'s words. `name` is
+    /// the register's own, except for `vram_addr`, which has no port of its own
+    /// and is refused as the `$2006` it writes through - same sentences, its
+    /// own name.
+    fn refuse_register_read(&mut self, name: &str, register: Register, span: Span, site: ReadSite) {
         let mut notes = Vec::new();
         if let ReadSite::CompoundAssignment(spelling) = site {
             notes.push(format!(
@@ -3087,18 +3258,14 @@ impl Lowerer {
         notes.push(dead_read_note(register));
         notes.push(WRITE_THE_WHOLE_VALUE.to_owned());
         if let ReadSite::BareStatement = site {
-            notes.push(format!(
-                "to write it, give it a value: `{} = <value>`",
-                register.name()
-            ));
+            notes.push(format!("to write it, give it a value: `{name} = <value>`"));
         }
         self.refuse_with(
             span,
-            format!("`{}` cannot be read", register.name()),
+            format!("`{name}` cannot be read"),
             format!("${:04X} is a write-only port", register.address()),
             notes,
         );
-        None
     }
 
     /// A register standing alone as a statement. A write-only port gets the

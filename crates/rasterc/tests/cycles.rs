@@ -135,6 +135,20 @@ fn an_upper_bound_region_is_left_at_its_own_cost() {
 }
 
 #[test]
+fn a_vram_addr_write_costs_twelve_cycles_inside_an_exact_region() {
+    let source = fixture("vram-addr.raster");
+    assert!(compile_source(&source).is_ok());
+    // The region's 21 cycles are the nine of interrupt masking and the twelve of the pair.
+    assert_eq!(cost(&timed_region(&source)), 21);
+    let opcodes: Vec<u8> = timed_region(&source)
+        .iter()
+        .map(|instruction| instruction.opcode)
+        .collect();
+    // PHP SEI, LDA #$3F STA $2006, LDA #$00 STA $2006, PLP: nothing between the two stores.
+    assert_eq!(opcodes, [PHP, 0x78, 0xA9, 0x8D, 0xA9, 0x8D, PLP]);
+}
+
+#[test]
 fn a_report_region_reaches_the_build_summary_with_its_measured_cost() {
     let rom = compile_source(&fixture("report.raster")).expect("the fixture compiles");
     assert_eq!(rom.reports, vec![("hblank".to_owned(), 15)]);
@@ -267,6 +281,7 @@ fn every_timed_fixture_spends_exactly_what_the_compiler_predicted() {
         "padded.raster",
         "upper-bound.raster",
         "report.raster",
+        "vram-addr.raster",
     ] {
         assert_prediction_is_spent(name);
     }

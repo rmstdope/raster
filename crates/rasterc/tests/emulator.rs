@@ -295,3 +295,19 @@ fn irq_handler_body_fits_the_hblank_it_lands_in() {
         }
     }
 }
+
+/// `vram_addr` and the raw byte pair reach the same PPU address: the demo, with
+/// its two pairs written as one line each, shows the same screen.
+#[test]
+fn vram_addr_sets_the_address_the_raw_pair_sets() {
+    let demo = demo_source();
+    let one_line = demo
+        .replace("ppu.addr = $3f              // the palette lives at $3F00 ...\n    ppu.addr = $00              // ... and $3F00 is the backdrop", "vram_addr = $3F00")
+        .replace("ppu.addr = $00              // leave palette space, or the screen\n    ppu.addr = $00              // shows $3F01 instead of the backdrop", "vram_addr = $0000");
+    assert!(!one_line.contains("ppu.addr"), "both pairs were replaced");
+
+    assert_eq!(
+        backdrop_colour("one-line.nes", &one_line),
+        backdrop_colour("demo.nes", &demo)
+    );
+}

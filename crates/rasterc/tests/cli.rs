@@ -1236,3 +1236,97 @@ fn a_write_only_register_alone_on_a_line_prints_one_error_with_four_notes() {
     );
     assert!(!scratch.path().join("bare.nes").exists());
 }
+
+// ---- vram_addr (raster-agi): the three errors, word for word ----
+
+/// Compile one source, expecting a refusal; returns what the author sees and
+/// asserts that no ROM was written.
+fn refused(name: &str, source: &str) -> (String, String) {
+    let scratch = Scratch::new(name);
+    let input = scratch.path().join(format!("{name}.raster"));
+    fs::write(&input, source).expect("the fixture is writable");
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Err(1));
+    assert!(!scratch.path().join(format!("{name}.nes")).exists());
+    (input.display().to_string(), stderr)
+}
+
+#[test]
+fn an_address_above_3fff_prints_the_agreed_error() {
+    let (name, stderr) = refused("vram-high", "main {\n    vram_addr = $4000\n}\n");
+    assert_eq!(
+        stderr,
+        format!(
+            "error: $4000 is outside the PPU address space\n\
+             \x20--> {name}:2:17\n\
+             \x20 |\n\
+             2 |     vram_addr = $4000\n\
+             \x20 |                 ^^^^^ PPU addresses run $0000 to $3FFF\n\
+             \x20 = note: the PPU ignores the top two bits, so this would set $0000\n\
+             \n\
+             error: could not compile {name} (1 error)\n"
+        )
+    );
+}
+
+#[test]
+fn a_variable_address_prints_the_agreed_error() {
+    let (name, stderr) = refused(
+        "vram-var",
+        "main {\n    var row: u8 = 3\n    vram_addr = row\n}\n",
+    );
+    assert_eq!(
+        stderr,
+        format!(
+            "error: vram_addr needs a constant address in this release\n\
+             \x20--> {name}:3:17\n\
+             \x20 |\n\
+             3 |     vram_addr = row\n\
+             \x20 |                 ^^^ `row` is a variable\n\
+             \x20 = help: to set an address from a variable, write the two bytes to ppu.addr, high byte first\n\
+             \n\
+             error: could not compile {name} (1 error)\n"
+        )
+    );
+}
+
+#[test]
+fn a_16_bit_number_on_the_raw_port_prints_the_agreed_error() {
+    let (name, stderr) = refused("raw-wide", "main {\n    ppu.addr = $3F00\n}\n");
+    assert_eq!(
+        stderr,
+        format!(
+            "error: ppu.addr is written one byte at a time\n\
+             \x20--> {name}:2:16\n\
+             \x20 |\n\
+             2 |     ppu.addr = $3F00\n\
+             \x20 |                ^^^^^ $3F00 does not fit in a byte\n\
+             \x20 = help: to set the whole address in one line, write `vram_addr = $3F00`\n\
+             \n\
+             error: could not compile {name} (1 error)\n"
+        )
+    );
+}
+
+#[test]
+fn a_constant_address_builds_silently_even_a_short_one() {
+    for (name, line) in [
+        ("vram-ok", "vram_addr = $3F00"),
+        ("vram-short", "vram_addr = $3F"),
+    ] {
+        let scratch = Scratch::new(name);
+        let input = scratch.path().join(format!("{name}.raster"));
+        fs::write(
+            &input,
+            format!("main {{\n    {line}\n    ppu.data = $0F\n}}\n"),
+        )
+        .expect("the fixture is writable");
+
+        let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+        assert_eq!(result, Ok(()), "{name}: {stderr}");
+        assert!(!stderr.contains("warning"), "{name}: {stderr}");
+    }
+}

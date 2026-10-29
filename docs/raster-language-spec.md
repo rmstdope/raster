@@ -563,10 +563,8 @@ Named access exists so the compiler understands hardware side effects — write
 ordering, the `$2005`/`$2006` shared latch, `$2002` clearing that latch on read. The
 compiler warns when a sequence violates a known hardware requirement.
 
-**rasterc today:** every line above compiles. Two things this section once showed
-are intended and not built: `ppu.addr = $3F00`, one 16-bit write to the address
-latch, because `u16` values are not supported anywhere yet; and the APU registers,
-which today belong to the linked sound driver (§8.3).
+**rasterc today:** every line above compiles. The APU registers, which today belong
+to the linked sound driver (§8.3), are intended and not built.
 
 ### 9.2 Raw access
 
@@ -587,6 +585,12 @@ backdrop = $0F                  // expands to the $3F00 write sequence
 simple `$2006`/`$2007` sequence; assigning during rendering compiles to the
 scroll-safe variant that restores `$2005`/`$2006` afterwards, and the compiler will
 tell you that the safe version costs more and may not fit hblank.
+
+```
+vram_addr = $3F00               // the $2006 pair, high byte then low
+```
+
+`vram_addr` is a virtual register. Assigning a constant address to it compiles to the two $2006 writes, high byte first, with nothing in between, so nothing can reset the latch halfway. It costs 12 cycles wherever it is. It does not restore the scroll: written while the screen is drawing, it moves the scroll, just like the raw pair does. Addresses run $0000 to $3FFF.
 
 ### 9.4 The reset map is yours after reset
 
