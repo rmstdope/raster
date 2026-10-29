@@ -265,6 +265,7 @@ fn warned(warnings: Vec<raster_ir::LowerWarning>, source: &str) -> Vec<Diagnosti
             );
             let mut diagnostic = Diagnostic::warning(warning.message, span, warning.label);
             diagnostic.notes = warning.notes;
+            diagnostic.help = warning.help;
             if let Some(secondary) = warning.secondary {
                 diagnostic = diagnostic.with_secondary(
                     Span::clamped(
@@ -316,6 +317,7 @@ fn lowered(errors: Vec<raster_ir::LowerError>, source: &str) -> Vec<Diagnostic> 
                     message,
                     label,
                     notes,
+                    help,
                     span,
                     refusal,
                 } = error;
@@ -323,6 +325,7 @@ fn lowered(errors: Vec<raster_ir::LowerError>, source: &str) -> Vec<Diagnostic> 
                 let label = label.unwrap_or_else(|| message.clone());
                 let mut diagnostic = Diagnostic::error(message, span, label);
                 diagnostic.notes = notes;
+                diagnostic.help = help;
                 (diagnostic, refusal)
             })
             .collect(),
