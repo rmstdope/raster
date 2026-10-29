@@ -32,7 +32,7 @@ fn lower_failure(source: &str) -> raster_ir::LowerFailure {
 /// whether a write of it is refused. Written out here rather than derived, so
 /// the test fails when the compiler's own table changes rather than agreeing
 /// with it by construction.
-const REGISTERS: [(Register, &str, u16, bool, bool); 17] = [
+const REGISTERS: [(Register, &str, u16, bool, bool); 33] = [
     (Register::PpuCtrl, "ppu.ctrl", 0x2000, true, false),
     (Register::PpuMask, "ppu.mask", 0x2001, true, false),
     (Register::PpuStatus, "ppu.status", 0x2002, false, true),
@@ -98,6 +98,112 @@ const REGISTERS: [(Register, &str, u16, bool, bool); 17] = [
         true,
         false,
     ),
+    (
+        Register::ApuPulse1Volume,
+        "apu.pulse1.volume",
+        0x4000,
+        true,
+        false,
+    ),
+    (
+        Register::ApuPulse1Sweep,
+        "apu.pulse1.sweep",
+        0x4001,
+        true,
+        false,
+    ),
+    (
+        Register::ApuPulse1TimerLo,
+        "apu.pulse1.timer_lo",
+        0x4002,
+        true,
+        false,
+    ),
+    (
+        Register::ApuPulse1TimerHi,
+        "apu.pulse1.timer_hi",
+        0x4003,
+        true,
+        false,
+    ),
+    (
+        Register::ApuPulse2Volume,
+        "apu.pulse2.volume",
+        0x4004,
+        true,
+        false,
+    ),
+    (
+        Register::ApuPulse2Sweep,
+        "apu.pulse2.sweep",
+        0x4005,
+        true,
+        false,
+    ),
+    (
+        Register::ApuPulse2TimerLo,
+        "apu.pulse2.timer_lo",
+        0x4006,
+        true,
+        false,
+    ),
+    (
+        Register::ApuPulse2TimerHi,
+        "apu.pulse2.timer_hi",
+        0x4007,
+        true,
+        false,
+    ),
+    (
+        Register::ApuTriangleLinear,
+        "apu.triangle.linear",
+        0x4008,
+        true,
+        false,
+    ),
+    (
+        Register::ApuTriangleTimerLo,
+        "apu.triangle.timer_lo",
+        0x400a,
+        true,
+        false,
+    ),
+    (
+        Register::ApuTriangleTimerHi,
+        "apu.triangle.timer_hi",
+        0x400b,
+        true,
+        false,
+    ),
+    (
+        Register::ApuNoiseVolume,
+        "apu.noise.volume",
+        0x400c,
+        true,
+        false,
+    ),
+    (
+        Register::ApuNoisePeriod,
+        "apu.noise.period",
+        0x400e,
+        true,
+        false,
+    ),
+    (
+        Register::ApuNoiseLength,
+        "apu.noise.length",
+        0x400f,
+        true,
+        false,
+    ),
+    (Register::ApuStatus, "apu.status", 0x4015, false, false),
+    (
+        Register::ApuFrameCounter,
+        "apu.frame_counter",
+        0x4017,
+        true,
+        false,
+    ),
 ];
 
 #[test]
@@ -111,10 +217,10 @@ fn the_register_table_names_every_register_and_says_which_read_and_write() {
         // false for both, because they read and write.
         assert!(!(write_only && read_only), "{name}");
     }
-    // Three of the seventeen read: $2002, $2004 and $2007. One of the
-    // seventeen cannot be written: $2002. If either number moves, a register
+    // Four of the thirty-three read: $2002, $2004, $2007 and $4015. One of
+    // them cannot be written: $2002. If either number moves, a register
     // has changed sides and the spec table in §9.5 has to move with it.
-    assert_eq!(REGISTERS.iter().filter(|row| !row.3).count(), 3);
+    assert_eq!(REGISTERS.iter().filter(|row| !row.3).count(), 4);
     assert_eq!(REGISTERS.iter().filter(|row| row.4).count(), 1);
 }
 
@@ -3508,4 +3614,140 @@ fn with_every_bank_declared_the_unplaced_help_does_not_name_a_bank_32() {
         errors[0].help.as_deref(),
         Some("add `picture.tiles` to one of the `chrrom` banks")
     );
+}
+
+// ---- the `apu` registers (raster-6xi) ----
+
+/// What `main` stores to, in order.
+fn stored_registers(source: &str) -> Vec<Register> {
+    lower_source(source)
+        .main
+        .expect("the fixture has a main")
+        .statements
+        .iter()
+        .filter_map(|statement| match statement {
+            Statement::Assign {
+                destination: raster_ir::Destination::Register(register),
+                ..
+            } => Some(*register),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn every_apu_name_lowers_to_the_register_with_its_address() {
+    for (register, name, _address, _write_only, _read_only) in &REGISTERS[17..] {
+        assert_eq!(
+            stored_registers(&format!("main {{ {name} = $01 }}")),
+            [*register],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn reading_apu_status_is_allowed_and_silent() {
+    let program = lower_source("main { var s: u8 = apu.status }");
+    assert!(program.warnings.is_empty(), "{:?}", program.warnings);
+}
+
+#[test]
+fn a_compound_assignment_to_a_write_only_apu_register_is_refused_for_its_read() {
+    let errors = lower_errors("main { apu.pulse1.volume += 1 }");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, "`apu.pulse1.volume` cannot be read");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$4000 is a write-only port")
+    );
+    assert_eq!(
+        errors[0].notes,
+        [
+            "`+=` reads its destination before it writes, so this reads $4000",
+            "reading $4000 returns whatever was last on the CPU bus,\nnot the last value written",
+            "keep what you wrote in a variable of your own\nand write the whole value",
+        ]
+    );
+}
+
+#[test]
+fn reading_the_frame_counter_says_what_the_port_reads_instead() {
+    let errors = lower_errors("main { var v: u8 = apu.frame_counter }");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, "`apu.frame_counter` cannot be read");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$4017 reads controller 2, not the frame counter")
+    );
+    assert_eq!(
+        errors[0].notes[0],
+        "reading $4017 returns controller 2's state, not the last value written"
+    );
+}
+
+#[test]
+fn a_status_write_that_starts_the_dmc_is_a_warning_under_the_register_name() {
+    let source = "main {\n    apu.status = $1F\n}\n";
+    let program = lower_source(source);
+    assert_eq!(program.warnings.len(), 1, "{:?}", program.warnings);
+    let warning = &program.warnings[0];
+    assert_eq!(warning.message, "bit 4 of `apu.status` starts DMC playback");
+    assert_eq!(
+        warning.label,
+        "its cycle theft is not modelled yet; every `cycles` budget assumes it is off"
+    );
+    let start = source.find("apu.status").unwrap() as u32;
+    assert_eq!((warning.span.start, warning.span.end), (start, start + 10));
+}
+
+#[test]
+fn a_status_write_with_bit_4_clear_or_an_unknown_value_is_silent() {
+    for source in [
+        "main { apu.status = $0F }",
+        "main { var v: u8 = 1\n apu.status = v }",
+        "main { apu.status = apu.pulse1.volume }",
+    ] {
+        let syntax = parse(source).expect("fixture should parse");
+        let typed = analyze(&syntax).expect("fixture should analyze");
+        match lower(&typed) {
+            Ok(program) => assert!(program.warnings.is_empty(), "{source}"),
+            Err(failure) => assert!(failure.warnings.is_empty(), "{source}"),
+        }
+    }
+}
+
+const IRQ_FRAME: &str = "frame bars using irq {\n at scanline 60 { ppu.mask = $1e }\n}\n";
+
+#[test]
+fn a_frame_counter_write_that_enables_the_frame_interrupt_warns_under_an_irq_chain() {
+    let source = format!(
+        "main {{\n ppu.ctrl = $08\n ppu.mask = $1e\n apu.frame_counter = $00\n}}\n{IRQ_FRAME}"
+    );
+    let program = lower_source(&source);
+    assert_eq!(program.warnings.len(), 1, "{:?}", program.warnings);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this write turns the APU frame interrupt on"
+    );
+    assert_eq!(
+        warning.label,
+        "bit 6 is clear, so it fires into this program's scanline handlers"
+    );
+    let start = source.find("apu.frame_counter").unwrap() as u32;
+    assert_eq!((warning.span.start, warning.span.end), (start, start + 17));
+}
+
+#[test]
+fn a_frame_counter_write_is_silent_with_bit_6_set_without_a_chain_or_with_an_unknown_value() {
+    for source in [
+        format!("main {{\n ppu.ctrl = $08\n ppu.mask = $1e\n apu.frame_counter = $40\n}}\n{IRQ_FRAME}"),
+        "main { apu.frame_counter = $00 }".to_owned(),
+        "main {\n ppu.ctrl = $08\n ppu.mask = $1e\n apu.frame_counter = $00\n}\nframe bars using timed {\n every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n}\n".to_owned(),
+        format!("main {{\n ppu.ctrl = $08\n ppu.mask = $1e\n var v: u8 = 0\n apu.frame_counter = v\n}}\n{IRQ_FRAME}"),
+    ] {
+        let program = lower_source(&source);
+        assert!(program.warnings.is_empty(), "{source}: {:?}", program.warnings);
+    }
 }

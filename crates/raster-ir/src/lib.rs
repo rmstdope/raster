@@ -81,6 +81,22 @@ pub enum Register {
     Mmc3IrqReload,
     Mmc3IrqDisable,
     Mmc3IrqEnable,
+    ApuPulse1Volume,
+    ApuPulse1Sweep,
+    ApuPulse1TimerLo,
+    ApuPulse1TimerHi,
+    ApuPulse2Volume,
+    ApuPulse2Sweep,
+    ApuPulse2TimerLo,
+    ApuPulse2TimerHi,
+    ApuTriangleLinear,
+    ApuTriangleTimerLo,
+    ApuTriangleTimerHi,
+    ApuNoiseVolume,
+    ApuNoisePeriod,
+    ApuNoiseLength,
+    ApuStatus,
+    ApuFrameCounter,
 }
 
 impl Register {
@@ -103,6 +119,22 @@ impl Register {
             Self::Mmc3IrqReload => 0xc001,
             Self::Mmc3IrqDisable => 0xe000,
             Self::Mmc3IrqEnable => 0xe001,
+            Self::ApuPulse1Volume => 0x4000,
+            Self::ApuPulse1Sweep => 0x4001,
+            Self::ApuPulse1TimerLo => 0x4002,
+            Self::ApuPulse1TimerHi => 0x4003,
+            Self::ApuPulse2Volume => 0x4004,
+            Self::ApuPulse2Sweep => 0x4005,
+            Self::ApuPulse2TimerLo => 0x4006,
+            Self::ApuPulse2TimerHi => 0x4007,
+            Self::ApuTriangleLinear => 0x4008,
+            Self::ApuTriangleTimerLo => 0x400a,
+            Self::ApuTriangleTimerHi => 0x400b,
+            Self::ApuNoiseVolume => 0x400c,
+            Self::ApuNoisePeriod => 0x400e,
+            Self::ApuNoiseLength => 0x400f,
+            Self::ApuStatus => 0x4015,
+            Self::ApuFrameCounter => 0x4017,
         }
     }
 
@@ -131,6 +163,22 @@ impl Register {
             Self::Mmc3IrqReload => "mmc3.irq_reload",
             Self::Mmc3IrqDisable => "mmc3.irq_disable",
             Self::Mmc3IrqEnable => "mmc3.irq_enable",
+            Self::ApuPulse1Volume => "apu.pulse1.volume",
+            Self::ApuPulse1Sweep => "apu.pulse1.sweep",
+            Self::ApuPulse1TimerLo => "apu.pulse1.timer_lo",
+            Self::ApuPulse1TimerHi => "apu.pulse1.timer_hi",
+            Self::ApuPulse2Volume => "apu.pulse2.volume",
+            Self::ApuPulse2Sweep => "apu.pulse2.sweep",
+            Self::ApuPulse2TimerLo => "apu.pulse2.timer_lo",
+            Self::ApuPulse2TimerHi => "apu.pulse2.timer_hi",
+            Self::ApuTriangleLinear => "apu.triangle.linear",
+            Self::ApuTriangleTimerLo => "apu.triangle.timer_lo",
+            Self::ApuTriangleTimerHi => "apu.triangle.timer_hi",
+            Self::ApuNoiseVolume => "apu.noise.volume",
+            Self::ApuNoisePeriod => "apu.noise.period",
+            Self::ApuNoiseLength => "apu.noise.length",
+            Self::ApuStatus => "apu.status",
+            Self::ApuFrameCounter => "apu.frame_counter",
         }
     }
 
@@ -148,7 +196,7 @@ impl Register {
     /// until someone decides.
     pub const fn is_write_only(self) -> bool {
         match self {
-            Self::PpuStatus | Self::PpuOamData | Self::PpuData => false,
+            Self::PpuStatus | Self::PpuOamData | Self::PpuData | Self::ApuStatus => false,
             Self::PpuCtrl
             | Self::PpuMask
             | Self::PpuOamAddr
@@ -162,7 +210,22 @@ impl Register {
             | Self::Mmc3IrqLatch
             | Self::Mmc3IrqReload
             | Self::Mmc3IrqDisable
-            | Self::Mmc3IrqEnable => true,
+            | Self::Mmc3IrqEnable
+            | Self::ApuPulse1Volume
+            | Self::ApuPulse1Sweep
+            | Self::ApuPulse1TimerLo
+            | Self::ApuPulse1TimerHi
+            | Self::ApuPulse2Volume
+            | Self::ApuPulse2Sweep
+            | Self::ApuPulse2TimerLo
+            | Self::ApuPulse2TimerHi
+            | Self::ApuTriangleLinear
+            | Self::ApuTriangleTimerLo
+            | Self::ApuTriangleTimerHi
+            | Self::ApuNoiseVolume
+            | Self::ApuNoisePeriod
+            | Self::ApuNoiseLength
+            | Self::ApuFrameCounter => true,
         }
     }
 
@@ -198,7 +261,23 @@ impl Register {
             | Self::Mmc3IrqLatch
             | Self::Mmc3IrqReload
             | Self::Mmc3IrqDisable
-            | Self::Mmc3IrqEnable => false,
+            | Self::Mmc3IrqEnable
+            | Self::ApuPulse1Volume
+            | Self::ApuPulse1Sweep
+            | Self::ApuPulse1TimerLo
+            | Self::ApuPulse1TimerHi
+            | Self::ApuPulse2Volume
+            | Self::ApuPulse2Sweep
+            | Self::ApuPulse2TimerLo
+            | Self::ApuPulse2TimerHi
+            | Self::ApuTriangleLinear
+            | Self::ApuTriangleTimerLo
+            | Self::ApuTriangleTimerHi
+            | Self::ApuNoiseVolume
+            | Self::ApuNoisePeriod
+            | Self::ApuNoiseLength
+            | Self::ApuStatus
+            | Self::ApuFrameCounter => false,
         }
     }
 }
@@ -546,6 +625,10 @@ pub struct LowerFailure {
     pub warnings: Vec<LowerWarning>,
 }
 
+/// Bit 4 of a write to `apu.status`: enable the DMC.
+const APU_STATUS_DMC_ENABLE: u8 = 0b0001_0000;
+/// Bit 6 of a write to `apu.frame_counter`: inhibit the frame interrupt.
+const APU_FRAME_INTERRUPT_INHIBIT: u8 = 0b0100_0000;
 /// Bit 6 of an MMC3 bank select: PRG mode.
 const MMC3_PRG_MODE: u8 = 0b0100_0000;
 /// Bit 7 of an MMC3 bank select: CHR A12 inversion.
@@ -672,6 +755,22 @@ const BANK_SELECT_MODE_NOTE: &str = "bits 6 and 7 take effect from whichever ban
 /// below it, among the sixteen, every named register is a PPU port.
 const MMC3_PORT_BASE: u16 = 0x8000;
 
+/// Whether `address` is one of the APU's own registers, `$4000` to `$4017`.
+/// `$4014` is in the range and is the DMA trigger, which `dead_read_note`
+/// tests for first.
+fn is_apu_port(address: u16) -> bool {
+    (0x4000..=0x4017).contains(&address)
+}
+
+/// What is under the carets when a read of a write-only port is refused.
+fn read_refusal_label(register: Register) -> String {
+    if register == Register::ApuFrameCounter {
+        "$4017 reads controller 2, not the frame counter".to_owned()
+    } else {
+        format!("${:04X} is a write-only port", register.address())
+    }
+}
+
 /// The virtual register of spec §9.3, which writes `$2006` twice.
 const VRAM_ADDR: &str = "vram_addr";
 
@@ -719,6 +818,13 @@ fn dead_read_note(register: Register) -> String {
             "${address:04X} does not read back at all: it is a write-only trigger on\n\
              the CPU bus, and a read of it returns whatever was last on\n\
              that bus"
+        )
+    } else if register == Register::ApuFrameCounter {
+        format!("reading ${address:04X} returns controller 2's state, not the last value written")
+    } else if is_apu_port(address) {
+        format!(
+            "reading ${address:04X} returns whatever was last on the CPU bus,\n\
+             not the last value written"
         )
     } else if address >= MMC3_PORT_BASE {
         format!(
@@ -1572,6 +1678,7 @@ pub fn lower_with_pictures(
     lowerer.check_mmc3_irq_frame();
     lowerer.check_timed_frame_nmi();
     lowerer.check_block_nmi();
+    lowerer.check_apu_frame_interrupt();
     if lowerer.errors.is_empty() {
         lowerer.program.warnings = lowerer.warnings;
         Ok(lowerer.program)
@@ -1635,6 +1742,11 @@ struct Lowerer {
     pictures: Pictures,
     /// The ROM block already made for an asset's member, so a block is stored once.
     data_labels: BTreeMap<(String, &'static str), Label>,
+    /// Where each constant `apu.frame_counter` write with the frame interrupt
+    /// left on sits, in source order. Judged after lowering by
+    /// `check_apu_frame_interrupt`, because only then is it known whether the
+    /// program has an `irq` chain for the interrupt to fire into.
+    frame_counter_writes: Vec<Span>,
 }
 
 /// One `ppu.ctrl` write inside a `frame` handler, and what rasterc could fold it to.
@@ -1671,6 +1783,7 @@ impl Lowerer {
             handler_ctrl_writes: Vec::new(),
             pictures: Pictures::default(),
             data_labels: BTreeMap::new(),
+            frame_counter_writes: Vec::new(),
         }
     }
 
@@ -2142,6 +2255,29 @@ impl Lowerer {
     ///
     /// Frame handlers are never walked: an IRQ handler runs on visible scanlines and
     /// re-synchronizes, and a `timed` frame is warned about as a whole.
+    fn check_apu_frame_interrupt(&mut self) {
+        let writes = std::mem::take(&mut self.frame_counter_writes);
+        let has_irq_chain = self
+            .program
+            .frame
+            .as_ref()
+            .is_some_and(|frame| frame.strategy == FrameStrategy::Irq);
+        if !has_irq_chain {
+            return;
+        }
+        for span in writes {
+            self.warnings.push(LowerWarning {
+                message: "this write turns the APU frame interrupt on".to_owned(),
+                label: "bit 6 is clear, so it fires into this program's scanline handlers"
+                    .to_owned(),
+                notes: Vec::new(),
+                span,
+                assumes_budget_met: false,
+                secondary: None,
+            });
+        }
+    }
+
     fn check_block_nmi(&mut self) {
         if !self.errors.is_empty() {
             return;
@@ -2936,7 +3072,7 @@ impl Lowerer {
                     }
                 };
                 let refused = self.errors.len() != errors_before;
-                self.note_register_write(destination, &value, refused, expression.span);
+                self.note_register_write(destination, &value, refused, expression.span, left.span);
                 output.push(Statement::Assign { destination, value });
                 return;
             }
@@ -2954,8 +3090,8 @@ impl Lowerer {
         // it is one error: lowering it as a value would refuse a write-only port
         // and then refuse the statement for not being a call, over the same
         // carets.
-        if let SyntaxExpression::Member { base, member } = &expression.value {
-            if let Some(register) = self.register(base, member) {
+        if let SyntaxExpression::Member { .. } = &expression.value {
+            if let Some(register) = self.register(expression) {
                 self.bare_register_statement(register, expression.span);
             }
             return;
@@ -2993,10 +3129,60 @@ impl Lowerer {
         value: &Value,
         refused: bool,
         span: Span,
+        register_span: Span,
     ) {
+        self.note_apu_status(destination, value, refused, register_span);
+        self.note_apu_frame_counter(destination, value, refused, register_span);
         self.note_bank_select(destination, value, refused, span);
         self.note_bank_data(destination, span);
         self.note_ppu_ctrl(destination, value, refused, span);
+    }
+
+    /// `apu.status`: a constant with bit 4 set starts DMC playback, whose
+    /// cycle theft no `cycles` budget accounts for. Anywhere in a program. The
+    /// carets sit under the register name. Stands aside for `refused`: the
+    /// byte is not the one the author wrote.
+    fn note_apu_status(
+        &mut self,
+        destination: Destination,
+        value: &Value,
+        refused: bool,
+        register_span: Span,
+    ) {
+        if destination != Destination::Register(Register::ApuStatus) || refused {
+            return;
+        }
+        if matches!(value, Value::Constant(bits) if bits & APU_STATUS_DMC_ENABLE != 0) {
+            self.warnings.push(LowerWarning {
+                message: "bit 4 of `apu.status` starts DMC playback".to_owned(),
+                label:
+                    "its cycle theft is not modelled yet; every `cycles` budget assumes it is off"
+                        .to_owned(),
+                notes: Vec::new(),
+                span: register_span,
+                assumes_budget_met: false,
+                secondary: None,
+            });
+        }
+    }
+
+    /// `apu.frame_counter`: a constant with bit 6 clear turns the APU frame
+    /// interrupt on. Whether that matters depends on the program having an
+    /// `irq` chain, which is only known once every item is lowered, so the
+    /// write is collected here and judged by `check_apu_frame_interrupt`.
+    fn note_apu_frame_counter(
+        &mut self,
+        destination: Destination,
+        value: &Value,
+        refused: bool,
+        register_span: Span,
+    ) {
+        if destination != Destination::Register(Register::ApuFrameCounter) || refused {
+            return;
+        }
+        if matches!(value, Value::Constant(bits) if bits & APU_FRAME_INTERRUPT_INHIBIT == 0) {
+            self.frame_counter_writes.push(register_span);
+        }
     }
 
     /// `mmc3.bank_select`: warns about the value, and remembers which register
@@ -3377,9 +3563,7 @@ impl Lowerer {
                     None
                 }
             },
-            SyntaxExpression::Member { base, member } => {
-                self.register(base, member).map(Destination::Register)
-            }
+            SyntaxExpression::Member { .. } => self.register(expression).map(Destination::Register),
             SyntaxExpression::Index { base, index } => {
                 self.not_in_this_release(expression.span, "arrays are not supported yet");
                 let _ = self.lower_value(base);
@@ -3552,7 +3736,7 @@ impl Lowerer {
                 let _ = self.lower_value(index);
                 Value::Constant(0)
             }
-            SyntaxExpression::Member { base, member } => match self.register(base, member) {
+            SyntaxExpression::Member { .. } => match self.register(expression) {
                 // `expression.span` covers `ppu.mask` exactly: the parser joins
                 // the namespace's span with the member's.
                 Some(register) => self
@@ -3631,7 +3815,7 @@ impl Lowerer {
         self.refuse_with(
             span,
             format!("`{name}` cannot be read"),
-            format!("${:04X} is a write-only port", register.address()),
+            read_refusal_label(register),
             notes,
         );
     }
@@ -3750,33 +3934,67 @@ impl Lowerer {
         }
     }
 
-    fn register(
-        &mut self,
-        base: &Spanned<SyntaxExpression>,
-        member: &Spanned<String>,
-    ) -> Option<Register> {
-        let SyntaxExpression::Name(namespace) = &base.value else {
-            self.error(base.span, "register access requires a namespace");
+    /// The register a member expression names, or `None` once it has been
+    /// refused. `whole` is the `Member` expression: `ppu.ctrl` is one level
+    /// under a namespace and `apu.pulse1.volume` is two.
+    fn register(&mut self, whole: &Spanned<SyntaxExpression>) -> Option<Register> {
+        let SyntaxExpression::Member { base, member } = &whole.value else {
+            self.error(whole.span, "register access requires a namespace");
             return None;
         };
-        let register = match (namespace.value.as_str(), member.value.as_str()) {
-            ("ppu", "ctrl") => Register::PpuCtrl,
-            ("ppu", "mask") => Register::PpuMask,
-            ("ppu", "status") => Register::PpuStatus,
-            ("ppu", "oam_addr") => Register::PpuOamAddr,
-            ("ppu", "oam_data") => Register::PpuOamData,
-            ("ppu", "scroll") => Register::PpuScroll,
-            ("ppu", "addr") => Register::PpuAddr,
-            ("ppu", "data") => Register::PpuData,
-            ("ppu", "oam_dma") => Register::PpuOamDma,
-            ("mmc3", "bank_select") => Register::Mmc3BankSelect,
-            ("mmc3", "bank_data") => Register::Mmc3BankData,
-            ("mmc3", "mirroring") => Register::Mmc3Mirroring,
-            ("mmc3", "ram_protect") => Register::Mmc3RamProtect,
-            ("mmc3", "irq_latch") => Register::Mmc3IrqLatch,
-            ("mmc3", "irq_reload") => Register::Mmc3IrqReload,
-            ("mmc3", "irq_disable") => Register::Mmc3IrqDisable,
-            ("mmc3", "irq_enable") => Register::Mmc3IrqEnable,
+        let path = match &base.value {
+            SyntaxExpression::Name(namespace) => (namespace.value.as_str(), None),
+            SyntaxExpression::Member {
+                base: inner,
+                member: channel,
+            } => match &inner.value {
+                SyntaxExpression::Name(namespace) => {
+                    (namespace.value.as_str(), Some(channel.value.as_str()))
+                }
+                _ => {
+                    self.error(base.span, "register access requires a namespace");
+                    return None;
+                }
+            },
+            _ => {
+                self.error(base.span, "register access requires a namespace");
+                return None;
+            }
+        };
+        let register = match (path.0, path.1, member.value.as_str()) {
+            ("ppu", None, "ctrl") => Register::PpuCtrl,
+            ("ppu", None, "mask") => Register::PpuMask,
+            ("ppu", None, "status") => Register::PpuStatus,
+            ("ppu", None, "oam_addr") => Register::PpuOamAddr,
+            ("ppu", None, "oam_data") => Register::PpuOamData,
+            ("ppu", None, "scroll") => Register::PpuScroll,
+            ("ppu", None, "addr") => Register::PpuAddr,
+            ("ppu", None, "data") => Register::PpuData,
+            ("ppu", None, "oam_dma") => Register::PpuOamDma,
+            ("mmc3", None, "bank_select") => Register::Mmc3BankSelect,
+            ("mmc3", None, "bank_data") => Register::Mmc3BankData,
+            ("mmc3", None, "mirroring") => Register::Mmc3Mirroring,
+            ("mmc3", None, "ram_protect") => Register::Mmc3RamProtect,
+            ("mmc3", None, "irq_latch") => Register::Mmc3IrqLatch,
+            ("mmc3", None, "irq_reload") => Register::Mmc3IrqReload,
+            ("mmc3", None, "irq_disable") => Register::Mmc3IrqDisable,
+            ("mmc3", None, "irq_enable") => Register::Mmc3IrqEnable,
+            ("apu", Some("pulse1"), "volume") => Register::ApuPulse1Volume,
+            ("apu", Some("pulse1"), "sweep") => Register::ApuPulse1Sweep,
+            ("apu", Some("pulse1"), "timer_lo") => Register::ApuPulse1TimerLo,
+            ("apu", Some("pulse1"), "timer_hi") => Register::ApuPulse1TimerHi,
+            ("apu", Some("pulse2"), "volume") => Register::ApuPulse2Volume,
+            ("apu", Some("pulse2"), "sweep") => Register::ApuPulse2Sweep,
+            ("apu", Some("pulse2"), "timer_lo") => Register::ApuPulse2TimerLo,
+            ("apu", Some("pulse2"), "timer_hi") => Register::ApuPulse2TimerHi,
+            ("apu", Some("triangle"), "linear") => Register::ApuTriangleLinear,
+            ("apu", Some("triangle"), "timer_lo") => Register::ApuTriangleTimerLo,
+            ("apu", Some("triangle"), "timer_hi") => Register::ApuTriangleTimerHi,
+            ("apu", Some("noise"), "volume") => Register::ApuNoiseVolume,
+            ("apu", Some("noise"), "period") => Register::ApuNoisePeriod,
+            ("apu", Some("noise"), "length") => Register::ApuNoiseLength,
+            ("apu", None, "status") => Register::ApuStatus,
+            ("apu", None, "frame_counter") => Register::ApuFrameCounter,
             _ => {
                 self.not_in_this_release(member.span, "this byte register is not supported");
                 return None;

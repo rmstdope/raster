@@ -558,14 +558,17 @@ ppu.oam_data = $18
 ppu.oam_dma  = $02              // copies $0200-$02FF to sprite memory
 mmc3.bank_select  = 0           // CHR window at PPU $0000
 mmc3.bank_data    = 0
+apu.pulse1.volume = $BF         // channel, then register
 ```
 
 Named access exists so the compiler understands hardware side effects — write
 ordering, the `$2005`/`$2006` shared latch, `$2002` clearing that latch on read. The
 compiler warns when a sequence violates a known hardware requirement.
 
-**rasterc today:** every line above compiles. The APU registers, which today belong
-to the linked sound driver (§8.3), are intended and not built.
+**rasterc today:** every line above compiles. The DMC registers, `apu.dmc.*` at $4010
+to $4013, are intended and not built: sample playback steals CPU cycles at unpredictable
+times, and how that meets a timed block is still open (section 15.2). Reach them through
+`poke` until then.
 
 ### 9.2 Raw access
 
@@ -628,9 +631,9 @@ no register it can name.
 
 ### 9.5 Which registers read and which accept writes
 
-Seventeen registers have names. Three of them can be read, and sixteen of
-them can be written; `ppu.status` is the only one that can be read and not
-written.
+Every named register is in the table below, with whether it reads and
+whether it accepts writes. `ppu.status` is the only one that can be read and
+not written.
 
 | Register | Address | A read of it | A write of it |
 |---|---|---|---|
@@ -651,10 +654,27 @@ written.
 | `mmc3.irq_reload` | `$C001` | refused | **allowed** |
 | `mmc3.irq_disable` | `$E000` | refused | **allowed** |
 | `mmc3.irq_enable` | `$E001` | refused | **allowed** |
+| `apu.pulse1.volume` | `$4000` | refused | **allowed** |
+| `apu.pulse1.sweep` | `$4001` | refused | **allowed** |
+| `apu.pulse1.timer_lo` | `$4002` | refused | **allowed** |
+| `apu.pulse1.timer_hi` | `$4003` | refused | **allowed** |
+| `apu.pulse2.volume` | `$4004` | refused | **allowed** |
+| `apu.pulse2.sweep` | `$4005` | refused | **allowed** |
+| `apu.pulse2.timer_lo` | `$4006` | refused | **allowed** |
+| `apu.pulse2.timer_hi` | `$4007` | refused | **allowed** |
+| `apu.triangle.linear` | `$4008` | refused | **allowed** |
+| `apu.triangle.timer_lo` | `$400A` | refused | **allowed** |
+| `apu.triangle.timer_hi` | `$400B` | refused | **allowed** |
+| `apu.noise.volume` | `$400C` | refused | **allowed** |
+| `apu.noise.period` | `$400E` | refused | **allowed** |
+| `apu.noise.length` | `$400F` | refused | **allowed** |
+| `apu.status` | `$4015` | **allowed** | **allowed** |
+| `apu.frame_counter` | `$4017` | refused | **allowed** |
 
-The fourteen that cannot be read are write-only ports. A read of one does
+Every register whose read is refused is a write-only port. A read of one does
 not return the last value written: a PPU port returns whatever was last on
-the PPU's data bus, and an MMC3 port returns a byte of your own program,
+the PPU's data bus, an APU port returns whatever was last on the CPU bus,
+and an MMC3 port returns a byte of your own program,
 from the PRG bank the mapper has at that address. `ppu.oam_dma` is neither
 — `$4014` is a trigger on the CPU bus rather than a register, does not read
 back at all, and a read of it returns whatever was last on that bus. There
@@ -662,6 +682,11 @@ is no value that makes such a read correct, so the compiler refuses it
 rather than warning about it. `ppu.status` is the mirror of that: `$2002`
 is a status port the CPU can only read, the PPU ignores a store to it
 completely, and a write is refused for the same reason.
+
+`apu.status` ($4015) is the one sound register that reads back: a read gives
+the length-counter and interrupt flags, and clears the frame-interrupt flag.
+`apu.frame_counter` is written at $4017, and a read of $4017 is refused because
+it reads controller 2.
 
 That includes the read or write a compound assignment makes for you.
 `ppu.mask += $18` reads `$2001` before it writes, and `ppu.status += 1`
