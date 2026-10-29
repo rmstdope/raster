@@ -1,0 +1,67 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#12131a;--fg:#d8dae4;--dim:#7c8296;--red:#ff6b6b}
+body{margin:0;background:#f6f6f8;color:#22242c;font:15px/1.55 -apple-system,"Segoe UI",system-ui,sans-serif}
+main{max-width:62rem;margin:0 auto;padding:2rem 16px 4rem}
+h1{font-size:1.3rem;margin:0 0 .3rem}h2{font-size:1rem;margin:2rem 0 .3rem}
+.sub,.note{color:#666b7a;font-size:.92rem;max-width:56em}
+.term,.src{border-radius:8px;padding:.9rem 1.1rem;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow-x:auto;margin:.4rem 0}
+.term{background:var(--bg);color:var(--fg);border:1px solid #000}.term .e{color:var(--red);font-weight:700}.term .g{color:var(--dim)}
+.src{background:#eceef4;border:1px solid #d9dce6}.add{color:#1f7a3d;font-weight:600}.del{color:#b3261e;text-decoration:line-through}.cmt{color:#7a8090}
+.cost{border-left:3px solid #c9ccd6;padding-left:.9rem;margin:1rem 0;font-size:.9rem;color:#4a4f61}
+table{border-collapse:collapse;font-size:.86rem;width:100%}th,td{border:1px solid #d9dce6;padding:.4rem .6rem;text-align:left;vertical-align:top}th{background:#eceef4}
+@media(prefers-color-scheme:dark){body{background:#0d0e13;color:#d8dae4}.sub,.note,.cost{color:#8b90a2}.src{background:#171922;border-color:#262a36;color:#c9cddb}.add{color:#7fce97}.del{color:#ff8a80}th,td{border-color:#262a36}th{background:#1b1e27}}
+</style>
+<title>raster-3o3 — sprite DMA amendment</title></head><body><main>
+<h1>raster-3o3 — amended after sprite DMA was built (2026-10-29)</h1>
+<p class="sub">Both parts chosen: option A in each. Everything else in raster-3o3-register-diagnostics.html stands.</p>
+<hr>
+<h1>Option A — <code>oam.dma</code> is a wrong spelling, like <code>oam.addr</code></h1>
+<p class="sub">Sprite DMA is built now, as <code>ppu.oam_dma</code>. Someone who writes the old spelling is told the right one, in exactly the shape <code>oam.addr</code> and <code>oam.data</code> already get. No "this release compiles…" note: nothing is missing, only misspelled.</p>
+<h2>oam.dma = $02</h2>
+<div class="term"><span class="e">error</span>: there is no `oam` namespace
+ <span class="g">--&gt;</span> demo.raster:4:5
+  <span class="g">|</span>
+4 <span class="g">|</span>     oam.dma = $02
+  <span class="g">|</span>     <span class="e">^^^^^^^ $4014 is spelled `ppu.oam_dma`</span>
+</div>
+<h2>The three old <code>oam</code> spellings, side by side</h2>
+<table><tr><th>You write</th><th>Message</th><th>Label</th></tr>
+<tr><td><code>oam.addr = 0</code></td><td>there is no `oam` namespace</td><td>$2003 is spelled `ppu.oam_addr`</td></tr>
+<tr><td><code>oam.data = $18</code></td><td>there is no `oam` namespace</td><td>$2004 is spelled `ppu.oam_data`</td></tr>
+<tr><td><code>oam.dma = $02</code></td><td>there is no `oam` namespace</td><td><b>$4014 is spelled `ppu.oam_dma`</b></td></tr></table>
+<h2>Unchanged edges</h2>
+<p class="note">One error per line, source order; no ROM written. A variable of your own called <code>oam</code> is never told "there is no oam namespace" — it gets the agreed "is a variable, not a register namespace" error. <code>oam.foo</code> (not one of the three) gets the general "there is no `oam` namespace / rasterc has ppu and mmc3".</p>
+<p class="cost">Cost: none beyond the two cases already built this way. One rule for all three: the old <code>oam.*</code> names point at their <code>ppu.*</code> spelling.</p>
+<hr>
+<h1>Option A — twelve lines: sprite DMA added</h1><p class="sub">The eleven agreed lines stay, and <code>ppu.oam_dma = $02</code> joins them after the other two sprite-memory lines. Every port rasterc has a name for in the PPU group is shown once.</p>
+<h2>§9.1, as it would land</h2>
+<div class="src">### 9.1 Named registers
+
+ppu.ctrl     = $80
+ppu.mask     = $1E
+var s: u8    = ppu.status       // read; clears vblank and the latch
+ppu.addr     = $3F              // high byte, then low
+ppu.addr     = $00
+ppu.data     = $21
+ppu.scroll   = x
+ppu.oam_addr = 0
+ppu.oam_data = $18
+<span class="add">ppu.oam_dma  = $02              // copies $0200-$02FF to sprite memory</span>
+mmc3.bank_select  = 6
+mmc3.bank_data    = 0
+
+Named access exists so the compiler understands hardware side effects &mdash; write
+ordering, the `$2005`/`$2006` shared latch, `$2002` clearing that latch on read. The
+compiler warns when a sequence violates a known hardware requirement.
+
+<b>rasterc today:</b> every line above compiles. Two things this section
+once showed are intended and not built: `ppu.addr = $3F00`, one 16-bit
+write to the address latch, because `u16` values are not supported
+anywhere yet; and the APU registers, which today belong to the linked
+sound driver (&sect;8.3).</div>
+<h2>What changed in the "rasterc today" note</h2>
+<p class="note">Same note as agreed, with sprite DMA taken out because it is built: "Three things" becomes "Two things", and the clause "OAM DMA through `$4014`, which stalls the CPU for 513 or 514 cycles and cannot be admitted until a timed block can charge it;" is gone. <code>ppu.addr = $3F00</code> stays exactly as agreed — two byte writes in the example, and the note naming 16-bit values as not built (main still refuses <code>$3F00</code> as too big for a byte).</p>
+<p class="note">Every line compiles with no warning — checked against today's compiler, including <code>ppu.oam_dma = $02</code> outside a timed block.</p>
+<p class="cost">Cost: one line longer than agreed; the comment is new words, and it is the only line that needs one, since a write of $02 does not explain itself.</p>
+</main></body></html>
