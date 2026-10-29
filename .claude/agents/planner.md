@@ -1,1 +1,1 @@
-../cerebro/agents/planner.md
+../../.cerebro/cerebro/agents/planner.md
