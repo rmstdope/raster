@@ -2662,6 +2662,44 @@ fn a_ppu_write_only_register_alone_on_a_line_uses_the_ppu_note() {
             "keep what you wrote in a variable of your own\nand write the whole value",
             "to write it, give it a value: `ppu.ctrl = <value>`",
         ]
+    );
+}
+
+#[test]
+fn the_dma_port_alone_on_a_line_is_refused_like_any_write_only_port() {
+    let errors = lower_errors("main {\n    ppu.oam_dma\n}\n");
+
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, "`ppu.oam_dma` cannot be read");
+    assert_eq!(errors[0].notes.len(), 4);
+    assert!(errors[0].notes[1].contains("$4014 does not read back at all"));
+}
+
+#[test]
+fn several_bare_registers_are_one_error_each_in_source_order() {
+    let errors = lower_errors("main {\n    ppu.status\n    ppu.ctrl\n    ppu.data\n}\n");
+
+    assert_eq!(errors.len(), 3, "{errors:?}");
+    assert_eq!(
+        errors[0].message,
+        "a register read cannot stand on its own as a statement"
+    );
+    assert_eq!(errors[1].message, "`ppu.ctrl` cannot be read");
+    assert_eq!(
+        errors[2].message,
+        "a register read cannot stand on its own as a statement"
+    );
+    assert!(errors[0].span.start < errors[1].span.start);
+    assert!(errors[1].span.start < errors[2].span.start);
+}
+
+#[test]
+fn a_bare_ppu_data_statement_raises_no_buffer_warning() {
+    let failure = lower_failure("main {\n    ppu.data\n}\n");
+    assert_eq!(failure.errors.len(), 1);
+    assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
+}
+
 // --- raster-eb4: the bank register a call left selected ---------------------------------------
 
 const R6_NOTES: [&str; 2] = [
@@ -2855,38 +2893,6 @@ fn a_function_that_selects_the_same_register_on_every_path_leaves_it_selected() 
 }
 
 #[test]
-fn the_dma_port_alone_on_a_line_is_refused_like_any_write_only_port() {
-    let errors = lower_errors("main {\n    ppu.oam_dma\n}\n");
-
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert_eq!(errors[0].message, "`ppu.oam_dma` cannot be read");
-    assert_eq!(errors[0].notes.len(), 4);
-    assert!(errors[0].notes[1].contains("$4014 does not read back at all"));
-}
-
-#[test]
-fn several_bare_registers_are_one_error_each_in_source_order() {
-    let errors = lower_errors("main {\n    ppu.status\n    ppu.ctrl\n    ppu.data\n}\n");
-
-    assert_eq!(errors.len(), 3, "{errors:?}");
-    assert_eq!(
-        errors[0].message,
-        "a register read cannot stand on its own as a statement"
-    );
-    assert_eq!(errors[1].message, "`ppu.ctrl` cannot be read");
-    assert_eq!(
-        errors[2].message,
-        "a register read cannot stand on its own as a statement"
-    );
-    assert!(errors[0].span.start < errors[1].span.start);
-    assert!(errors[1].span.start < errors[2].span.start);
-}
-
-#[test]
-fn a_bare_ppu_data_statement_raises_no_buffer_warning() {
-    let failure = lower_failure("main {\n    ppu.data\n}\n");
-    assert_eq!(failure.errors.len(), 1);
-    assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
 fn an_early_return_before_the_select_is_not_hidden_by_the_select_after_it() {
     let source = "fn tick(n: u8) {\n if n != 0 { return }\n mmc3.bank_select = 6\n}\nmain {\n mmc3.bank_select = 0\n tick(1)\n mmc3.bank_data = 4\n}";
     let program = lower_source(source);
