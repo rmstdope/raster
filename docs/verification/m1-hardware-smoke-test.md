@@ -9,7 +9,7 @@ behaviour that an emulator cannot establish.
 1. Run the full Rust gate:
 
    ```sh
-   cargo fmt --check && cargo clippy -- -D warnings && cargo test
+   cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
    ```
 
 2. Generate the ROM outside the repository:
