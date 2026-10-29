@@ -177,12 +177,6 @@ fn renders_a_secondary_marker_on_the_line_above_the_primary() {
     let diagnostic = Diagnostic::warning("careful", Span::new(22, 29), "primary")
         .with_secondary(Span::new(11, 17), "secondary");
 
-fn a_note_that_starts_with_the_help_prefix_renders_as_help() {
-    let source = SourceFile::new("fixture.raster", "@\n");
-    let diagnostic = Diagnostic::error("invalid", Span::new(0, 1), "here")
-        .with_note(format!("{}write it another way", raster_diag::HELP_PREFIX))
-        .with_note("an ordinary note");
-
     assert_eq!(
         render(&source, &diagnostic),
         concat!(
@@ -296,6 +290,16 @@ fn prints_crlf_sources_without_the_carriage_return() {
     assert!(!render(&source, &diagnostic).contains('\r'));
 }
 
+#[test]
+fn a_note_that_starts_with_the_help_prefix_renders_as_help() {
+    let source = SourceFile::new("fixture.raster", "@\n");
+    let diagnostic = Diagnostic::error("invalid", Span::new(0, 1), "here")
+        .with_note(format!("{}write it another way", raster_diag::HELP_PREFIX))
+        .with_note("an ordinary note");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
             "error: invalid\n",
             " --> fixture.raster:1:1\n",
             "  |\n",

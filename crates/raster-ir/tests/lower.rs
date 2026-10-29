@@ -2745,35 +2745,6 @@ fn a_call_that_leaves_r6_selected_warns_definitely_with_a_marker_on_the_call() {
             "tick()".to_owned(),
             "this call leaves R6 selected".to_owned()
         )
-
-// ---- vram_addr: the one-line PPU address (raster-agi) ----
-
-fn main_assigns(source: &str) -> Vec<(raster_ir::Destination, raster_ir::Value)> {
-    lower_source(source)
-        .main
-        .expect("the fixture has a main")
-        .statements
-        .into_iter()
-        .filter_map(|statement| match statement {
-            Statement::Assign { destination, value } => Some((destination, value)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn ppu_addr_writes(high: u8, low: u8) -> Vec<(raster_ir::Destination, raster_ir::Value)> {
-    let to = raster_ir::Destination::Register(Register::PpuAddr);
-    vec![
-        (to, raster_ir::Value::Constant(high)),
-        (to, raster_ir::Value::Constant(low)),
-    ]
-}
-
-#[test]
-fn vram_addr_lowers_to_the_two_ppu_addr_writes_high_byte_first() {
-    assert_eq!(
-        main_assigns("main {\n    vram_addr = $3F00\n}\n"),
-        ppu_addr_writes(0x3F, 0x00)
     );
 }
 
@@ -2797,19 +2768,6 @@ fn a_call_that_leaves_r7_selected_warns_definitely_with_a_marker_on_the_call() {
             "tick()".to_owned(),
             "this call leaves R7 selected".to_owned()
         )
-
-fn vram_addr_takes_a_constant_expression_and_the_range_edges() {
-    assert_eq!(
-        main_assigns("main {\n    vram_addr = $2000 + 32*4 + 2\n}\n"),
-        ppu_addr_writes(0x20, 0x82)
-    );
-    assert_eq!(
-        main_assigns("main {\n    vram_addr = $3FFF\n}\n"),
-        ppu_addr_writes(0x3F, 0xFF)
-    );
-    assert_eq!(
-        main_assigns("main {\n    vram_addr = 0\n}\n"),
-        ppu_addr_writes(0x00, 0x00)
     );
 }
 
@@ -2867,13 +2825,6 @@ fn the_marker_is_on_the_call_that_last_changed_the_selection() {
     assert_eq!(
         marker(source, &program.warnings[0]),
         ("b()".to_owned(), "this call leaves R6 selected".to_owned())
-
-fn a_short_vram_addr_sets_a_low_address_without_a_word() {
-    let program = lower_source("main {\n    vram_addr = $3F\n}\n");
-    assert!(program.warnings.is_empty());
-    assert_eq!(
-        main_assigns("main {\n    vram_addr = $3F\n}\n"),
-        ppu_addr_writes(0x00, 0x3F)
     );
 }
 
@@ -2885,11 +2836,6 @@ fn a_call_after_the_select_it_does_not_change_leaves_the_visible_select_in_charg
     assert_eq!(
         marker(source, &program.warnings[0]),
         ("a()".to_owned(), "this call leaves R7 selected".to_owned())
-
-fn vram_addr_accepts_a_named_constant() {
-    assert_eq!(
-        main_assigns("const PAL = $3F\nmain {\n    vram_addr = PAL + 1\n}\n"),
-        ppu_addr_writes(0x00, 0x40)
     );
 }
 
@@ -2943,7 +2889,136 @@ fn a_function_that_selects_the_same_register_on_every_path_leaves_it_selected() 
     assert_eq!(
         program.warnings[0].label,
         "R6 is selected, so this replaces $8000-$9FFF"
+    );
+}
 
+#[test]
+fn an_early_return_before_the_select_is_not_hidden_by_the_select_after_it() {
+    let source = "fn tick(n: u8) {\n if n != 0 { return }\n mmc3.bank_select = 6\n}\nmain {\n mmc3.bank_select = 0\n tick(1)\n mmc3.bank_data = 4\n}";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(program.warnings[0].label, UNSURE_LABEL);
+}
+
+#[test]
+fn a_call_cycle_stays_unsure_rather_than_silent() {
+    let source =
+        "fn a() { mmc3.bank_select = 0\n b() }\nfn b() { a() }\nmain { a()\n mmc3.bank_data = 4 }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let failure = lower(&typed).expect_err("recursion is refused");
+
+    assert!(failure
+        .warnings
+        .iter()
+        .any(|warning| warning.label == UNSURE_LABEL));
+}
+
+#[test]
+fn uncertainty_that_does_not_come_from_a_call_keeps_its_words() {
+    let program =
+        lower_source("main { var n: u8 = 3\n mmc3.bank_select = n\n mmc3.bank_data = 4 }");
+    let warning = program.warnings.last().unwrap();
+    assert_eq!(
+        warning.label,
+        "the last bank select before this is not one rasterc can see"
+    );
+    assert!(warning.secondary.is_none());
+}
+
+#[test]
+fn a_call_inside_the_write_or_its_condition_is_marked() {
+    for source in [
+        "fn pick() -> u8 { mmc3.bank_select = 6\n return 1 }\nmain {\n mmc3.bank_data = pick()\n}",
+        "fn pick() -> u8 { mmc3.bank_select = 6\n return 1 }\nmain {\n if pick() != 0 { mmc3.bank_data = 4 }\n}",
+    ] {
+        let program = lower_source(source);
+
+        assert_eq!(program.warnings.len(), 1, "for {source:?}");
+        assert_eq!(
+            marker(source, &program.warnings[0]),
+            ("pick()".to_owned(), "this call leaves R6 selected".to_owned()),
+            "for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn a_call_to_a_function_lowering_refused_leaves_the_selection_alone() {
+    let failure = lower_failure(
+        "asm fn raw() {}\nmain {\n mmc3.bank_select = 0\n raw()\n mmc3.bank_data = 4\n}",
+    );
+
+    assert!(failure.warnings.is_empty());
+}
+
+// ---- vram_addr: the one-line PPU address (raster-agi) ----
+
+fn main_assigns(source: &str) -> Vec<(raster_ir::Destination, raster_ir::Value)> {
+    lower_source(source)
+        .main
+        .expect("the fixture has a main")
+        .statements
+        .into_iter()
+        .filter_map(|statement| match statement {
+            Statement::Assign { destination, value } => Some((destination, value)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn ppu_addr_writes(high: u8, low: u8) -> Vec<(raster_ir::Destination, raster_ir::Value)> {
+    let to = raster_ir::Destination::Register(Register::PpuAddr);
+    vec![
+        (to, raster_ir::Value::Constant(high)),
+        (to, raster_ir::Value::Constant(low)),
+    ]
+}
+
+#[test]
+fn vram_addr_lowers_to_the_two_ppu_addr_writes_high_byte_first() {
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = $3F00\n}\n"),
+        ppu_addr_writes(0x3F, 0x00)
+    );
+}
+
+#[test]
+fn vram_addr_takes_a_constant_expression_and_the_range_edges() {
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = $2000 + 32*4 + 2\n}\n"),
+        ppu_addr_writes(0x20, 0x82)
+    );
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = $3FFF\n}\n"),
+        ppu_addr_writes(0x3F, 0xFF)
+    );
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = 0\n}\n"),
+        ppu_addr_writes(0x00, 0x00)
+    );
+}
+
+#[test]
+fn a_short_vram_addr_sets_a_low_address_without_a_word() {
+    let program = lower_source("main {\n    vram_addr = $3F\n}\n");
+    assert!(program.warnings.is_empty());
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = $3F\n}\n"),
+        ppu_addr_writes(0x00, 0x3F)
+    );
+}
+
+#[test]
+fn vram_addr_accepts_a_named_constant() {
+    assert_eq!(
+        main_assigns("const PAL = $3F\nmain {\n    vram_addr = PAL + 1\n}\n"),
+        ppu_addr_writes(0x00, 0x40)
+    );
+}
+
+#[test]
 fn vram_addr_above_3fff_is_refused_with_the_agreed_words() {
     let errors = lower_errors("main {\n    vram_addr = $4000\n}\n");
 
@@ -3060,65 +3135,6 @@ fn a_compound_assignment_to_vram_addr_is_refused_naming_it() {
 }
 
 #[test]
-fn an_early_return_before_the_select_is_not_hidden_by_the_select_after_it() {
-    let source = "fn tick(n: u8) {\n if n != 0 { return }\n mmc3.bank_select = 6\n}\nmain {\n mmc3.bank_select = 0\n tick(1)\n mmc3.bank_data = 4\n}";
-    let program = lower_source(source);
-
-    assert_eq!(program.warnings.len(), 1);
-    assert_eq!(program.warnings[0].label, UNSURE_LABEL);
-}
-
-#[test]
-fn a_call_cycle_stays_unsure_rather_than_silent() {
-    let source =
-        "fn a() { mmc3.bank_select = 0\n b() }\nfn b() { a() }\nmain { a()\n mmc3.bank_data = 4 }";
-    let syntax = parse(source).expect("fixture should parse");
-    let typed = analyze(&syntax).expect("fixture should analyze");
-    let failure = lower(&typed).expect_err("recursion is refused");
-
-    assert!(failure
-        .warnings
-        .iter()
-        .any(|warning| warning.label == UNSURE_LABEL));
-}
-
-#[test]
-fn uncertainty_that_does_not_come_from_a_call_keeps_its_words() {
-    let program =
-        lower_source("main { var n: u8 = 3\n mmc3.bank_select = n\n mmc3.bank_data = 4 }");
-    let warning = program.warnings.last().unwrap();
-    assert_eq!(
-        warning.label,
-        "the last bank select before this is not one rasterc can see"
-    );
-    assert!(warning.secondary.is_none());
-}
-
-#[test]
-fn a_call_inside_the_write_or_its_condition_is_marked() {
-    for source in [
-        "fn pick() -> u8 { mmc3.bank_select = 6\n return 1 }\nmain {\n mmc3.bank_data = pick()\n}",
-        "fn pick() -> u8 { mmc3.bank_select = 6\n return 1 }\nmain {\n if pick() != 0 { mmc3.bank_data = 4 }\n}",
-    ] {
-        let program = lower_source(source);
-
-        assert_eq!(program.warnings.len(), 1, "for {source:?}");
-        assert_eq!(
-            marker(source, &program.warnings[0]),
-            ("pick()".to_owned(), "this call leaves R6 selected".to_owned()),
-            "for {source:?}"
-        );
-    }
-}
-
-#[test]
-fn a_call_to_a_function_lowering_refused_leaves_the_selection_alone() {
-    let failure = lower_failure(
-        "asm fn raw() {}\nmain {\n mmc3.bank_select = 0\n raw()\n mmc3.bank_data = 4\n}",
-    );
-
-    assert!(failure.warnings.is_empty());
-
 fn vram_addr_alone_on_a_line_gets_the_bare_register_refusal() {
     let errors = lower_errors("main {\n    vram_addr\n}\n");
 
