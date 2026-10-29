@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use raster_diag::Refusal;
 use raster_ir::{
-    lower, lower_with_pictures, Picture, Pictures, PlaceKind, PpuBlock, Register, Statement,
+    lower, lower_with_pictures, Nametable, Picture, Pictures, PlaceKind, PpuBlock, Register,
+    Statement,
 };
 use raster_sema::analyze;
 use raster_syntax::parse;
@@ -2405,7 +2406,11 @@ fn pictures(placed: bool) -> Pictures {
     let picture = |seed: u8| Picture {
         palette: vec![seed; 16],
         attributes: vec![seed + 1; 64],
-        nametable: placed.then(|| vec![seed + 2; 960]),
+        nametable: if placed {
+            Nametable::Shown(vec![seed + 2; 960])
+        } else {
+            Nametable::Unplaced
+        },
     };
     Pictures {
         by_name: [
@@ -2590,7 +2595,7 @@ fn a_nametable_whose_tiles_are_in_no_bank_is_refused_under_the_nametable_argumen
     );
     assert_eq!(
         error.help.as_deref(),
-        Some("add `chrrom bank 1 { picture.tiles }`")
+        Some("add `picture.tiles` to `chrrom bank 0`")
     );
 }
 
@@ -3612,7 +3617,7 @@ fn with_every_bank_declared_the_unplaced_help_does_not_name_a_bank_32() {
         .errors;
     assert_eq!(
         errors[0].help.as_deref(),
-        Some("add `picture.tiles` to one of the `chrrom` banks")
+        Some("add `picture.tiles` to `chrrom bank 0`")
     );
 }
 

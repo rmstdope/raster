@@ -248,6 +248,79 @@ fn tiles_crossing_the_pattern_table_line_are_an_error_on_that_item() {
     );
 }
 
+// Only CHR bank 0's first pattern table is on screen until bank switching exists, so a loaded
+// picture anywhere else would build a blank screen: raster-d5w.
+
+#[test]
+fn a_loaded_picture_in_a_bank_other_than_0_is_not_in_this_release() {
+    let source = program(
+        "chrrom bank 0 { font.tiles }\nchrrom bank 1 { picture.tiles }",
+        SHOW,
+    );
+    let found = errors(&source, &files(3, 1, 1));
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        rendered(&source, &found[0]),
+        concat!(
+            "error: a picture in `chrrom bank 1` is not supported yet\n",
+            " --> demo.raster:8:20\n",
+            "  |\n",
+            "8 |     load_nametable(picture.nametable, picture.attributes)\n",
+            "  |                    ^^^^^^^^^^^^^^^^^ `picture`'s tiles are in `chrrom bank 1`, which nothing maps yet\n",
+            "  = note: this release reads one kind of asset: `asset image` from a `png`,\n",
+            "          with `kind: background`, `palette: auto(4)` and `dedup: true`, used\n",
+            "          through `.tiles`, `.nametable`, `.attributes` and `.palette`\n",
+            "  |\n",
+            "  = help: place `picture.tiles` within tiles 0–255 of `chrrom bank 0`\n",
+        )
+    );
+}
+
+#[test]
+fn a_loaded_picture_in_the_second_pattern_table_is_not_in_this_release() {
+    let source = program("chrrom bank 0 { font.tiles, picture.tiles }", SHOW);
+    let found = errors(&source, &files(3, 256, 1));
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        rendered(&source, &found[0]),
+        concat!(
+            "error: a picture at tiles 256–511 is not supported yet\n",
+            " --> demo.raster:7:20\n",
+            "  |\n",
+            "7 |     load_nametable(picture.nametable, picture.attributes)\n",
+            "  |                    ^^^^^^^^^^^^^^^^^ `picture`'s tiles are 256–258 of `chrrom bank 0`, which nothing maps yet\n",
+            "  = note: this release reads one kind of asset: `asset image` from a `png`,\n",
+            "          with `kind: background`, `palette: auto(4)` and `dedup: true`, used\n",
+            "          through `.tiles`, `.nametable`, `.attributes` and `.palette`\n",
+            "  |\n",
+            "  = help: place `picture.tiles` within tiles 0–255 of `chrrom bank 0`\n",
+        )
+    );
+}
+
+#[test]
+fn tiles_in_no_bank_while_bank_0_exists_are_pointed_at_bank_0() {
+    let source = program("chrrom bank 0 { font.tiles }", SHOW);
+    let found = errors(&source, &files(3, 1, 1));
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].help.as_deref(),
+        Some("add `picture.tiles` to `chrrom bank 0`")
+    );
+}
+
+#[test]
+fn a_picture_in_another_bank_that_is_never_loaded_still_builds() {
+    let source = program(
+        "chrrom bank 0 { picture.tiles }\nchrrom bank 1 { font.tiles }",
+        SHOW,
+    );
+    compile_source_with_assets(&source, &files(3, 1, 1)).expect("it compiles");
+}
+
 #[test]
 fn the_wrong_member_for_load_palette_suggests_the_palette() {
     let source = program(

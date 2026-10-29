@@ -944,7 +944,7 @@ fn a_nested_cycles_overrun_is_not_a_handler_overrun() {
 
 // ---- PpuUpload ------------------------------------------------------------------------------
 
-use raster_ir::{lower_with_pictures, Picture, Pictures};
+use raster_ir::{lower_with_pictures, Nametable, Picture, Pictures};
 
 /// A program that loads `picture`, whose blocks are recognisable runs of one byte each, linked
 /// into the fixed bank so the emitted bytes can be read as the 6502 would.
@@ -959,7 +959,7 @@ fn linked_loads(body: &str) -> (Vec<u8>, usize) {
             Picture {
                 palette: vec![0xa1; 16],
                 attributes: vec![0xa3; 64],
-                nametable: Some(vec![0xa2; 960]),
+                nametable: Nametable::Shown(vec![0xa2; 960]),
             },
         )]
         .into_iter()

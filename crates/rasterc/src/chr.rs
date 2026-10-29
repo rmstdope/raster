@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use raster_assets::NesBackground;
-use raster_ir::{Picture, Pictures};
+use raster_ir::{Nametable, Picture, Pictures};
 use raster_syntax::{ChrRomBank, Expression, Item, Program, Span};
 
 use crate::assets::Assets;
@@ -83,8 +83,8 @@ pub(crate) fn layout(program: &Program, assets: &Assets) -> Result<ChrLayout, Ve
         })
         .collect();
     let mut rom = vec![0u8; bank_count * BANK_BYTES];
-    // Where each placed picture's tiles start in its pattern table.
-    let mut placed: BTreeMap<String, usize> = BTreeMap::new();
+    // Each placed picture's bank, and the tile in that bank its tiles start at.
+    let mut placed: BTreeMap<String, (u32, usize)> = BTreeMap::new();
     let mut errors = Vec::new();
 
     for (number, bank) in &declared {
@@ -118,7 +118,7 @@ pub(crate) fn layout(program: &Program, assets: &Assets) -> Result<ChrLayout, Ve
             if at + chr.len() <= (slot + 1) * BANK_BYTES {
                 rom[at..at + chr.len()].copy_from_slice(chr);
             }
-            placed.insert(name.to_owned(), tiles_so_far % PATTERN_TABLE_TILES);
+            placed.insert(name.to_owned(), (*number, tiles_so_far));
             banks[slot].contents.push(format!("{name}.tiles"));
             tiles_so_far += tiles;
         }
@@ -155,14 +155,26 @@ pub(crate) fn layout(program: &Program, assets: &Assets) -> Result<ChrLayout, Ve
         .images
         .iter()
         .map(|(name, image)| {
-            let nametable = placed.get(name).map(|first| {
-                image
-                    .nametable()
-                    .iter()
-                    // `first + tiles <= 256` was checked above, so this cannot wrap.
-                    .map(|entry| entry + *first as u8)
-                    .collect()
-            });
+            let tiles = image.chr().len() / TILE_BYTES;
+            let nametable = match placed.get(name) {
+                None => Nametable::Unplaced,
+                // Until bank switching exists, the PPU sees bank 0's first pattern table only.
+                Some(&(bank, first)) if bank != 0 || first >= PATTERN_TABLE_TILES => {
+                    Nametable::Unmapped {
+                        bank,
+                        first,
+                        last: first + tiles.max(1) - 1,
+                    }
+                }
+                Some(&(_, first)) => Nametable::Shown(
+                    image
+                        .nametable()
+                        .iter()
+                        // `first + tiles <= 256` was checked above, so this cannot wrap.
+                        .map(|entry| entry + first as u8)
+                        .collect(),
+                ),
+            };
             (
                 name.clone(),
                 Picture {
@@ -268,7 +280,10 @@ mod tests {
         let layout = run("main { }", &[("picture", 4)]).unwrap();
         assert!(layout.banks.is_empty());
         assert!(layout.rom.is_empty());
-        assert_eq!(layout.pictures.by_name["picture"].nametable, None);
+        assert_eq!(
+            layout.pictures.by_name["picture"].nametable,
+            Nametable::Unplaced
+        );
         assert_eq!(layout.pictures.next_free_bank, 0);
     }
 
@@ -290,8 +305,8 @@ mod tests {
         assert_eq!(&layout.rom[..1792], image.chr());
         assert!(layout.rom[1792..].iter().all(|byte| *byte == 0));
         assert_eq!(
-            layout.pictures.by_name["picture"].nametable.as_deref(),
-            Some(image.nametable().as_slice())
+            layout.pictures.by_name["picture"].nametable,
+            Nametable::Shown(image.nametable().to_vec())
         );
         assert_eq!(layout.pictures.next_free_bank, 1);
     }
@@ -334,26 +349,51 @@ mod tests {
         assert_eq!(layout.banks[0].tiles, 68);
         assert_eq!(&layout.rom[48 * 16..68 * 16], picture(20).chr());
         let shifted: Vec<u8> = picture(20).nametable().iter().map(|t| t + 48).collect();
-        assert_eq!(layout.pictures.by_name["picture"].nametable, Some(shifted));
+        assert_eq!(
+            layout.pictures.by_name["picture"].nametable,
+            Nametable::Shown(shifted)
+        );
         // The first item did not move.
         assert_eq!(
             layout.pictures.by_name["font"].nametable,
-            Some(picture(48).nametable().to_vec())
+            Nametable::Shown(picture(48).nametable().to_vec())
         );
     }
 
     #[test]
-    fn the_second_pattern_table_is_addressed_from_its_own_zero() {
+    fn a_picture_in_the_second_pattern_table_is_unmapped() {
         let layout = run(
             "chrrom bank 0 { a.tiles, b.tiles }",
             &[("a", 256), ("b", 30)],
         )
         .unwrap();
 
-        // b starts at tile 256 of the bank, which is tile 0 of pattern table 1.
+        // b starts at tile 256 of the bank: on the cartridge, and not where the PPU looks.
         assert_eq!(
             layout.pictures.by_name["b"].nametable,
-            Some(picture(30).nametable().to_vec())
+            Nametable::Unmapped {
+                bank: 0,
+                first: 256,
+                last: 285
+            }
+        );
+    }
+
+    #[test]
+    fn a_picture_in_a_bank_other_than_zero_is_unmapped() {
+        let layout = run(
+            "chrrom bank 0 { a.tiles }\nchrrom bank 1 { b.tiles }",
+            &[("a", 5), ("b", 30)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            layout.pictures.by_name["b"].nametable,
+            Nametable::Unmapped {
+                bank: 1,
+                first: 0,
+                last: 29
+            }
         );
     }
 

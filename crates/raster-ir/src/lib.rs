@@ -538,8 +538,9 @@ fn asset_member_of(expression: &Spanned<SyntaxExpression>) -> Option<(&str, &str
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Pictures {
     pub by_name: BTreeMap<String, Picture>,
-    /// The lowest `chrrom bank` number the program does not declare, which is
-    /// what the "tiles are not in any bank" help suggests.
+    /// The lowest `chrrom bank` number the program does not declare. The "tiles
+    /// are not in any bank" help suggests declaring bank 0 when this is 0, and
+    /// adding to it otherwise: no other bank is mapped yet.
     pub next_free_bank: u32,
 }
 
@@ -550,10 +551,26 @@ pub struct Picture {
     pub palette: Vec<u8>,
     /// Sixty-four bytes for `$23C0`.
     pub attributes: Vec<u8>,
-    /// 960 tile indices for `$2000`, already shifted to where the picture's
-    /// tiles sit in their pattern table. `None` when no `chrrom` bank holds the
-    /// picture's tiles, so there is nothing for a nametable to point at.
-    pub nametable: Option<Vec<u8>>,
+    /// Where the picture's tiles sit, and so what its nametable can point at.
+    pub nametable: Nametable,
+}
+
+/// A picture's nametable, as far as where its tiles landed decides it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Nametable {
+    /// No `chrrom` bank holds the picture's tiles, so there is nothing to point at.
+    Unplaced,
+    /// The tiles are on the cartridge where nothing maps them yet: a bank other
+    /// than 0, or tiles 256–511 of bank 0. Until bank switching exists the PPU
+    /// sees only bank 0's first pattern table. `first` and `last` count tiles
+    /// from the start of `bank`.
+    Unmapped {
+        bank: u32,
+        first: usize,
+        last: usize,
+    },
+    /// 960 tile indices for `$2000`, already shifted to where the tiles sit.
+    Shown(Vec<u8>),
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -3494,35 +3511,61 @@ impl Lowerer {
         let Some(picture) = self.pictures.by_name.get(&asset).cloned() else {
             return;
         };
-        if !palette && picture.nametable.is_none() {
-            self.errors.push(LowerError {
-                message: format!("`{asset}`'s tiles are not in any `chrrom` bank"),
-                label: Some("this nametable points at tiles that are not on the cartridge".into()),
-                notes: Vec::new(),
-                // Banks 0 to 31 exist; with all of them declared there is no number to suggest.
-                help: Some(if self.pictures.next_free_bank > 31 {
-                    format!("add `{asset}.tiles` to one of the `chrrom` banks")
-                } else {
-                    format!(
-                        "add `chrrom bank {} {{ {asset}.tiles }}`",
-                        self.pictures.next_free_bank
+        let nametable = match picture.nametable {
+            _ if palette => Vec::new(),
+            Nametable::Shown(nametable) => nametable,
+            Nametable::Unplaced => {
+                self.errors.push(LowerError {
+                    message: format!("`{asset}`'s tiles are not in any `chrrom` bank"),
+                    label: Some(
+                        "this nametable points at tiles that are not on the cartridge".into(),
+                    ),
+                    notes: Vec::new(),
+                    help: Some(if self.pictures.next_free_bank == 0 {
+                        format!("add `chrrom bank 0 {{ {asset}.tiles }}`")
+                    } else {
+                        format!("add `{asset}.tiles` to `chrrom bank 0`")
+                    }),
+                    span: arguments[0].span,
+                    refusal: Refusal::Rejected,
+                });
+                return;
+            }
+            Nametable::Unmapped { bank, first, last } => {
+                let (message, label) = if bank != 0 {
+                    (
+                        format!("a picture in `chrrom bank {bank}` is not supported yet"),
+                        format!(
+                            "`{asset}`'s tiles are in `chrrom bank {bank}`, which nothing maps yet"
+                        ),
                     )
-                }),
-                span: arguments[0].span,
-                refusal: Refusal::Rejected,
-            });
-            return;
-        }
+                } else {
+                    (
+                        "a picture at tiles 256–511 is not supported yet".to_owned(),
+                        format!(
+                            "`{asset}`'s tiles are {first}–{last} of `chrrom bank 0`, which nothing maps yet"
+                        ),
+                    )
+                };
+                self.errors.push(LowerError {
+                    message,
+                    label: Some(label),
+                    notes: Vec::new(),
+                    // Only bank 0's first pattern table is mapped, so that is where it can go.
+                    help: Some(format!(
+                        "place `{asset}.tiles` within tiles 0–255 of `chrrom bank 0`"
+                    )),
+                    span: arguments[0].span,
+                    refusal: Refusal::AssetNotInThisRelease,
+                });
+                return;
+            }
+        };
         let blocks = if palette {
             vec![self.picture_block(&asset, "palette", 0x3f00, picture.palette)]
         } else {
             vec![
-                self.picture_block(
-                    &asset,
-                    "nametable",
-                    0x2000,
-                    picture.nametable.unwrap_or_default(),
-                ),
+                self.picture_block(&asset, "nametable", 0x2000, nametable),
                 self.picture_block(&asset, "attributes", 0x23c0, picture.attributes),
             ]
         };
