@@ -2952,3 +2952,220 @@ fn a_call_to_a_function_lowering_refused_leaves_the_selection_alone() {
 
     assert!(failure.warnings.is_empty());
 }
+
+// ---- vram_addr: the one-line PPU address (raster-agi) ----
+
+fn main_assigns(source: &str) -> Vec<(raster_ir::Destination, raster_ir::Value)> {
+    lower_source(source)
+        .main
+        .expect("the fixture has a main")
+        .statements
+        .into_iter()
+        .filter_map(|statement| match statement {
+            Statement::Assign { destination, value } => Some((destination, value)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn ppu_addr_writes(high: u8, low: u8) -> Vec<(raster_ir::Destination, raster_ir::Value)> {
+    let to = raster_ir::Destination::Register(Register::PpuAddr);
+    vec![
+        (to, raster_ir::Value::Constant(high)),
+        (to, raster_ir::Value::Constant(low)),
+    ]
+}
+
+#[test]
+fn vram_addr_lowers_to_the_two_ppu_addr_writes_high_byte_first() {
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = $3F00\n}\n"),
+        ppu_addr_writes(0x3F, 0x00)
+    );
+}
+
+#[test]
+fn vram_addr_takes_a_constant_expression_and_the_range_edges() {
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = $2000 + 32*4 + 2\n}\n"),
+        ppu_addr_writes(0x20, 0x82)
+    );
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = $3FFF\n}\n"),
+        ppu_addr_writes(0x3F, 0xFF)
+    );
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = 0\n}\n"),
+        ppu_addr_writes(0x00, 0x00)
+    );
+}
+
+#[test]
+fn a_short_vram_addr_sets_a_low_address_without_a_word() {
+    let program = lower_source("main {\n    vram_addr = $3F\n}\n");
+    assert!(program.warnings.is_empty());
+    assert_eq!(
+        main_assigns("main {\n    vram_addr = $3F\n}\n"),
+        ppu_addr_writes(0x00, 0x3F)
+    );
+}
+
+#[test]
+fn vram_addr_accepts_a_named_constant() {
+    assert_eq!(
+        main_assigns("const PAL = $3F\nmain {\n    vram_addr = PAL + 1\n}\n"),
+        ppu_addr_writes(0x00, 0x40)
+    );
+}
+
+#[test]
+fn vram_addr_above_3fff_is_refused_with_the_agreed_words() {
+    let errors = lower_errors("main {\n    vram_addr = $4000\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "$4000 is outside the PPU address space");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("PPU addresses run $0000 to $3FFF")
+    );
+    assert_eq!(
+        errors[0].notes,
+        ["the PPU ignores the top two bits, so this would set $0000"]
+    );
+    // `    vram_addr = ` is twelve characters after the line's first byte.
+    assert_eq!((errors[0].span.start, errors[0].span.end), (23, 28));
+}
+
+#[test]
+fn the_out_of_range_headline_quotes_the_number_as_written() {
+    let errors = lower_errors("main {\n    vram_addr = 16384\n}\n");
+    assert_eq!(errors[0].message, "16384 is outside the PPU address space");
+    assert_eq!(
+        errors[0].notes,
+        ["the PPU ignores the top two bits, so this would set $0000"]
+    );
+}
+
+#[test]
+fn the_out_of_range_note_names_the_address_the_ppu_would_use() {
+    let errors = lower_errors("main {\n    vram_addr = $7F01\n}\n");
+    assert_eq!(
+        errors[0].notes,
+        ["the PPU ignores the top two bits, so this would set $3F01"]
+    );
+}
+
+#[test]
+fn a_variable_vram_addr_is_refused_with_a_way_forward() {
+    let errors = lower_errors("main {\n    var row: u8 = 3\n    vram_addr = row\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "vram_addr needs a constant address in this release"
+    );
+    assert_eq!(errors[0].label.as_deref(), Some("`row` is a variable"));
+    assert_eq!(
+        errors[0].notes,
+        ["help: to set an address from a variable, write the two bytes to ppu.addr, high byte first"]
+    );
+    assert_eq!(errors[0].refusal, Refusal::Rejected);
+}
+
+#[test]
+fn a_variable_inside_an_address_expression_points_at_the_variable() {
+    let source = "main {\n    var row: u8 = 3\n    vram_addr = $2000 + row\n}\n";
+    let errors = lower_errors(source);
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].label.as_deref(), Some("`row` is a variable"));
+    assert_eq!(
+        &source[errors[0].span.start as usize..errors[0].span.end as usize],
+        "row"
+    );
+}
+
+#[test]
+fn an_address_that_cannot_be_worked_out_is_its_own_error() {
+    let errors = lower_errors("main {\n    vram_addr = 1 / 0\n}\n");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "vram_addr could not work out this address"
+    );
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("the arithmetic overflows or divides by zero")
+    );
+}
+
+#[test]
+fn reading_vram_addr_is_refused_like_a_write_only_register() {
+    let errors = lower_errors("main {\n    var v: u8 = vram_addr\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "`vram_addr` cannot be read");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$2006 is a write-only port")
+    );
+    assert_eq!(
+        errors[0].notes,
+        [
+            "reading $2006 returns whatever was last on the PPU's data bus,\nnot the last value written",
+            "keep what you wrote in a variable of your own\nand write the whole value",
+        ]
+    );
+}
+
+#[test]
+fn a_compound_assignment_to_vram_addr_is_refused_naming_it() {
+    let errors = lower_errors("main {\n    vram_addr += 1\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "`vram_addr` cannot be read");
+    assert_eq!(
+        errors[0].label.as_deref(),
+        Some("$2006 is a write-only port")
+    );
+    assert_eq!(
+        errors[0].notes[0],
+        "`+=` reads its destination before it writes, so this reads $2006"
+    );
+}
+
+#[test]
+fn vram_addr_alone_on_a_line_gets_the_bare_register_refusal() {
+    let errors = lower_errors("main {\n    vram_addr\n}\n");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "`vram_addr` cannot be read");
+    assert!(errors[0]
+        .notes
+        .contains(&"to write it, give it a value: `vram_addr = <value>`".to_owned()));
+}
+
+#[test]
+fn a_local_variable_named_vram_addr_shadows_the_register() {
+    let program = lower_source("main {\n    var vram_addr: u8 = 5\n    vram_addr = 6\n}\n");
+    assert!(program
+        .main
+        .expect("main")
+        .statements
+        .iter()
+        .all(|statement| !matches!(
+            statement,
+            Statement::Assign {
+                destination: raster_ir::Destination::Register(_),
+                ..
+            }
+        )));
+}
+
+#[test]
+fn the_raw_byte_pair_still_lowers_to_the_same_two_writes() {
+    assert_eq!(
+        main_assigns("main {\n    ppu.addr = $3F\n    ppu.addr = $00\n}\n"),
+        ppu_addr_writes(0x3F, 0x00)
+    );
+}

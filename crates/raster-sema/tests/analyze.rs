@@ -1129,3 +1129,83 @@ fn an_unknown_ppu_member_keeps_its_message() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].message, "unknown ppu register `crtl`");
 }
+
+// ---- vram_addr and the raw $2006 port (raster-agi) ----
+
+#[test]
+fn vram_addr_resolves_and_takes_a_whole_address() {
+    let program = parse("main {\n    vram_addr = $3F00\n}\n").expect("fixture should parse");
+    analyze(&program).expect("the virtual register is a known name");
+}
+
+#[test]
+fn a_16_bit_number_on_the_raw_port_is_the_one_byte_at_a_time_error() {
+    let found = errors_with_spans("main {\n    ppu.addr = $3F00\n}\n");
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].message, "ppu.addr is written one byte at a time");
+    assert_eq!(
+        found[0].label.as_deref(),
+        Some("$3F00 does not fit in a byte")
+    );
+    assert_eq!(
+        found[0].notes,
+        ["help: to set the whole address in one line, write `vram_addr = $3F00`"]
+    );
+    // `    ppu.addr = ` is eleven characters after the line's first byte.
+    assert_eq!((found[0].span.start, found[0].span.end), (22, 27));
+}
+
+#[test]
+fn the_raw_port_error_quotes_the_number_as_written() {
+    let found = errors_with_spans("main {\n    ppu.addr = 16128\n}\n");
+    assert_eq!(
+        found[0].label.as_deref(),
+        Some("16128 does not fit in a byte")
+    );
+    assert_eq!(
+        found[0].notes,
+        ["help: to set the whole address in one line, write `vram_addr = 16128`"]
+    );
+}
+
+#[test]
+fn another_register_keeps_the_generic_overflow_error() {
+    let found = errors("main {\n    ppu.mask = $3F00\n}\n");
+    assert_eq!(found, ["integer literal overflows u8"]);
+}
+
+#[test]
+fn a_byte_on_the_raw_port_still_analyzes() {
+    let program = parse("main {\n    ppu.addr = $3F\n    ppu.addr = $00\n}\n").expect("parses");
+    analyze(&program).expect("the raw pair is unchanged");
+}
+
+#[test]
+fn vram_addr_in_a_timed_region_requires_sync_exact_like_any_ppu_write() {
+    let found = errors("main {\n    cycles(100) pad {\n        vram_addr = $3F00\n    }\n}\n");
+    assert!(
+        found
+            .iter()
+            .any(|message| message.contains("`sync exact` is required")),
+        "got {found:?}"
+    );
+}
+
+#[test]
+fn declaring_vram_addr_at_the_top_level_says_it_is_built_in() {
+    let found = errors("var vram_addr: u8 = 1\nmain {\n}\n");
+    assert_eq!(
+        found,
+        ["`vram_addr` is a built-in virtual register and cannot be declared"]
+    );
+}
+
+#[test]
+fn a_local_named_vram_addr_in_a_timed_region_needs_no_sync_exact() {
+    let program = parse(
+        "main {\n    var vram_addr: u8 = 1\n    cycles(30) pad {\n        vram_addr = 2\n    }\n}\n",
+    )
+    .expect("parses");
+    analyze(&program).expect("a variable is not a PPU write");
+}

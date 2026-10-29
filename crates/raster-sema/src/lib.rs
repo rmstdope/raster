@@ -113,6 +113,16 @@ impl Analyzer {
                 },
             );
         }
+        // The virtual register of spec §9.3. It takes any value here: whether the
+        // address is constant and in range is lowering's to judge.
+        root.insert(
+            VRAM_ADDR.into(),
+            Symbol {
+                kind: SymbolKind::Variable,
+                value_type: ValueType::Unknown,
+                span: Span::default(),
+            },
+        );
         Self {
             scopes: vec![root],
             errors: Vec::new(),
@@ -214,7 +224,12 @@ impl Analyzer {
             .expect("analyzer always has a root scope")
             .get(&name.value)
             .map(|previous| previous.span);
-        if let Some(previous_span) = previous_span {
+        if name.value == VRAM_ADDR && self.vram_addr_is_register() && self.scopes.len() == 1 {
+            self.error(
+                name.span,
+                "`vram_addr` is a built-in virtual register and cannot be declared",
+            );
+        } else if let Some(previous_span) = previous_span {
             self.error(
                 name.span,
                 format!(
@@ -228,6 +243,13 @@ impl Analyzer {
                 .expect("analyzer always has a root scope")
                 .insert(name.value.clone(), symbol);
         }
+    }
+
+    /// Whether `vram_addr` at this point is the virtual register and not
+    /// something the author declared under that name in an inner scope.
+    fn vram_addr_is_register(&self) -> bool {
+        self.lookup(VRAM_ADDR)
+            .is_some_and(|symbol| symbol.span == Span::default())
     }
 
     fn lookup(&self, name: &str) -> Option<&Symbol> {
@@ -547,7 +569,7 @@ impl Analyzer {
         for (index, statement) in block.statements.iter().enumerate() {
             if let Statement::Cycles { spec, body, .. } = &statement.value
                 && !self.synchronized
-                && writes_ppu_register(body)
+                && writes_ppu_register(body, self.vram_addr_is_register())
                 && !block.statements[..index].iter().any(is_sync_exact)
             {
                 self.error(
@@ -977,6 +999,37 @@ impl Analyzer {
         }
     }
 
+    /// `ppu.addr = $3F00`: a number that does not fit the byte port. The generic
+    /// "integer literal overflows u8" would be true and no help; this points at
+    /// the one-line form. Returns whether it refused.
+    fn refuse_wide_literal_on_ppu_addr(
+        &mut self,
+        left: &Spanned<Expression>,
+        right: &Spanned<Expression>,
+    ) -> bool {
+        let Expression::Member { base, member } = &left.value else {
+            return false;
+        };
+        let Expression::Number(written) = &right.value else {
+            return false;
+        };
+        let is_ppu_addr = matches!(&base.value, Expression::Name(name) if name.value == "ppu")
+            && member.value == "addr";
+        if !is_ppu_addr || !parse_number(written).is_some_and(|value| value > u8::MAX as u32) {
+            return false;
+        }
+        self.refuse_with(
+            right.span,
+            "ppu.addr is written one byte at a time",
+            format!("{written} does not fit in a byte"),
+            vec![format!(
+                "{}to set the whole address in one line, write `vram_addr = {written}`",
+                raster_diag::HELP_PREFIX
+            )],
+        );
+        true
+    }
+
     fn infix_type(
         &mut self,
         left: &Spanned<Expression>,
@@ -994,6 +1047,11 @@ impl Analyzer {
             let left_type = self.expression_type(left);
             let right_type = self.expression_type(right);
             self.ensure_assignable(left);
+            if operator.value == Operator::Assign
+                && self.refuse_wide_literal_on_ppu_addr(left, right)
+            {
+                return left_type;
+            }
             self.ensure_expression_compatible(
                 right,
                 &left_type,
@@ -1465,6 +1523,9 @@ fn asset_member(member: &str) -> bool {
     matches!(member, "tiles" | "nametable" | "attributes" | "palette")
 }
 
+/// The one virtual register this release has (spec §9.3). Reserved at the root.
+const VRAM_ADDR: &str = "vram_addr";
+
 /// The register namespaces this release has. Seeds the root scope in
 /// `Analyzer::new` and is what `NAMESPACE_LIST` promises, so a namespace cannot
 /// be added to one and missed by the other.
@@ -1561,29 +1622,31 @@ fn register_member(namespace: &str, member: &str) -> bool {
 }
 
 /// Whether a block assigns to a PPU register, at any depth.
-fn writes_ppu_register(block: &Block) -> bool {
+fn writes_ppu_register(block: &Block, vram_addr: bool) -> bool {
     block
         .statements
         .iter()
         .any(|statement| match &statement.value {
-            Statement::Expression(expression) => is_ppu_register_write(expression),
-            Statement::Block(body) | Statement::Loop(body) => writes_ppu_register(body),
+            Statement::Expression(expression) => is_ppu_register_write(expression, vram_addr),
+            Statement::Block(body) | Statement::Loop(body) => writes_ppu_register(body, vram_addr),
             Statement::If {
                 then_body,
                 else_body,
                 ..
             } => {
-                writes_ppu_register(then_body)
-                    || else_body.as_ref().is_some_and(writes_ppu_register)
+                writes_ppu_register(then_body, vram_addr)
+                    || else_body
+                        .as_ref()
+                        .is_some_and(|body| writes_ppu_register(body, vram_addr))
             }
             Statement::While { body, .. }
             | Statement::For { body, .. }
-            | Statement::Cycles { body, .. } => writes_ppu_register(body),
+            | Statement::Cycles { body, .. } => writes_ppu_register(body, vram_addr),
             _ => false,
         })
 }
 
-fn is_ppu_register_write(expression: &Spanned<Expression>) -> bool {
+fn is_ppu_register_write(expression: &Spanned<Expression>, vram_addr: bool) -> bool {
     let Expression::Infix { left, operator, .. } = &expression.value else {
         return false;
     };
@@ -1596,6 +1659,9 @@ fn is_ppu_register_write(expression: &Spanned<Expression>) -> bool {
             | Operator::SlashEqual
     ) {
         return false;
+    }
+    if vram_addr && matches!(&left.value, Expression::Name(name) if name.value == VRAM_ADDR) {
+        return true;
     }
     let Expression::Member { base, .. } = &left.value else {
         return false;

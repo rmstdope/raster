@@ -289,3 +289,24 @@ fn prints_crlf_sources_without_the_carriage_return() {
 
     assert!(!render(&source, &diagnostic).contains('\r'));
 }
+
+#[test]
+fn a_note_that_starts_with_the_help_prefix_renders_as_help() {
+    let source = SourceFile::new("fixture.raster", "@\n");
+    let diagnostic = Diagnostic::error("invalid", Span::new(0, 1), "here")
+        .with_note(format!("{}write it another way", raster_diag::HELP_PREFIX))
+        .with_note("an ordinary note");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "error: invalid\n",
+            " --> fixture.raster:1:1\n",
+            "  |\n",
+            "1 | @\n",
+            "  | ^ here\n",
+            "  = help: write it another way\n",
+            "  = note: an ordinary note\n"
+        )
+    );
+}

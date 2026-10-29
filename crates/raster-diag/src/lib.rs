@@ -178,6 +178,11 @@ impl Diagnostic {
 }
 
 const NOTE_MARKER: &str = " = note: ";
+const HELP_MARKER: &str = " = help: ";
+
+/// A note that begins with this is rendered as `= help:` rather than `= note:`:
+/// advice on what to write instead, as opposed to a fact about the refusal.
+pub const HELP_PREFIX: &str = "help: ";
 
 pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
     let Some(Span { start, end }) = diagnostic.span else {
@@ -256,13 +261,17 @@ pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
 /// same whatever the line number's width. Later physical lines line up under the
 /// note's text rather than under `= note:`.
 fn render_note(note: &str, gutter: &str) -> String {
+    let (marker, note) = match note.strip_prefix(HELP_PREFIX) {
+        Some(advice) => (HELP_MARKER, advice),
+        None => (NOTE_MARKER, note),
+    };
     let mut rendered = String::new();
     for (index, line) in note.split('\n').enumerate() {
         if index == 0 {
             rendered.push_str(gutter);
-            rendered.push_str(NOTE_MARKER);
+            rendered.push_str(marker);
         } else {
-            rendered.push_str(&" ".repeat(gutter.len() + NOTE_MARKER.len()));
+            rendered.push_str(&" ".repeat(gutter.len() + marker.len()));
         }
         rendered.push_str(line);
         rendered.push('\n');

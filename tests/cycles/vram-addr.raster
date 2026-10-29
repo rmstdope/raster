@@ -1,0 +1,8 @@
+// One `vram_addr` write is the two $2006 stores back to back: 2 x (LDA #imm 2 + STA abs 4) = 12
+// cycles, on top of the nine the compiler's own interrupt masking costs. Twenty-one, exactly.
+main {
+    sync exact
+    cycles(21) {
+        vram_addr = $3F00
+    }
+}
