@@ -7,6 +7,11 @@ pub const MMC3_PRG_ROM_SIZE: usize = 32 * 1024;
 pub const MMC3_FIXED_BANK_SIZE: usize = 8 * 1024;
 pub const MMC3_FIXED_BANK_START: u16 = 0xe000;
 
+/// One bank of CHR ROM in the iNES header's unit, and in raster's: 8 KiB.
+pub const CHR_ROM_BANK_SIZE: usize = 8 * 1024;
+/// The most banks an MMC3 cartridge addresses: 256 KiB of CHR.
+pub const MAX_CHR_ROM_BANKS: usize = 32;
+
 const INES_PRG_ROM_BANK_SIZE: usize = 16 * 1024;
 pub const MMC3_FIXED_BANK_CODE_SIZE: usize = MMC3_FIXED_BANK_SIZE - 6;
 
@@ -19,7 +24,8 @@ pub use m5::{
     m5_background_rom, BackgroundData, PPU_ATTRIBUTE_BYTES, PPU_NAMETABLE_BYTES, PPU_PALETTE_BYTES,
 };
 pub use runtime::{
-    link_mmc3_program, mmc3_reset_prologue_bytes, mmc3_reset_runtime_bytes, LinkedRom,
+    link_mmc3_program, link_mmc3_program_with_chr, mmc3_reset_prologue_bytes,
+    mmc3_reset_runtime_bytes, LinkedRom,
     INTERRUPT_LABEL, RESET_LABEL,
 };
 
@@ -127,11 +133,32 @@ pub struct EntryPoints {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkError {
-    DuplicateLabel { label: Label },
-    UndefinedLabel { label: Label },
-    RelativeBranchOutOfRange { from: u16, target: u16 },
-    FixedBankTooLarge { actual: usize, maximum: usize },
-    EntryPointOutsideCode { vector: &'static str, address: u16 },
+    DuplicateLabel {
+        label: Label,
+    },
+    UndefinedLabel {
+        label: Label,
+    },
+    RelativeBranchOutOfRange {
+        from: u16,
+        target: u16,
+    },
+    FixedBankTooLarge {
+        actual: usize,
+        maximum: usize,
+    },
+    EntryPointOutsideCode {
+        vector: &'static str,
+        address: u16,
+    },
+    /// `rasterc` lays CHR out in whole banks within the MMC3's 32 before it
+    /// links; these are the linker's own backstop.
+    ChrRomNotWholeBanks {
+        length: usize,
+    },
+    TooManyChrRomBanks {
+        banks: usize,
+    },
     Assemble(AssembleError),
 }
 
@@ -167,6 +194,9 @@ pub fn link_mmc3_ines(
         }
         RomError::VectorOutsideFixedBank { .. } => {
             unreachable!("resolved fixed-bank labels are always valid vectors")
+        }
+        RomError::ChrRomNotWholeBanks { .. } | RomError::TooManyChrRomBanks { .. } => {
+            unreachable!("link_mmc3_ines emits no CHR ROM")
         }
     })
 }
@@ -372,14 +402,49 @@ pub struct InterruptVectors {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RomError {
-    FixedBankTooLarge { actual: usize, maximum: usize },
-    VectorOutsideFixedBank { vector: &'static str, address: u16 },
+    FixedBankTooLarge {
+        actual: usize,
+        maximum: usize,
+    },
+    /// CHR ROM is counted in whole 8 KiB banks.
+    ChrRomNotWholeBanks {
+        length: usize,
+    },
+    TooManyChrRomBanks {
+        banks: usize,
+    },
+    VectorOutsideFixedBank {
+        vector: &'static str,
+        address: u16,
+    },
 }
 
 pub fn emit_mmc3_ines(
     fixed_bank_code: &[u8],
     vectors: InterruptVectors,
 ) -> Result<Vec<u8>, RomError> {
+    emit_mmc3_ines_with_chr(fixed_bank_code, vectors, &[])
+}
+
+/// As [`emit_mmc3_ines`], with `chr_rom` as the cartridge's tile ROM.
+///
+/// An empty `chr_rom` is the CHR-RAM image, byte for byte. Otherwise the
+/// header's CHR count (byte 5) is the number of 8 KiB banks and the bytes
+/// follow the PRG ROM, which is where iNES puts them.
+pub fn emit_mmc3_ines_with_chr(
+    fixed_bank_code: &[u8],
+    vectors: InterruptVectors,
+    chr_rom: &[u8],
+) -> Result<Vec<u8>, RomError> {
+    if chr_rom.len() % CHR_ROM_BANK_SIZE != 0 {
+        return Err(RomError::ChrRomNotWholeBanks {
+            length: chr_rom.len(),
+        });
+    }
+    let chr_banks = chr_rom.len() / CHR_ROM_BANK_SIZE;
+    if chr_banks > MAX_CHR_ROM_BANKS {
+        return Err(RomError::TooManyChrRomBanks { banks: chr_banks });
+    }
     let maximum_code_size = MMC3_FIXED_BANK_CODE_SIZE;
     if fixed_bank_code.len() > maximum_code_size {
         return Err(RomError::FixedBankTooLarge {
@@ -409,7 +474,7 @@ pub fn emit_mmc3_ines(
         b'S',
         0x1a,
         prg_rom_banks,
-        0,
+        chr_banks as u8,
         0x40,
         0,
         1,
@@ -430,6 +495,7 @@ pub fn emit_mmc3_ines(
     let [irq_low, irq_high] = vectors.irq.to_le_bytes();
     image[INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - 6..]
         .copy_from_slice(&[nmi_low, nmi_high, reset_low, reset_high, irq_low, irq_high]);
+    image.extend_from_slice(chr_rom);
 
     Ok(image)
 }
