@@ -1,7 +1,8 @@
 use crate::{
-    Asset, AssetField, AssetValue, Block, CycleBound, CycleSpec, Declaration, Expression, Frame,
-    FrameEvent, FramePosition, Function, Identifier, Item, Keyword, Parameter, Program,
-    Punctuation, Span, Spanned, Statement, Target, TargetField, Token, TokenKind, Type, lex,
+    Asset, AssetField, AssetValue, Block, ChrRomBank, CycleBound, CycleSpec, Declaration,
+    Expression, Frame, FrameEvent, FramePosition, Function, Identifier, Item, Keyword, Parameter,
+    Program, Punctuation, Span, Spanned, Statement, Target, TargetField, Token, TokenKind, Type,
+    lex,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,9 +77,10 @@ impl<'a> Parser<'a> {
                 Item::Declaration(self.declaration(keyword))
             }
             TokenKind::Keyword(Keyword::Asset) => Item::Asset(self.asset()),
-            TokenKind::Keyword(
-                Keyword::Chrrom | Keyword::Charmap | Keyword::Bank | Keyword::Timeline,
-            ) => Item::Other(self.opaque_item()),
+            TokenKind::Keyword(Keyword::Chrrom) => Item::ChrRom(self.chrrom()),
+            TokenKind::Keyword(Keyword::Charmap | Keyword::Bank | Keyword::Timeline) => {
+                Item::Other(self.opaque_item())
+            }
             TokenKind::End => return None,
             _ => {
                 self.error_here("expected a top-level declaration");
@@ -414,6 +416,86 @@ impl<'a> Parser<'a> {
             "expected `}` to close the asset block",
         );
         fields
+    }
+
+    /// A `chrrom` item: `chrrom bank <number> { <entry>, ... }`.
+    ///
+    /// Like `asset`, the first structural part that does not parse ends the
+    /// item with one error, and the rest of it is skipped so the next item
+    /// still parses.
+    fn chrrom(&mut self) -> ChrRomBank {
+        let start = self.peek().span;
+        self.advance();
+        let parsed = self.chrrom_parts();
+        if parsed.is_none() {
+            self.recover_asset();
+        }
+        let span = start.join(self.previous().span);
+        parsed.unwrap_or_else(|| ChrRomBank {
+            number: Spanned::new(String::new(), span),
+            entries: Vec::new(),
+            contents: span,
+            span,
+        })
+    }
+
+    fn chrrom_parts(&mut self) -> Option<ChrRomBank> {
+        let start = self.previous().span;
+        if !self.match_keyword(Keyword::Bank) {
+            self.error_here("expected `bank` after `chrrom`");
+            return None;
+        }
+        let number = match self.peek().value.clone() {
+            TokenKind::Number(value) => {
+                let token = self.advance();
+                Spanned::new(value, token.span)
+            }
+            _ => {
+                self.error_here("expected the bank number after `bank`");
+                return None;
+            }
+        };
+        let open = self.peek().span;
+        if !self.expect_punctuation(
+            Punctuation::LeftBrace,
+            "expected `{` to open the bank's contents",
+        ) {
+            return None;
+        }
+        let mut entries: Vec<Spanned<Expression>> = Vec::new();
+        while !self.at_end() && !self.check_punctuation(Punctuation::RightBrace) {
+            let before = self.current;
+            match self.expression(0) {
+                Some(entry) => entries.push(entry),
+                None => break,
+            }
+            if !self.match_punctuation(Punctuation::Comma)
+                && !self.check_punctuation(Punctuation::RightBrace)
+            {
+                self.error_here("expected `,` or `}` after a bank entry");
+                return None;
+            }
+            if self.current == before {
+                self.advance();
+            }
+        }
+        let close = self.peek().span;
+        if !self.expect_punctuation(
+            Punctuation::RightBrace,
+            "expected `}` to close the bank's contents",
+        ) {
+            return None;
+        }
+        let contents = match (entries.first(), entries.last()) {
+            (Some(first), Some(last)) => first.span.join(last.span),
+            _ => open.join(close),
+        };
+        Some(ChrRomBank {
+            number,
+            entries,
+            contents,
+            span: start.join(close),
+        })
     }
 
     /// Skip what is left of a malformed asset, so the item after it still

@@ -228,6 +228,70 @@ main {
     /// field cases pass against the parser before it, because the block loop
     /// already recovered to its own `}`. They are kept as coverage of that loop,
     /// which had none.
+    fn chrrom(source: &str) -> ChrRomBank {
+        let program = parse(source).expect("the source parses");
+        match &program.items[0].value {
+            Item::ChrRom(bank) => bank.clone(),
+            other => panic!("expected a chrrom bank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_chrrom_bank_keeps_its_number_and_each_entry() {
+        let source = "chrrom bank 2 { font.tiles, picture.tiles }";
+        let bank = chrrom(source);
+
+        assert_eq!(bank.number.value, "2");
+        assert_eq!(
+            &source[bank.number.span.start as usize..bank.number.span.end as usize],
+            "2"
+        );
+        assert_eq!(bank.entries.len(), 2);
+        assert!(matches!(
+            &bank.entries[1].value,
+            Expression::Member { base, member }
+                if matches!(&base.value, Expression::Name(name) if name.value == "picture")
+                    && member.value == "tiles"
+        ));
+        // The contents run from the first entry to the last, braces excluded.
+        assert_eq!(
+            &source[bank.contents.start as usize..bank.contents.end as usize],
+            "font.tiles, picture.tiles"
+        );
+    }
+
+    #[test]
+    fn a_chrrom_bank_may_end_in_a_comma_or_be_empty() {
+        assert_eq!(chrrom("chrrom bank 0 { a.tiles, }").entries.len(), 1);
+        assert_eq!(chrrom("chrrom bank 0 { }").entries.len(), 0);
+    }
+
+    #[test]
+    fn a_malformed_chrrom_bank_is_one_error_and_the_next_item_still_parses() {
+        for source in [
+            "chrrom { a.tiles }\nmain { }",
+            "chrrom bank { a.tiles }\nmain { }",
+            "chrrom bank 0 a.tiles\nmain { }",
+            "chrrom bank 0 { a.tiles\nmain { }",
+        ] {
+            let errors = parse(source).expect_err(source);
+            assert_eq!(errors.len(), 1, "{source}: {errors:?}");
+        }
+        let errors = parse("chrrom bank 0 { a.tiles b.tiles }\nmain { x = }").expect_err("two");
+        assert_eq!(errors.len(), 2, "{errors:?}");
+    }
+
+    #[test]
+    fn charmap_and_bank_stay_opaque() {
+        let program = parse("charmap ascii { 'A' => 0 }\nbank fixed { fn handler() {} }").unwrap();
+        assert!(
+            program
+                .items
+                .iter()
+                .all(|item| matches!(item.value, Item::Other(_)))
+        );
+    }
+
     #[test]
     fn asset_recovery_leaves_the_next_item_to_be_parsed() {
         for asset in [

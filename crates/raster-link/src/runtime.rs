@@ -8,7 +8,7 @@
 use raster_6502::AddressingMode::{Absolute, Immediate, Implied, Relative};
 
 use crate::{
-    emit_mmc3_ines, link_fixed_bank, FixedBankItem, InterruptVectors, Label, LinkError,
+    emit_mmc3_ines_with_chr, link_fixed_bank, FixedBankItem, InterruptVectors, Label, LinkError,
     RelocatableProgram, RelocationKind, RomError,
 };
 
@@ -73,6 +73,19 @@ pub fn link_mmc3_program(
     irq: Option<Label>,
     legal_isa: bool,
 ) -> Result<LinkedRom, LinkError> {
+    link_mmc3_program_with_chr(body, entry, irq, legal_isa, &[])
+}
+
+/// [`link_mmc3_program`] on a cartridge whose tiles are `chr_rom`: a whole
+/// number of 8 KiB banks, laid out as the PPU sees them. The reset runtime
+/// already maps bank 0 flat at `$0000-$1FFF`. Empty is CHR RAM.
+pub fn link_mmc3_program_with_chr(
+    body: &RelocatableProgram,
+    entry: Label,
+    irq: Option<Label>,
+    legal_isa: bool,
+    chr_rom: &[u8],
+) -> Result<LinkedRom, LinkError> {
     let mut program = RelocatableProgram {
         items: prologue(entry),
     };
@@ -98,13 +111,15 @@ pub fn link_mmc3_program(
         irq,
     };
     let code_len = code.len();
-    let image = emit_mmc3_ines(&code, vectors).map_err(|error| match error {
+    let image = emit_mmc3_ines_with_chr(&code, vectors, chr_rom).map_err(|error| match error {
         RomError::FixedBankTooLarge { actual, maximum } => {
             LinkError::FixedBankTooLarge { actual, maximum }
         }
         RomError::VectorOutsideFixedBank { .. } => {
             unreachable!("resolved fixed-bank labels are always valid vectors")
         }
+        RomError::ChrRomNotWholeBanks { length } => LinkError::ChrRomNotWholeBanks { length },
+        RomError::TooManyChrRomBanks { banks } => LinkError::TooManyChrRomBanks { banks },
     })?;
 
     Ok(LinkedRom {

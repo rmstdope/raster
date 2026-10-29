@@ -310,3 +310,49 @@ fn a_note_that_starts_with_the_help_prefix_renders_as_help() {
         )
     );
 }
+
+#[test]
+fn a_help_line_follows_the_label_after_a_bare_gutter_line() {
+    let source = SourceFile::new("fixture.raster", "load_palette(picture.tiles)\n");
+    let diagnostic = Diagnostic::error(
+        "`load_palette` takes a palette, not tiles",
+        Span::new(13, 26),
+        "this is `picture`'s tiles",
+    )
+    .with_help("did you mean `picture.palette`?");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "error: `load_palette` takes a palette, not tiles\n",
+            " --> fixture.raster:1:14\n",
+            "  |\n",
+            "1 | load_palette(picture.tiles)\n",
+            "  |              ^^^^^^^^^^^^^ this is `picture`'s tiles\n",
+            "  |\n",
+            "  = help: did you mean `picture.palette`?\n"
+        )
+    );
+}
+
+#[test]
+fn notes_come_before_the_help_line() {
+    let source = SourceFile::new("fixture.raster", "@\n");
+    let diagnostic = Diagnostic::error("m", Span::new(0, 1), "l")
+        .with_note("first")
+        .with_help("then this");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "error: m\n",
+            " --> fixture.raster:1:1\n",
+            "  |\n",
+            "1 | @\n",
+            "  | ^ l\n",
+            "  = note: first\n",
+            "  |\n",
+            "  = help: then this\n"
+        )
+    );
+}

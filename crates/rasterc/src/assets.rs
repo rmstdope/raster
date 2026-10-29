@@ -43,9 +43,7 @@ pub(crate) struct Assets {
     ///
     /// Built and not yet read: encoding is what reports a picture that needs
     /// more than 256 tiles or more than four sub-palettes, so it must happen
-    /// whether or not anything consumes the result. `raster-fl4.5.3` is what
-    /// reads this, and lifts the allow with it.
-    #[allow(dead_code)]
+    /// whether or not anything consumes the result.
     pub(crate) images: Vec<(String, NesBackground)>,
 }
 

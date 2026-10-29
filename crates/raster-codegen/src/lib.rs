@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use raster_6502::{
-    AddressingMode::{Absolute, Immediate, Implied, Indirect, Relative, ZeroPage},
+    AddressingMode::{Absolute, AbsoluteX, Immediate, Implied, Indirect, Relative, ZeroPage},
     Instruction,
 };
 use raster_ir::{
@@ -113,6 +113,15 @@ const BIT_ABSOLUTE: u8 = 0x2c;
 const BPL: u8 = 0x10;
 const PPU_STATUS: u16 = 0x2002;
 const LDX_IMMEDIATE: u8 = 0xa2;
+const LDA_ABSOLUTE_X: u8 = 0xbd;
+const INX: u8 = 0xe8;
+const CPX_IMMEDIATE: u8 = 0xe0;
+const BNE: u8 = 0xd0;
+const PPU_SCROLL: u16 = 0x2005;
+const PPU_ADDRESS: u16 = 0x2006;
+const PPU_DATA: u16 = 0x2007;
+/// The most bytes one copy loop moves: `CPX #n` takes a one-byte operand.
+const MAX_COPY_PIECE: usize = 255;
 const LDY_IMMEDIATE: u8 = 0xa0;
 const DEX: u8 = 0xca;
 const DEY: u8 = 0x88;
@@ -180,7 +189,9 @@ pub fn generate_with_isa(
         irq: None,
         frame_rows: Vec::new(),
         frame_overruns: Vec::new(),
+        data_pieces: BTreeMap::new(),
     };
+    generator.split_data(program);
 
     for function in &program.functions {
         generator.emit_label(function.label);
@@ -203,6 +214,7 @@ pub fn generate_with_isa(
         });
     }
     let reports = std::mem::take(&mut generator.reports);
+    generator.emit_data(program);
     let irq = generator.irq.map(link_label);
     let frame = program.frame.as_ref().map(|frame| FrameBudget {
         name: frame.name.clone(),
@@ -240,6 +252,9 @@ fn allocate_zero_page(program: &Program) -> Result<BTreeMap<Place, u8>, CodegenE
 
 struct Generator<'a> {
     output: RelocatableProgram,
+    /// Each ROM data block's pieces: a copy loop moves at most 255 bytes, because `CPX #n` takes
+    /// a one-byte operand, so a block is stored as consecutive pieces with a label each.
+    data_pieces: BTreeMap<IrLabel, Vec<(IrLabel, usize)>>,
     zero_page: &'a BTreeMap<Place, u8>,
     function_parameters: BTreeMap<IrLabel, Vec<Place>>,
     next_internal_label: u32,
@@ -613,6 +628,7 @@ impl Generator<'_> {
                 self.emit(BIT_ABSOLUTE, Absolute, Some(PPU_STATUS));
                 self.branch(BPL, poll);
             }
+            Statement::PpuUpload { blocks } => self.ppu_upload(blocks)?,
             Statement::Return(value) => {
                 if let Some(value) = value {
                     self.value(value)?;
@@ -996,6 +1012,78 @@ impl Generator<'_> {
         });
     }
 
+    /// Give every data block's pieces labels, before any code asks for them.
+    fn split_data(&mut self, program: &Program) {
+        for block in &program.data {
+            let pieces = block
+                .bytes
+                .chunks(MAX_COPY_PIECE)
+                .map(|piece| (self.internal_label(), piece.len()))
+                .collect();
+            self.data_pieces.insert(block.label, pieces);
+        }
+    }
+
+    /// The data blocks, after everything that can execute: the 6502 would run them as code if
+    /// control reached them, and nothing past `main`'s halt loop does.
+    fn emit_data(&mut self, program: &Program) {
+        for block in &program.data {
+            let mut offset = 0;
+            for (label, length) in self.data_pieces[&block.label].clone() {
+                self.emit_label(label);
+                self.output.items.push(FixedBankItem::Data(
+                    block.bytes[offset..offset + length].to_vec(),
+                ));
+                offset += length;
+            }
+        }
+    }
+
+    /// `load_palette` / `load_nametable`: for each block, point `$2006` at its address and copy
+    /// it through `$2007`, then put the PPU's address and scroll back at the top-left.
+    ///
+    /// Each block reads `$2002` first, so its `$2006` pair starts with the high byte whatever
+    /// the code before it left in the shared write latch. The copy assumes `$2007` steps by one
+    /// (`PPUCTRL` bit 2 clear), which the reset leaves true and the author owns afterwards.
+    ///
+    /// Every `$2002` read here clears the vblank flag, so a `wait vblank` straight after a load
+    /// can wait for the next frame's flag; an upload costs most of a frame anyway.
+    ///
+    /// The closing reset matters because the last `$2006` pair also set the PPU's scroll address,
+    /// which the PPU reloads at the start of every frame: left alone, the picture would start
+    /// wherever the upload stopped. It also leaves the address out of palette space, which a
+    /// PPU with rendering off would otherwise show as a colour.
+    fn ppu_upload(&mut self, blocks: &[raster_ir::PpuBlock]) -> Result<(), CodegenError> {
+        for block in blocks {
+            self.latch_reset();
+            self.emit(LDA_IMMEDIATE, Immediate, Some(block.address >> 8));
+            self.emit(STA_ABSOLUTE, Absolute, Some(PPU_ADDRESS));
+            self.emit(LDA_IMMEDIATE, Immediate, Some(block.address & 0xff));
+            self.emit(STA_ABSOLUTE, Absolute, Some(PPU_ADDRESS));
+            for (piece, length) in self.data_pieces[&block.data].clone() {
+                let body = self.internal_label();
+                self.emit(LDX_IMMEDIATE, Immediate, Some(0));
+                self.emit_label(body);
+                self.relocated(LDA_ABSOLUTE_X, AbsoluteX, RelocationKind::Absolute, piece);
+                self.emit(STA_ABSOLUTE, Absolute, Some(PPU_DATA));
+                self.emit(INX, Implied, None);
+                self.emit(CPX_IMMEDIATE, Immediate, Some(length as u16));
+                self.branch(BNE, body);
+            }
+        }
+        self.latch_reset();
+        self.emit(LDA_IMMEDIATE, Immediate, Some(0));
+        for register in [PPU_SCROLL, PPU_SCROLL, PPU_ADDRESS, PPU_ADDRESS] {
+            self.emit(STA_ABSOLUTE, Absolute, Some(register));
+        }
+        Ok(())
+    }
+
+    /// A `$2002` read, which clears the `$2005`/`$2006` write latch.
+    fn latch_reset(&mut self) {
+        self.emit(BIT_ABSOLUTE, Absolute, Some(PPU_STATUS));
+    }
+
     fn internal_label(&mut self) -> IrLabel {
         let label = IrLabel(self.next_internal_label);
         self.next_internal_label += 1;
@@ -1067,6 +1155,11 @@ fn next_internal_label(program: &Program) -> u32 {
         )
         .max()
         .unwrap_or(0);
+    maximum = program
+        .data
+        .iter()
+        .map(|block| block.label.0)
+        .fold(maximum, u32::max);
     for statement in program
         .global_initializers
         .iter()

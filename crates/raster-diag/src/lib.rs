@@ -26,10 +26,6 @@ pub enum Refusal {
     /// build. Carries the note about what this release reads for assets, not
     /// the general list of constructs.
     AssetNotInThisRelease,
-    /// A correct `asset` that the release reads and does not yet place in the
-    /// ROM. Carries no note: the line the author wrote is already the one the
-    /// release allows, so a list of what is allowed would only describe it back.
-    AssetNotPlaced,
     /// The construct is fine, and a timed region cannot charge its cost,
     /// because the region is costed as straight-line code. Only the cost-model
     /// gaps: a hardware wait has no cost to measure ever, and a placement rule
@@ -76,6 +72,8 @@ pub struct Diagnostic {
     pub span: Option<Span>,
     pub label: String,
     pub notes: Vec<String>,
+    /// One line of advice, rendered last after a bare gutter line as `= help: ...`.
+    pub help: Option<String>,
     /// A second place the primary one is about, drawn above it with a dashed
     /// underline so it reads without colour. Only drawn when it lies on an
     /// earlier line than the primary span.
@@ -126,6 +124,7 @@ impl Diagnostic {
             span: Some(span),
             label: label.into(),
             notes: Vec::new(),
+            help: None,
             secondary: None,
         }
     }
@@ -142,6 +141,7 @@ impl Diagnostic {
             span: Some(span),
             label: label.into(),
             notes: Vec::new(),
+            help: None,
             secondary: None,
         }
     }
@@ -161,6 +161,7 @@ impl Diagnostic {
             message,
             span: None,
             notes: Vec::new(),
+            help: None,
             secondary: None,
         }
     }
@@ -168,6 +169,11 @@ impl Diagnostic {
     /// Marks a second span above the primary one, with its own label.
     pub fn with_secondary(mut self, span: Span, label: impl Into<String>) -> Self {
         self.secondary = Some((span, label.into()));
+        self
+    }
+
+    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help = Some(help.into());
         self
     }
 
@@ -236,9 +242,7 @@ pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
             // Same line: it was printed once above, and the primary marker
             // goes under the secondary's.
             rendered.push_str(&marker_line(&primary, '^', &diagnostic.label, width));
-            for note in &diagnostic.notes {
-                rendered.push_str(&render_note(note, &gutter));
-            }
+            push_notes_and_help(&mut rendered, diagnostic, &gutter);
             return rendered;
         } else if between <= MAX_SHOWN_BETWEEN {
             for number in place.number + 1..primary.number {
@@ -251,10 +255,18 @@ pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
     }
     rendered.push_str(&source_line(primary.number, primary.text, width));
     rendered.push_str(&marker_line(&primary, '^', &diagnostic.label, width));
-    for note in &diagnostic.notes {
-        rendered.push_str(&render_note(note, &gutter));
-    }
+    push_notes_and_help(&mut rendered, diagnostic, &gutter);
     rendered
+}
+
+fn push_notes_and_help(rendered: &mut String, diagnostic: &Diagnostic, gutter: &str) {
+    for note in &diagnostic.notes {
+        rendered.push_str(&render_note(note, gutter));
+    }
+    if let Some(help) = &diagnostic.help {
+        rendered.push_str(&format!("{gutter} |\n"));
+        rendered.push_str(&render_note(&format!("{HELP_PREFIX}{help}"), gutter));
+    }
 }
 
 /// Renders one note, aligning its `=` under the gutter's `|` so a note reads the

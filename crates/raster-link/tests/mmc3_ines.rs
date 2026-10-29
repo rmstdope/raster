@@ -1,6 +1,7 @@
 use raster_link::{
-    emit_mmc3_ines, InterruptVectors, RomError, INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE,
-    MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
+    emit_mmc3_ines, emit_mmc3_ines_with_chr, link_mmc3_program, link_mmc3_program_with_chr,
+    InterruptVectors, RomError, CHR_ROM_BANK_SIZE, INES_HEADER_SIZE, MAX_CHR_ROM_BANKS,
+    MMC3_FIXED_BANK_SIZE, MMC3_FIXED_BANK_START, MMC3_PRG_ROM_SIZE,
 };
 
 #[test]
@@ -113,4 +114,71 @@ fn rejects_vectors_outside_the_fixed_bank() {
             address: 0xdffd,
         })
     );
+}
+
+const VECTORS: InterruptVectors = InterruptVectors {
+    nmi: 0xe000,
+    reset: 0xe000,
+    irq: 0xe000,
+};
+
+#[test]
+fn chr_rom_sets_the_header_and_follows_the_prg() {
+    let mut chr = vec![0u8; 3 * CHR_ROM_BANK_SIZE];
+    chr[0] = 0xaa;
+    chr[3 * CHR_ROM_BANK_SIZE - 1] = 0xbb;
+    let rom = emit_mmc3_ines_with_chr(&[], VECTORS, &chr).unwrap();
+
+    // Byte 5 counts 8 KiB CHR ROM banks; zero would mean CHR RAM.
+    assert_eq!(rom[5], 3);
+    assert_eq!(rom.len(), INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE + chr.len());
+    assert_eq!(&rom[INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE..], chr.as_slice());
+    // The rest of the header is the CHR-RAM header's.
+    assert_eq!(&rom[..5], &[b'N', b'E', b'S', 0x1a, 2]);
+    assert_eq!(
+        &rom[6..INES_HEADER_SIZE],
+        &[0x40, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+    );
+}
+
+#[test]
+fn no_chr_rom_is_byte_identical_to_the_chr_ram_image() {
+    assert_eq!(
+        emit_mmc3_ines_with_chr(&[0xea], VECTORS, &[]).unwrap(),
+        emit_mmc3_ines(&[0xea], VECTORS).unwrap()
+    );
+}
+
+#[test]
+fn chr_rom_that_is_not_whole_banks_or_too_many_is_refused() {
+    assert_eq!(
+        emit_mmc3_ines_with_chr(&[], VECTORS, &[0; 100]),
+        Err(RomError::ChrRomNotWholeBanks { length: 100 })
+    );
+    let too_many = vec![0u8; (MAX_CHR_ROM_BANKS + 1) * CHR_ROM_BANK_SIZE];
+    assert_eq!(
+        emit_mmc3_ines_with_chr(&[], VECTORS, &too_many),
+        Err(RomError::TooManyChrRomBanks {
+            banks: MAX_CHR_ROM_BANKS + 1
+        })
+    );
+}
+
+#[test]
+fn a_linked_program_carries_the_chr_rom_it_is_given() {
+    use raster_link::{FixedBankItem, Label, RelocatableProgram};
+    let body = RelocatableProgram {
+        items: vec![FixedBankItem::Label(Label(0))],
+    };
+    let chr = vec![0x5a; CHR_ROM_BANK_SIZE];
+    let with = link_mmc3_program_with_chr(&body, Label(0), None, true, &chr).unwrap();
+    let without = link_mmc3_program(&body, Label(0), None, true).unwrap();
+
+    assert_eq!(with.image[5], 1);
+    assert_eq!(without.image[5], 0);
+    assert_eq!(
+        &with.image[INES_HEADER_SIZE..INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE],
+        &without.image[INES_HEADER_SIZE..]
+    );
+    assert_eq!(with.code_len, without.code_len);
 }

@@ -326,6 +326,28 @@ pub enum Statement {
     },
     /// `sync exact`: de-jitter against the PPU before a timed region.
     SyncExact,
+    /// `load_palette` / `load_nametable`: copy blocks of ROM into PPU memory, each from its own
+    /// address, then leave the PPU's address and scroll at the top-left so the frame that follows
+    /// starts where the author expects. One statement for a whole call, because the reset belongs
+    /// to the call and not to each block.
+    PpuUpload {
+        blocks: Vec<PpuBlock>,
+    },
+}
+
+/// One block of an upload: `length` bytes of `data`, written to PPU memory from `address`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PpuBlock {
+    pub address: u16,
+    pub data: Label,
+    pub length: u16,
+}
+
+/// Bytes the program carries in ROM, addressed by a label.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataBlock {
+    pub label: Label,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -391,6 +413,70 @@ pub struct FrameEvent {
     pub span: Span,
 }
 
+fn nametable_while_rendering(call: Span, turned_on: Span, bits: u8) -> LowerWarning {
+    LowerWarning {
+        message: "`load_nametable` runs while rendering is on".into(),
+        label: "1024 writes cannot finish inside one vblank; the screen will tear".into(),
+        notes: Vec::new(),
+        span: call,
+        assumes_budget_met: false,
+        help: Some(format!(
+            "call it before `ppu.mask = ${bits:02X}`, or set `ppu.mask = $00` first"
+        )),
+        secondary: Some(SecondaryLabel {
+            span: turned_on,
+            label: "rendering turned on here".into(),
+        }),
+    }
+}
+
+/// `asset` for an argument that is just the name of a picture.
+fn bare_asset<'a>(pictures: &Pictures, argument: &'a Spanned<SyntaxExpression>) -> Option<&'a str> {
+    match &argument.value {
+        SyntaxExpression::Name(name) if pictures.by_name.contains_key(&name.value) => {
+            Some(name.value.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// `(asset, member)` for an argument written `asset.member`.
+fn asset_member_of(expression: &Spanned<SyntaxExpression>) -> Option<(&str, &str)> {
+    let SyntaxExpression::Member { base, member } = &expression.value else {
+        return None;
+    };
+    let SyntaxExpression::Name(name) = &base.value else {
+        return None;
+    };
+    Some((name.value.as_str(), member.value.as_str()))
+}
+
+/// The decoded pictures a program names, as lowering needs them.
+///
+/// `raster-ir` does not decode PNGs or lay out CHR banks; `rasterc` does both
+/// and hands over the result, so `load_nametable` can be lowered to bytes that
+/// already point at where the tiles landed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Pictures {
+    pub by_name: BTreeMap<String, Picture>,
+    /// The lowest `chrrom bank` number the program does not declare, which is
+    /// what the "tiles are not in any bank" help suggests.
+    pub next_free_bank: u32,
+}
+
+/// One `asset image`: the blocks `load_palette` and `load_nametable` upload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Picture {
+    /// Sixteen bytes for `$3F00`.
+    pub palette: Vec<u8>,
+    /// Sixty-four bytes for `$23C0`.
+    pub attributes: Vec<u8>,
+    /// 960 tile indices for `$2000`, already shifted to where the picture's
+    /// tiles sit in their pattern table. `None` when no `chrrom` bank holds the
+    /// picture's tiles, so there is nothing for a nametable to point at.
+    pub nametable: Option<Vec<u8>>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Program {
     pub places: Vec<PlaceDefinition>,
@@ -399,6 +485,8 @@ pub struct Program {
     pub main: Option<Main>,
     /// The one `frame` the program declares, if it declares one.
     pub frame: Option<Frame>,
+    /// The picture blocks a `load_*` call reads, each stored once however often it is loaded.
+    pub data: Vec<DataBlock>,
     /// The hazards lowering saw and did not refuse, in source order.
     pub warnings: Vec<LowerWarning>,
 }
@@ -413,6 +501,8 @@ pub struct LowerError {
     /// Notes this refusal carries in its own right, before `rasterc` adds the
     /// one its `Refusal` earns.
     pub notes: Vec<String>,
+    /// One line of advice, rendered last as `= help:`.
+    pub help: Option<String>,
     pub span: Span,
     pub refusal: Refusal,
 }
@@ -436,6 +526,8 @@ pub struct LowerWarning {
     /// the bank-select warning stand aside from a refused read. Every other
     /// warning is about what the author wrote and stays true either way.
     pub assumes_budget_met: bool,
+    /// One line of advice, rendered last as `= help:`.
+    pub help: Option<String>,
     /// A second place the warning is about, drawn above the primary span.
     pub secondary: Option<SecondaryLabel>,
 }
@@ -742,6 +834,7 @@ fn oam_dma_uncertainty(stalls: usize, budget: u32, span: Span) -> LowerWarning {
         )],
         span,
         assumes_budget_met: true,
+        help: None,
         secondary: None,
     }
 }
@@ -1225,6 +1318,7 @@ fn stolen_vblank_flag(span: Span) -> LowerWarning {
         ],
         span,
         assumes_budget_met: false,
+        help: None,
         secondary: None,
     }
 }
@@ -1249,6 +1343,7 @@ fn unreadable_handler_mask(span: Span) -> LowerWarning {
         // What the author wrote, not what a padded block spends: true whether or not any budget
         // was met, so it is never the warning a budget refusal stands down.
         assumes_budget_met: false,
+        help: None,
         secondary: None,
     }
 }
@@ -1279,6 +1374,7 @@ fn half_written_pair(opener: LatchPair, span: Span, by: LatchBreaker) -> LowerWa
         ],
         span,
         assumes_budget_met: false,
+        help: None,
         secondary: None,
     }
 }
@@ -1296,6 +1392,7 @@ fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
         notes: vec![reset_note.to_owned(), BANK_SELECT_MODE_NOTE.to_owned()],
         span,
         assumes_budget_met: false,
+        help: None,
         secondary: None,
     };
     let Value::Constant(bits) = value else {
@@ -1310,6 +1407,7 @@ fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
             ],
             span,
             assumes_budget_met: false,
+            help: None,
             secondary: None,
         });
     };
@@ -1357,6 +1455,7 @@ fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarnin
                 ],
                 span,
                 assumes_budget_met: false,
+                help: None,
                 secondary: call.map(|span| SecondaryLabel {
                     span,
                     label: format!("this call leaves R{register} selected"),
@@ -1442,6 +1541,7 @@ fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarnin
             ],
             span,
             assumes_budget_met: false,
+            help: None,
             secondary: match unseen {
                 Unseen::AfterCall(call) => Some(SecondaryLabel {
                     span: call,
@@ -1454,7 +1554,16 @@ fn bank_data_warning(selection: BankSelection, span: Span) -> Option<LowerWarnin
 }
 
 pub fn lower(typed: &TypedProgram) -> Result<Program, LowerFailure> {
+    lower_with_pictures(typed, &Pictures::default())
+}
+
+/// [`lower`], with the decoded pictures `load_palette` and `load_nametable` read from.
+pub fn lower_with_pictures(
+    typed: &TypedProgram,
+    pictures: &Pictures,
+) -> Result<Program, LowerFailure> {
     let mut lowerer = Lowerer::new();
+    lowerer.pictures = pictures.clone();
     lowerer.predeclare_labels(&typed.program);
     lowerer.predeclare_globals(&typed.program);
     lowerer.reject_recursive_calls(&typed.program);
@@ -1522,6 +1631,10 @@ struct Lowerer {
     /// because whether it matters depends on the frame's strategy — and collected here, because
     /// `Statement::Assign` carries no span to point at afterwards.
     handler_ctrl_writes: Vec<HandlerCtrlWrite>,
+    /// The pictures `rasterc` decoded and laid out, which `load_*` calls read.
+    pictures: Pictures,
+    /// The ROM block already made for an asset's member, so a block is stored once.
+    data_labels: BTreeMap<(String, &'static str), Label>,
 }
 
 /// One `ppu.ctrl` write inside a `frame` handler, and what rasterc could fold it to.
@@ -1556,6 +1669,8 @@ impl Lowerer {
             ppu_data_read_has_neighbour: false,
             in_frame_handler: false,
             handler_ctrl_writes: Vec::new(),
+            pictures: Pictures::default(),
+            data_labels: BTreeMap::new(),
         }
     }
 
@@ -1579,6 +1694,7 @@ impl Lowerer {
             message: message.into(),
             label: None,
             notes: Vec::new(),
+            help: None,
             span,
             refusal,
         });
@@ -1602,6 +1718,7 @@ impl Lowerer {
             message: message.into(),
             label: Some(label.into()),
             notes,
+            help: None,
             span,
             refusal: Refusal::Rejected,
         });
@@ -1770,16 +1887,13 @@ impl Lowerer {
                     self.not_in_this_release(item.span, "`import` is not supported yet")
                 }
                 Item::Frame(frame) => self.lower_frame(frame, item.span),
-                // The file has already been read, decoded and encoded by the
-                // time lowering sees this, so every real problem with the
-                // picture has been reported. What is left is that no byte of it
-                // is placed yet, and a ROM built without it would be a compiler
-                // lying about what it built.
-                Item::Asset(_) => self.refuse(
-                    item.span,
-                    "an `asset` does not reach the ROM yet",
-                    Refusal::AssetNotPlaced,
-                ),
+                // A declaration. Its file was read and decoded before lowering started, and it
+                // costs the ROM nothing until a `load_*` call reads one of its blocks.
+                Item::Asset(_) => {}
+                // `rasterc` lays the banks out and checks them before lowering
+                // starts; nothing here depends on where a picture's tiles went
+                // except the nametable it was handed.
+                Item::ChrRom(_) => {}
                 Item::Other(_) => self.error(item.span, "this top-level item is not supported"),
             }
         }
@@ -2271,6 +2385,9 @@ impl Lowerer {
         // own `lower_statements` call and therefore starts with the latch
         // closed for free, which is the agreed brace rule.
         let mut latch: Option<LatchPair> = None;
+        // The `ppu.mask` write that turned rendering on, while nothing since could have turned
+        // it off. Local for the same reason: a nested block starts not knowing.
+        let mut rendering: Option<(Span, u8)> = None;
         let outer = self.ppu_data_read_has_neighbour;
         for (index, statement) in block.statements.iter().enumerate() {
             let effect = effects[index];
@@ -2308,10 +2425,22 @@ impl Lowerer {
             if effect.opaque {
                 latch = None;
             }
+            if let (Some((turned_on, bits)), SyntaxStatement::Expression(expression)) =
+                (rendering, &statement.value)
+            {
+                if let Some((name, _)) = self.load_call(expression) {
+                    if name.value == "load_nametable" {
+                        self.warnings
+                            .push(nametable_while_rendering(name.span, turned_on, bits));
+                    }
+                }
+            }
             let before = index > 0 && reads[index - 1] > 0;
             let after = reads.get(index + 1).is_some_and(|count| *count > 0);
             self.ppu_data_read_has_neighbour = before || after || reads[index] >= 2;
+            let lowered_from = statements.len();
             always_returns |= self.lower_statement(statement, &mut statements);
+            rendering = self.rendering_after(rendering, statement, &statements[lowered_from..]);
         }
         // Restored, not cleared, as the safe direction rather than an observed
         // one: no `lower_statement` arm today lowers a nested block and *then*
@@ -2322,6 +2451,69 @@ impl Lowerer {
         // the arm that does it in the other order.
         self.ppu_data_read_has_neighbour = outer;
         (statements, always_returns)
+    }
+
+    /// Whether rendering is still known to be on after `statement`.
+    ///
+    /// Straight-line and deliberately short-sighted: a constant `ppu.mask` write decides it, a
+    /// write to any other register leaves it alone, and anything that could have changed it behind
+    /// this function's back — a call, a branch, a loop, a nested block, a mask written from a
+    /// variable — makes it unknown, because a warning that might be wrong is worse than none.
+    fn rendering_after(
+        &self,
+        before: Option<(Span, u8)>,
+        statement: &Spanned<SyntaxStatement>,
+        lowered: &[Statement],
+    ) -> Option<(Span, u8)> {
+        match &statement.value {
+            SyntaxStatement::Wait(_) => before,
+            SyntaxStatement::Declaration(declaration) => {
+                if declaration.initializer.as_ref().is_some_and(contains_call) {
+                    None
+                } else {
+                    before
+                }
+            }
+            SyntaxStatement::Expression(expression) => {
+                if self.load_call(expression).is_some() {
+                    return before;
+                }
+                let SyntaxExpression::Infix {
+                    left,
+                    operator,
+                    right,
+                } = &expression.value
+                else {
+                    return None;
+                };
+                // A variable is not a register, so storing to one cannot turn rendering off.
+                if matches!(left.value, SyntaxExpression::Name(_)) && !contains_call(right) {
+                    return before;
+                }
+                let SyntaxExpression::Member { base, member } = &left.value else {
+                    return None;
+                };
+                let SyntaxExpression::Name(namespace) = &base.value else {
+                    return None;
+                };
+                if !matches!(namespace.value.as_str(), "ppu" | "mmc3") || contains_call(right) {
+                    return None;
+                }
+                if !(namespace.value == "ppu" && member.value == "mask") {
+                    return before;
+                }
+                match lowered.last() {
+                    Some(Statement::Assign {
+                        destination: Destination::Register(Register::PpuMask),
+                        value: Value::Constant(bits),
+                    }) if operator.value == Operator::Assign && mask_enables_rendering(*bits) => {
+                        Some((statement.span, *bits))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     fn lower_statement(
@@ -2652,6 +2844,10 @@ impl Lowerer {
         expression: &Spanned<SyntaxExpression>,
         output: &mut Vec<Statement>,
     ) {
+        if let Some((name, arguments)) = self.load_call(expression) {
+            self.lower_load(name, arguments, output);
+            return;
+        }
         if let SyntaxExpression::Infix {
             left,
             operator,
@@ -2996,6 +3192,178 @@ impl Lowerer {
         }
     }
 
+    /// A call to the builtin `load_palette` or `load_nametable`, unless the program defines a
+    /// function of that name, which wins.
+    fn load_call<'a>(
+        &self,
+        expression: &'a Spanned<SyntaxExpression>,
+    ) -> Option<(&'a Spanned<String>, &'a [Spanned<SyntaxExpression>])> {
+        let SyntaxExpression::Call { callee, arguments } = &expression.value else {
+            return None;
+        };
+        let SyntaxExpression::Name(name) = &callee.value else {
+            return None;
+        };
+        let builtin = matches!(name.value.as_str(), "load_palette" | "load_nametable");
+        (builtin && !self.functions.contains_key(&name.value))
+            .then_some((name, arguments.as_slice()))
+    }
+
+    /// Lower `load_palette(a.palette)` or `load_nametable(a.nametable, a.attributes)` to one upload.
+    ///
+    /// Argument shape is judged here and not in `raster-sema` because every mistake has a label
+    /// naming what was passed and a help line writing the call that works. The first wrong
+    /// argument is the only one reported: the second is usually wrong because the first was.
+    fn lower_load<'a>(
+        &mut self,
+        name: &Spanned<String>,
+        arguments: &'a [Spanned<SyntaxExpression>],
+        output: &mut Vec<Statement>,
+    ) {
+        let palette = name.value == "load_palette";
+        let wanted: &[(&'static str, &str)] = if palette {
+            &[("palette", "a palette")]
+        } else {
+            &[("nametable", "a nametable"), ("attributes", "attributes")]
+        };
+        // Only `asset.member` where `asset` is a picture counts; `ppu.mask` is not one.
+        let given: Vec<Option<(&str, &str)>> = arguments
+            .iter()
+            .map(|argument| {
+                asset_member_of(argument)
+                    .filter(|(asset, _)| self.pictures.by_name.contains_key(*asset))
+            })
+            .collect();
+        let pictures = &self.pictures;
+        let bare = |argument: &'a Spanned<SyntaxExpression>| bare_asset(pictures, argument);
+        // The asset the corrected call is written with: the first argument that names one.
+        let asset = given
+            .iter()
+            .flatten()
+            .map(|(asset, _)| *asset)
+            .next()
+            .or_else(|| arguments.iter().find_map(bare))
+            .unwrap_or("<asset>");
+        let corrected = if palette {
+            format!("write `load_palette({asset}.palette)`")
+        } else {
+            format!("write `load_nametable({asset}.nametable, {asset}.attributes)`")
+        };
+        let headline = if palette {
+            "`load_palette` takes a palette, not {}".to_owned()
+        } else {
+            "`load_nametable` takes a nametable, then its attributes".to_owned()
+        };
+
+        for (index, (member, noun)) in wanted.iter().enumerate() {
+            let Some(argument) = arguments.get(index) else {
+                // Sema has already refused a wrong count.
+                return;
+            };
+            let right_asset = given
+                .first()
+                .copied()
+                .flatten()
+                .map(|(asset, _)| asset)
+                .filter(|_| index > 0);
+            let ok = matches!(given[index], Some((a, m))
+                if m == *member && right_asset.is_none_or(|first| first == a)
+                    && self.pictures.by_name.contains_key(a));
+            if ok {
+                continue;
+            }
+            let (message, label) = match given[index] {
+                Some((a, m)) if palette => {
+                    (headline.replace("{}", m), format!("this is `{a}`'s {m}"))
+                }
+                Some((a, m)) => (headline.clone(), format!("this is `{a}`'s {m}")),
+                None if palette => (
+                    "`load_palette` takes a palette".to_owned(),
+                    format!("this is not {noun}"),
+                ),
+                None => (headline.clone(), format!("this is not {noun}")),
+            };
+            let help = match (given[index], bare(argument)) {
+                (Some((a, _)), _) | (None, Some(a)) if palette => {
+                    format!("did you mean `{a}.palette`?")
+                }
+                _ => corrected.clone(),
+            };
+            self.errors.push(LowerError {
+                message,
+                label: Some(label),
+                notes: Vec::new(),
+                help: Some(help),
+                span: argument.span,
+                refusal: Refusal::Rejected,
+            });
+            return;
+        }
+
+        let asset = given[0].map_or("", |(asset, _)| asset).to_owned();
+        let Some(picture) = self.pictures.by_name.get(&asset).cloned() else {
+            return;
+        };
+        if !palette && picture.nametable.is_none() {
+            self.errors.push(LowerError {
+                message: format!("`{asset}`'s tiles are not in any `chrrom` bank"),
+                label: Some("this nametable points at tiles that are not on the cartridge".into()),
+                notes: Vec::new(),
+                // Banks 0 to 31 exist; with all of them declared there is no number to suggest.
+                help: Some(if self.pictures.next_free_bank > 31 {
+                    format!("add `{asset}.tiles` to one of the `chrrom` banks")
+                } else {
+                    format!(
+                        "add `chrrom bank {} {{ {asset}.tiles }}`",
+                        self.pictures.next_free_bank
+                    )
+                }),
+                span: arguments[0].span,
+                refusal: Refusal::Rejected,
+            });
+            return;
+        }
+        let blocks = if palette {
+            vec![self.picture_block(&asset, "palette", 0x3f00, picture.palette)]
+        } else {
+            vec![
+                self.picture_block(
+                    &asset,
+                    "nametable",
+                    0x2000,
+                    picture.nametable.unwrap_or_default(),
+                ),
+                self.picture_block(&asset, "attributes", 0x23c0, picture.attributes),
+            ]
+        };
+        output.push(Statement::PpuUpload { blocks });
+    }
+
+    /// An upload of `bytes`, storing them in ROM unless this asset's member is already there.
+    fn picture_block(
+        &mut self,
+        asset: &str,
+        member: &'static str,
+        address: u16,
+        bytes: Vec<u8>,
+    ) -> PpuBlock {
+        let length = bytes.len() as u16;
+        let label = match self.data_labels.get(&(asset.to_owned(), member)) {
+            Some(label) => *label,
+            None => {
+                let label = self.fresh_label();
+                self.data_labels.insert((asset.to_owned(), member), label);
+                self.program.data.push(DataBlock { label, bytes });
+                label
+            }
+        };
+        PpuBlock {
+            address,
+            data: label,
+            length,
+        }
+    }
+
     fn lower_destination(&mut self, expression: &Spanned<SyntaxExpression>) -> Option<Destination> {
         match &expression.value {
             SyntaxExpression::Name(name) => match self.lookup(&name.value) {
@@ -3315,6 +3683,7 @@ impl Lowerer {
                 ],
                 span,
                 assumes_budget_met: false,
+                help: None,
                 secondary: None,
             });
         }
@@ -4319,6 +4688,7 @@ fn block_nmi_warning(
         ],
         span,
         assumes_budget_met: false,
+        help: None,
         secondary: None,
     };
     match state {
@@ -4339,6 +4709,7 @@ fn block_nmi_warning(
             ],
             span,
             assumes_budget_met: false,
+            help: None,
             secondary: None,
         }),
         NmiAtEntry::Unproven => Some(unknown(
@@ -4373,6 +4744,7 @@ fn timed_frame_nmi_warning(verdict: TimedFrameNmi, span: Span) -> LowerWarning {
         ],
         span,
         assumes_budget_met: false,
+        help: None,
         secondary: None,
     };
     match verdict {
@@ -4388,6 +4760,7 @@ fn timed_frame_nmi_warning(verdict: TimedFrameNmi, span: Span) -> LowerWarning {
             ],
             span,
             assumes_budget_met: false,
+            help: None,
             secondary: None,
         },
         TimedFrameNmi::Unproven => unknown(
@@ -4422,6 +4795,7 @@ fn handler_nmi_warning(write: &HandlerCtrlWrite) -> Option<LowerWarning> {
             ],
             span: write.span,
             assumes_budget_met: false,
+            help: None,
             secondary: None,
         }),
         None => Some(LowerWarning {
@@ -4436,6 +4810,7 @@ fn handler_nmi_warning(write: &HandlerCtrlWrite) -> Option<LowerWarning> {
             ],
             span: write.span,
             assumes_budget_met: false,
+            help: None,
             secondary: None,
         }),
     }

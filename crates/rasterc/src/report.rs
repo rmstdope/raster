@@ -6,7 +6,7 @@ use raster_diag::{render, Diagnostic, Severity, SourceFile};
 use raster_ir::FrameStrategy;
 use raster_link::MMC3_FIXED_BANK_CODE_SIZE;
 
-use crate::compile::Rom;
+use crate::{chr::ChrBankSummary, compile::Rom};
 
 /// Labels are right-aligned in nine columns and followed by two spaces, so every
 /// value in the block begins in the same column.
@@ -74,10 +74,16 @@ pub fn frame_table(frame: &FrameBudget) -> String {
 /// The build summary. Paths are echoed as the author typed them, never resolved.
 pub fn summary(input: &str, output: &str, rom: &Rom) -> String {
     [
-        row("Compiled", &format!("{input} -> {output}")),
+        row(
+            "Compiled",
+            &match rom.warnings.len() {
+                0 => format!("{input} -> {output}"),
+                count => format!("{input} -> {output}  ({})", plural(count, "warning")),
+            },
+        ),
         row("mapper", "MMC3 (4), NTSC"),
         row("prg", "32 KiB, 4 banks of 8 KiB"),
-        row("chr", "8 KiB RAM"),
+        chr_rows(&rom.chr_banks),
         row(
             "fixed",
             &format!(
@@ -124,6 +130,38 @@ pub fn summary(input: &str, output: &str, rom: &Rom) -> String {
             .unwrap_or_default(),
     ]
     .concat()
+}
+
+/// The tile memory: today's one row for CHR RAM, or the cartridge's ROM total and a row per bank.
+fn chr_rows(banks: &[ChrBankSummary]) -> String {
+    if banks.is_empty() {
+        return row("chr", "8 KiB RAM");
+    }
+    let mut rows = row(
+        "chr",
+        &format!(
+            "{} KiB ROM, {} of 8 KiB",
+            banks.len() * 8,
+            plural(banks.len(), "bank")
+        ),
+    );
+    for bank in banks {
+        let label = format!("bank {}", bank.number);
+        rows.push_str(&if bank.contents.is_empty() {
+            row(&label, "empty")
+        } else {
+            row(
+                &label,
+                &format!(
+                    "{}, {}, {} of 8192 bytes",
+                    bank.contents.join(" + "),
+                    plural(bank.tiles, "tile"),
+                    bank.bytes_used
+                ),
+            )
+        });
+    }
+    rows
 }
 
 /// Every diagnostic, separated by a blank line, then a count — so an

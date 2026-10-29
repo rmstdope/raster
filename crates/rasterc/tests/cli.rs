@@ -571,7 +571,16 @@ fn a_bank_select_warning_prints_to_stderr_and_still_writes_a_rom() {
             path = input.display()
         )
     );
-    assert_eq!(stdout, summary_of(&input, &output, 13, " warnings  1\n"));
+    assert_eq!(
+        stdout,
+        // The success line carries the count, as the agreed experience for pictures says, and the
+        // `warnings` row an earlier bead agreed stays.
+        summary_of(&input, &output, 13, " warnings  1\n").replacen(
+            "\n   mapper",
+            "  (1 warning)\n   mapper",
+            1
+        )
+    );
 }
 
 #[test]

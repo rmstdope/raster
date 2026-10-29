@@ -5,10 +5,12 @@ use std::{
 };
 
 mod assets;
+mod chr;
 mod compile;
 mod report;
 
 pub use assets::{AssetSource, DirectoryAssets, NoAssets};
+pub use chr::ChrBankSummary;
 use compile::build;
 pub use compile::{compile_source, compile_source_with_assets, Rom};
 
