@@ -8,7 +8,7 @@ mod cycles_fixtures;
 #[path = "common/demo.rs"]
 mod demo;
 use cycles_fixtures::cycles_fixture;
-use demo::demo_source;
+use demo::backdrop_source;
 
 fn pixel(pixels: &[u8], x: usize, y: usize) -> [u8; 4] {
     let offset = (y * FRAME_WIDTH + x) * 4;
@@ -41,7 +41,7 @@ fn backdrop_colour(name: &str, source: &str) -> [u8; 4] {
 
 #[test]
 fn renders_the_backdrop_colour_the_source_asks_for() {
-    let demo = demo_source();
+    let demo = backdrop_source();
     let lighter = demo.replace("const BACKDROP: u8 = $12", "const BACKDROP: u8 = $21");
     assert_ne!(demo, lighter, "the demo declares the backdrop as $12");
 
@@ -78,7 +78,7 @@ fn backdrop_entry(name: &str, source: &str) -> u16 {
 
 #[test]
 fn renders_the_exact_nes_colour_the_source_names() {
-    let demo = demo_source();
+    let demo = backdrop_source();
     let lighter = demo.replace("const BACKDROP: u8 = $12", "const BACKDROP: u8 = $21");
     assert_ne!(demo, lighter, "the demo declares the backdrop as $12");
 
@@ -300,7 +300,7 @@ fn irq_handler_body_fits_the_hblank_it_lands_in() {
 /// its two pairs written as one line each, shows the same screen.
 #[test]
 fn vram_addr_sets_the_address_the_raw_pair_sets() {
-    let demo = demo_source();
+    let demo = backdrop_source();
     let one_line = demo
         .replace("ppu.addr = $3f              // the palette lives at $3F00 ...\n    ppu.addr = $00              // ... and $3F00 is the backdrop", "vram_addr = $3F00")
         .replace("ppu.addr = $00              // leave palette space, or the screen\n    ppu.addr = $00              // shows $3F01 instead of the backdrop", "vram_addr = $0000");

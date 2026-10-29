@@ -6,11 +6,11 @@ mod cycles_fixtures;
 #[path = "common/demo.rs"]
 mod demo;
 use cycles_fixtures::cycles_fixture;
-use demo::demo_source;
+use demo::backdrop_source;
 
 #[test]
 fn compiles_the_demo_to_the_same_rom_as_m1() {
-    let rom = compile_source(&demo_source()).expect("the demo compiles");
+    let rom = compile_source(&backdrop_source()).expect("the demo compiles");
 
     assert_eq!(rom.image, raster_link::m1_solid_backdrop_rom());
     assert_eq!(rom.runtime_len, raster_link::mmc3_reset_runtime_bytes());
@@ -1277,10 +1277,10 @@ fn the_declared_target_is_the_rom_the_linker_builds() {
 fn a_target_block_changes_no_byte_of_the_rom() {
     let declared = format!(
         "target nes {{ mapper: mmc3  region: ntsc }}\n{}",
-        demo_source()
+        backdrop_source()
     );
     let with = compile_source(&declared).expect("the demo with a target block compiles");
-    let without = compile_source(&demo_source()).expect("the demo compiles");
+    let without = compile_source(&backdrop_source()).expect("the demo compiles");
     assert_eq!(with.image, without.image);
     assert_eq!(with.code_len, without.code_len);
 }
