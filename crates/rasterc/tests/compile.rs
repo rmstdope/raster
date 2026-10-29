@@ -13,8 +13,7 @@ fn compiles_the_demo_to_the_same_rom_as_m1() {
     let rom = compile_source(&demo_source()).expect("the demo compiles");
 
     assert_eq!(rom.image, raster_link::m1_solid_backdrop_rom());
-    assert_eq!(rom.code_len, 160);
-    assert_eq!(rom.runtime_len, 132);
+    assert_eq!(rom.runtime_len, raster_link::mmc3_reset_runtime_bytes());
     assert_eq!(rom.code_len - rom.runtime_len, 28);
 }
 
@@ -122,8 +121,10 @@ fn a_program_too_large_names_the_bank_it_does_not_fit() {
     // are left to `a_program_too_big_for_the_bank_is_told_how_much_of_its_own_has_to_go`
     // and only the shape is pinned here.
     assert!(
-        diagnostics[0].notes[1].starts_with("132 of those are the reset runtime, so ")
-            && diagnostics[0].notes[1].ends_with(" bytes of your own\nhave to go"),
+        diagnostics[0].notes[1].starts_with(&format!(
+            "{} of those are the reset runtime, so ",
+            raster_link::mmc3_reset_runtime_bytes()
+        )) && diagnostics[0].notes[1].ends_with(" bytes of your own\nhave to go"),
         "unexpected note: {}",
         diagnostics[0].notes[1]
     );
