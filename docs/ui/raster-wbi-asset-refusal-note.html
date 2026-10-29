@@ -1,0 +1,91 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Asset refusal note</title><style>:root{--bg:#f6f6f8;--fg:#22242c;--dim:#666b7a;--line:#d9dce6;--src:#eceef4;--hl:#0a7d94}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d0e13;--fg:#d8dae4;--dim:#8b90a2;--line:#262a36;--src:#171922;--hl:#6fd3e8}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,"Segoe UI",system-ui,sans-serif}
+main{max-width:60rem;margin:0 auto;padding:2rem 16px 4rem}
+h1{font-size:1.3rem;margin:0 0 .3rem}.sub{color:var(--dim);margin:0 0 1.4rem;max-width:52em}
+h2{font-size:.85rem;margin:2rem 0 .4rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+.term{background:#12131a;color:#d8dae4;border-radius:8px;padding:1rem 1.1rem;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow-x:auto;border:1px solid #000}
+.term .e{color:#ff6b6b;font-weight:700}.term .g{color:#7c8296}.term .n{color:#6fd3e8;font-weight:700}.term .new{background:#16323a;display:inline-block;min-width:100%}
+.src{background:var(--src);border:1px solid var(--line);border-radius:8px;padding:.9rem 1.1rem;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow-x:auto}
+.cost{border-left:3px solid var(--line);padding-left:.9rem;margin:1rem 0;color:var(--dim);max-width:52em}
+code{font-family:ui-monospace,Menlo,monospace;font-size:.92em}</style></head><body><main><h1>raster-wbi — asset refusals get a note of their own</h1><p class='sub'>The agreed experience, one section per decision. Each section is the variant the designer chose. Highlighted lines are new.</p><style>section{border-top:1px solid var(--line);margin-top:2.5rem;padding-top:.5rem}</style><section><h2 style='font-size:1rem;color:inherit;text-transform:none;letter-spacing:0'>The asset note's words</h2><h1>Option A — a sentence listing what the release reads (recommended)</h1><p class="sub">The note printed beneath an asset refusal. The highlighted lines are the new asset note; the refusal line above it is unchanged.</p><h2>Refusing <code>kind: sprites</code></h2><div class="term">$ rasterc title.raster
+
+<span class="e">error</span>: only `kind: background` is supported yet
+ <span class="g">--&gt;</span> title.raster:3:48
+  <span class="g">|</span>
+<span class="g">3 |</span> asset image hero = png(&quot;art/hero.png&quot;) { kind: sprites  palette: auto(4)  dedup: true }
+  <span class="g">|</span>                                                <span class="e">^^^^^^^ only `kind: background` is supported yet</span>
+<span class="new">  <span class="g">=</span> <span class="n">note</span>: this release reads one kind of asset: `asset image` from a `png`,</span>
+<span class="new">          with `kind: background`, `palette: auto(4)` and `dedup: true`, used</span>
+<span class="new">          through `.tiles`, `.nametable`, `.attributes` and `.palette`</span>
+
+<span class="e">error: could not compile title.raster (1 error)</span></div><h2>Refusing <code>asset sound</code> — same note</h2><div class="term">$ rasterc title.raster
+
+<span class="e">error</span>: only `asset image` is supported yet
+ <span class="g">--&gt;</span> title.raster:4:7
+  <span class="g">|</span>
+<span class="g">4 |</span> asset sound jingle = wav(&quot;audio/jingle.wav&quot;)
+  <span class="g">|</span>       <span class="e">^^^^^ only `asset image` is supported yet</span>
+<span class="new">  <span class="g">=</span> <span class="n">note</span>: this release reads one kind of asset: `asset image` from a `png`,</span>
+<span class="new">          with `kind: background`, `palette: auto(4)` and `dedup: true`, used</span>
+<span class="new">          through `.tiles`, `.nametable`, `.attributes` and `.palette`</span>
+
+<span class="e">error: could not compile title.raster (1 error)</span></div><p class="cost">Same voice as the note every other “not in this release” refusal already carries: one sentence, names in backticks. Short; the NES developer has to assemble the line themselves.</p><h2>Today, for comparison</h2><div class="term">$ rasterc title.raster
+
+<span class="e">error</span>: only `kind: background` is supported yet
+ <span class="g">--&gt;</span> title.raster:3:48
+  <span class="g">|</span>
+<span class="g">3 |</span> asset image hero = png(&quot;art/hero.png&quot;) { kind: sprites  palette: auto(4)  dedup: true }
+  <span class="g">|</span>                                                <span class="e">^^^^^^^ only `kind: background` is supported yet</span>
+  <span class="g">=</span> <span class="n">note</span>: this release compiles `main`, `fn`, `if`, `while`, `for`, u8
+          arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks
+          with `cycles`, `pad`, `sync exact` and `wait cycles`; and one
+          `frame` of `every ... scanlines` events
+
+<span class="e">error: could not compile title.raster (1 error)</span></div><p class="cost">Today the note under an asset refusal talks about loops, branches and timed blocks — nothing about assets.</p></section><section><h2 style='font-size:1rem;color:inherit;text-transform:none;letter-spacing:0'>An asset refusal and a language refusal in one run</h2><h1>Option A — each refusal gets the note about its own kind, once each (recommended)</h1><p class="sub">One file with an unsupported asset field <em>and</em> an unsupported <code>loop</code>. Both are refused in the same run.</p><h2>Both refusals in one run</h2><div class="term">$ rasterc title.raster
+
+<span class="e">error</span>: only `kind: background` is supported yet
+ <span class="g">--&gt;</span> title.raster:3:48
+  <span class="g">|</span>
+<span class="g">3 |</span> asset image hero = png(&quot;art/hero.png&quot;) { kind: sprites  palette: auto(4)  dedup: true }
+  <span class="g">|</span>                                                <span class="e">^^^^^^^ only `kind: background` is supported yet</span>
+<span class="new">  <span class="g">=</span> <span class="n">note</span>: this release reads one kind of asset: `asset image` from a `png`,</span>
+<span class="new">          with `kind: background`, `palette: auto(4)` and `dedup: true`, used</span>
+<span class="new">          through `.tiles`, `.nametable`, `.attributes` and `.palette`</span>
+
+<span class="e">error</span>: `loop` is not supported yet
+ <span class="g">--&gt;</span> title.raster:9:5
+  <span class="g">|</span>
+<span class="g">9 |</span>     loop {}
+  <span class="g">|</span>     <span class="e">^^^^^^^ `loop` is not supported yet</span>
+  <span class="g">=</span> <span class="n">note</span>: this release compiles `main`, `fn`, `if`, `while`, `for`, u8
+          arithmetic, and `ppu.*` / `mmc3.*` register writes; timed blocks
+          with `cycles`, `pad`, `sync exact` and `wait cycles`; and one
+          `frame` of `every ... scanlines` events
+
+<span class="e">error: could not compile title.raster (2 errors)</span></div><p class="cost">Each note sits beside the first refusal it explains, and is not repeated. Two notes in one run is a little more to read, but the loop refusal still says what the release does compile.</p><h2>Several asset refusals in one run (both options)</h2><div class="term">$ rasterc title.raster
+
+<span class="e">error</span>: only `kind: background` is supported yet
+ <span class="g">--&gt;</span> title.raster:3:48
+  <span class="g">|</span>
+<span class="g">3 |</span> asset image hero = png(&quot;art/hero.png&quot;) { kind: sprites  palette: auto(2)  dedup: true }
+  <span class="g">|</span>                                                <span class="e">^^^^^^^ only `kind: background` is supported yet</span>
+<span class="new">  <span class="g">=</span> <span class="n">note</span>: this release reads one kind of asset: `asset image` from a `png`,</span>
+<span class="new">          with `kind: background`, `palette: auto(4)` and `dedup: true`, used</span>
+<span class="new">          through `.tiles`, `.nametable`, `.attributes` and `.palette`</span>
+
+<span class="e">error</span>: only `palette: auto(4)` is supported yet
+ <span class="g">--&gt;</span> title.raster:3:66
+  <span class="g">|</span>
+<span class="g">3 |</span> asset image hero = png(&quot;art/hero.png&quot;) { kind: sprites  palette: auto(2)  dedup: true }
+  <span class="g">|</span>                                                                  <span class="e">^^^^^^^ only `palette: auto(4)` is supported yet</span>
+
+<span class="e">error: could not compile title.raster (2 errors)</span></div><p class="cost">Like the existing note, the asset note is said once, beside the first asset refusal; the second refusal carries none.</p></section><section><h2 style='font-size:1rem;color:inherit;text-transform:none;letter-spacing:0'>A correct asset not yet placed in the ROM</h2><h1>Option A — no note on this one (recommended)</h1><p class="sub">A correctly written background picture, refused because this release does not yet place it in the ROM.</p><h2>Refusing a correct asset</h2><div class="term">$ rasterc title.raster
+
+<span class="e">error</span>: an `asset` does not reach the ROM yet
+ <span class="g">--&gt;</span> title.raster:2:1
+  <span class="g">|</span>
+<span class="g">2 |</span> asset image title = png(&quot;art/title.png&quot;) { kind: background  palette: auto(4)  dedup: true }
+  <span class="g">|</span> <span class="e">^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ an `asset` does not reach the ROM yet</span>
+
+<span class="e">error: could not compile title.raster (1 error)</span></div><p class="cost">This refusal comes from an asset that is written exactly as the release allows. A note listing what is allowed would describe the very line they wrote, so it says nothing new. It goes away once pictures reach the ROM.</p></section></main></body></html>
