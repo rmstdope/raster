@@ -998,3 +998,134 @@ fn if_and_while_stay_refused_in_an_irq_handler() {
         assert_eq!(diagnostics[0].refusal, Refusal::TimedRegionCost);
     }
 }
+
+/// One failing register access is one error, with the carets under the whole
+/// access and a label that names the spelling that works. Before raster-3o3 each
+/// of these produced a cascade, two of whose errors were byte for byte equal.
+#[test]
+fn a_renamed_register_gets_one_error_naming_its_spelling() {
+    for (source, port, spelling) in [
+        ("main { oam.addr = 0 }", "$2003", "ppu.oam_addr"),
+        ("main { oam.data = 0 }", "$2004", "ppu.oam_data"),
+        ("main { oam.dma = $02 }", "$4014", "ppu.oam_dma"),
+    ] {
+        let found = errors_with_spans(source);
+        assert_eq!(found.len(), 1, "{source}: {found:?}");
+        assert_eq!(found[0].message, "there is no `oam` namespace");
+        assert_eq!(
+            found[0].label.as_deref(),
+            Some(format!("{port} is spelled `{spelling}`").as_str())
+        );
+        assert_eq!(found[0].refusal, Refusal::Rejected, "{source}");
+        assert!(found[0].notes.is_empty());
+        let start = source.find("oam").unwrap();
+        assert_eq!(
+            &source[found[0].span.start as usize..found[0].span.end as usize],
+            &source[start..source.find(" =").unwrap()]
+        );
+    }
+}
+
+#[test]
+fn another_oam_member_gets_the_general_namespace_error() {
+    let found = errors_with_spans("main { oam.foo = 0 }");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].message, "there is no `oam` namespace");
+    assert_eq!(
+        found[0].label.as_deref(),
+        Some("rasterc has `ppu` and `mmc3`")
+    );
+}
+
+#[test]
+fn a_variable_called_oam_is_not_told_there_is_no_namespace() {
+    let found = errors_with_spans("main { var oam: u8 = 1\n oam.addr = 0 }");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].message,
+        "member access requires a register namespace"
+    );
+    assert_eq!(
+        found[0].label.as_deref(),
+        Some("`oam` is a variable, not a register namespace")
+    );
+}
+
+#[test]
+fn the_apu_is_not_supported_yet_whatever_the_depth() {
+    for source in ["main { apu.pulse1.volume = $BF }", "main { apu.noise = 1 }"] {
+        let found = errors_with_spans(source);
+        assert_eq!(found.len(), 1, "{source}: {found:?}");
+        assert_eq!(
+            found[0].message,
+            "the `apu` registers are not supported yet"
+        );
+        assert_eq!(
+            found[0].label.as_deref(),
+            Some("the sound driver owns the APU today (§8.3)")
+        );
+        assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+    }
+}
+
+#[test]
+fn a_deeper_chain_on_a_real_namespace_gets_one_error() {
+    for source in ["main { ppu.oam.addr = 0 }", "main { ppu.ctrl.x = 0 }"] {
+        let found = errors_with_spans(source);
+        assert_eq!(found.len(), 1, "{source}: {found:?}");
+    }
+}
+
+#[test]
+fn an_unknown_namespace_in_a_read_gets_one_error() {
+    let found = errors_with_spans("main { var v: u8 = foo.bar }");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].message, "there is no `foo` namespace");
+}
+
+/// An asset's member is a block of ROM data, so it is no assignment target. The
+/// register-member guard must not wave it through.
+#[test]
+fn an_asset_member_is_not_an_assignment_target() {
+    for statement in ["picture.tiles = 1", "picture.tiles += 1"] {
+        let found = errors_with_spans(&format!(
+            "asset image picture = png(\"p.png\")\nmain {{ {statement} }}"
+        ));
+        assert!(
+            found.iter().any(|e| e.message
+                == "assignment target must be a mutable variable, array element, or register member"),
+            "{statement}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn a_member_of_a_variable_is_one_error() {
+    let found = errors_with_spans("main { var v: u8 = 1\n v.y = 1 }");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].message,
+        "member access requires a register namespace"
+    );
+}
+
+#[test]
+fn a_member_of_a_call_still_reports_the_unknown_name_inside_it() {
+    let messages = errors("main { var v: u8 = 1\n v = nope().x }");
+    assert!(
+        messages.iter().any(|m| m == "unknown name `nope`"),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m == "member access requires a register namespace")
+    );
+}
+
+#[test]
+fn an_unknown_ppu_member_keeps_its_message() {
+    let found = errors_with_spans("main { ppu.crtl = 1 }");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].message, "unknown ppu register `crtl`");
+}
