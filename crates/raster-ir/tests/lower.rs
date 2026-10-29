@@ -861,20 +861,16 @@ fn a_call_that_cannot_select_leaves_the_selection_alone() {
 }
 
 #[test]
-fn a_call_that_can_select_makes_the_selection_unknown() {
+fn a_call_that_selects_a_value_rasterc_cannot_fold_makes_the_selection_unknown() {
     let program = lower_source(
-        "fn tick() { mmc3.bank_select = 6 }\nmain { mmc3.bank_select = 0\n tick()\n mmc3.bank_data = 3 }",
+        "fn tick(n: u8) { mmc3.bank_select = n }\nmain { mmc3.bank_select = 0\n tick(6)\n mmc3.bank_data = 3 }",
     );
 
-    assert_eq!(program.warnings.len(), 1);
-    assert_eq!(
-        program.warnings[0].label,
-        "the last bank select before this is not one rasterc can see"
-    );
+    assert_eq!(program.warnings.last().unwrap().label, UNSURE_LABEL);
 }
 
 #[test]
-fn a_call_that_can_only_select_through_another_call_makes_the_selection_unknown() {
+fn a_call_that_only_selects_through_another_call_leaves_that_register_selected() {
     // Declared in both orders, because the fixed point is order-independent by
     // construction and a reader should not have to take that on trust.
     for source in [
@@ -886,9 +882,10 @@ fn a_call_that_can_only_select_through_another_call_makes_the_selection_unknown(
         assert_eq!(program.warnings.len(), 1, "for {source:?}");
         assert_eq!(
             program.warnings[0].label,
-            "the last bank select before this is not one rasterc can see",
+            "R6 is selected, so this replaces $8000-$9FFF",
             "for {source:?}"
         );
+        assert_eq!(marker(source, &program.warnings[0]).0, "outer()");
     }
 }
 
@@ -2665,6 +2662,195 @@ fn a_ppu_write_only_register_alone_on_a_line_uses_the_ppu_note() {
             "keep what you wrote in a variable of your own\nand write the whole value",
             "to write it, give it a value: `ppu.ctrl = <value>`",
         ]
+// --- raster-eb4: the bank register a call left selected ---------------------------------------
+
+const R6_NOTES: [&str; 2] = [
+    "reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the\nbytes at $8000 are not the ones it mapped from here on",
+    "PRG bank switching is not supported yet: banks 0 to 2 hold $FF,\nand bank 3 is a second view of the fixed bank at $E000",
+];
+
+/// The text a warning's secondary marker covers, and its label.
+fn marker(source: &str, warning: &raster_ir::LowerWarning) -> (String, String) {
+    let secondary = warning
+        .secondary
+        .as_ref()
+        .expect("the warning should carry a marker on the call");
+    (
+        source[secondary.span.start as usize..secondary.span.end as usize].to_owned(),
+        secondary.label.clone(),
+    )
+}
+
+const UNSURE_LABEL: &str = "rasterc cannot see which register this call leaves selected";
+const UNSURE_NOTE_2: &str =
+    "selecting with a literal 0 to 5 after the call, before the\nwrite, keeps the map reset chose";
+
+#[test]
+fn a_call_that_leaves_r6_selected_warns_definitely_with_a_marker_on_the_call() {
+    let source = "fn tick() { mmc3.bank_select = 6 }\nmain {\n mmc3.bank_select = 0\n tick()\n mmc3.bank_data = 4\n}";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "this write repoints the PRG window at $8000"
+    );
+    assert_eq!(
+        warning.label,
+        "R6 is selected, so this replaces $8000-$9FFF"
+    );
+    assert_eq!(warning.notes, R6_NOTES);
+    assert_eq!(
+        marker(source, warning),
+        (
+            "tick()".to_owned(),
+            "this call leaves R6 selected".to_owned()
+        )
+    );
+}
+
+#[test]
+fn a_call_that_leaves_r7_selected_warns_definitely_with_a_marker_on_the_call() {
+    let source = "fn tick() { mmc3.bank_select = 7 }\nmain {\n tick()\n mmc3.bank_data = 4\n}";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].message,
+        "this write repoints the PRG window at $A000"
+    );
+    assert_eq!(
+        program.warnings[0].label,
+        "R7 is selected, so this replaces $A000-$BFFF"
+    );
+    assert_eq!(
+        marker(source, &program.warnings[0]),
+        (
+            "tick()".to_owned(),
+            "this call leaves R7 selected".to_owned()
+        )
+    );
+}
+
+#[test]
+fn a_call_that_leaves_a_chr_register_selected_is_silent() {
+    for register in 0..=5 {
+        let program = lower_source(&format!(
+            "fn tick() {{ mmc3.bank_select = {register} }}\nmain {{ tick()\n mmc3.bank_data = 4 }}"
+        ));
+
+        assert!(program.warnings.is_empty(), "R{register}");
+    }
+}
+
+#[test]
+fn a_function_that_never_selects_carries_the_selection_through_a_call() {
+    let program = lower_source(
+        "var counter: u8\nfn bump() { counter = counter + 1 }\nmain { bump()\n mmc3.bank_data = 3 }",
+    );
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "nothing selects a register before this, and reset selected R7 last"
+    );
+    assert!(program.warnings[0].secondary.is_none());
+}
+
+#[test]
+fn the_marker_is_on_the_outermost_call_however_deep_the_select_is() {
+    for order in [
+        "fn inner() { mmc3.bank_select = 7 }\nfn tick() { inner() }\n",
+        "fn tick() { inner() }\nfn inner() { mmc3.bank_select = 7 }\n",
+    ] {
+        let source = format!("{order}main {{\n tick()\n var n: u8 = 3\n mmc3.bank_data = n\n}}");
+        let program = lower_source(&source);
+
+        assert_eq!(program.warnings.len(), 1, "for {source:?}");
+        assert_eq!(
+            marker(&source, &program.warnings[0]),
+            (
+                "tick()".to_owned(),
+                "this call leaves R7 selected".to_owned()
+            )
+        );
+    }
+}
+
+#[test]
+fn the_marker_is_on_the_call_that_last_changed_the_selection() {
+    let source = "fn a() { mmc3.bank_select = 7 }\nfn b() { mmc3.bank_select = 6 }\nmain {\n a()\n b()\n mmc3.bank_data = 4\n}";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        marker(source, &program.warnings[0]),
+        ("b()".to_owned(), "this call leaves R6 selected".to_owned())
+    );
+}
+
+#[test]
+fn a_call_after_the_select_it_does_not_change_leaves_the_visible_select_in_charge() {
+    let source = "fn a() { mmc3.bank_select = 7 }\nvar c: u8\nfn bump() { c = c + 1 }\nmain {\n a()\n bump()\n mmc3.bank_data = 4\n}";
+    let program = lower_source(source);
+
+    assert_eq!(
+        marker(source, &program.warnings[0]),
+        ("a()".to_owned(), "this call leaves R7 selected".to_owned())
+    );
+}
+
+#[test]
+fn a_call_that_can_leave_different_registers_selected_is_unsure_and_marks_the_call() {
+    let source = "fn tick(fast: u8) {\n if fast != 0 { mmc3.bank_select = 6 } else { mmc3.bank_select = 1 }\n}\nmain {\n tick(1)\n mmc3.bank_data = 4\n}".to_owned();
+    let program = lower_source(&source);
+
+    assert_eq!(program.warnings.len(), 1);
+    let warning = &program.warnings[0];
+    assert_eq!(
+        warning.message,
+        "rasterc cannot tell which bank register this write lands on"
+    );
+    assert_eq!(warning.label, UNSURE_LABEL);
+    assert_eq!(
+        warning.notes,
+        [
+            "R6 and R7 are the two 8 KiB PRG windows; a write landing on\neither one repoints $8000 or $A000",
+            UNSURE_NOTE_2,
+        ]
+    );
+    let (text, label) = marker(&source, warning);
+    assert!(text.starts_with("tick("));
+    assert_eq!(label, "this call can leave any register selected");
+}
+
+#[test]
+fn a_function_that_skips_its_select_on_some_path_is_unsure() {
+    for body in [
+        "if n != 0 { mmc3.bank_select = 6 }",
+        "if n != 0 { return }\n mmc3.bank_select = 6",
+        "mmc3.bank_select = n",
+    ] {
+        let source = format!(
+            "fn tick(n: u8) {{ {body} }}\nmain {{\n mmc3.bank_select = 0\n tick(1)\n mmc3.bank_data = 4\n}}"
+        );
+        let program = lower_source(&source);
+
+        let warning = program.warnings.last().unwrap();
+        assert_eq!(warning.label, UNSURE_LABEL, "for {body:?}");
+    }
+}
+
+#[test]
+fn a_function_that_selects_the_same_register_on_every_path_leaves_it_selected() {
+    let source = "fn tick(n: u8) {\n if n != 0 { mmc3.bank_select = 6 } else { mmc3.bank_select = 6 }\n}\nmain {\n tick(1)\n mmc3.bank_data = 4\n}";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(
+        program.warnings[0].label,
+        "R6 is selected, so this replaces $8000-$9FFF"
     );
 }
 
@@ -2701,4 +2887,36 @@ fn a_bare_ppu_data_statement_raises_no_buffer_warning() {
     let failure = lower_failure("main {\n    ppu.data\n}\n");
     assert_eq!(failure.errors.len(), 1);
     assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
+fn an_early_return_before_the_select_is_not_hidden_by_the_select_after_it() {
+    let source = "fn tick(n: u8) {\n if n != 0 { return }\n mmc3.bank_select = 6\n}\nmain {\n mmc3.bank_select = 0\n tick(1)\n mmc3.bank_data = 4\n}";
+    let program = lower_source(source);
+
+    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(program.warnings[0].label, UNSURE_LABEL);
+}
+
+#[test]
+fn a_call_cycle_stays_unsure_rather_than_silent() {
+    let source =
+        "fn a() { mmc3.bank_select = 0\n b() }\nfn b() { a() }\nmain { a()\n mmc3.bank_data = 4 }";
+    let syntax = parse(source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let failure = lower(&typed).expect_err("recursion is refused");
+
+    assert!(failure
+        .warnings
+        .iter()
+        .any(|warning| warning.label == UNSURE_LABEL));
+}
+
+#[test]
+fn uncertainty_that_does_not_come_from_a_call_keeps_its_words() {
+    let program =
+        lower_source("main { var n: u8 = 3\n mmc3.bank_select = n\n mmc3.bank_data = 4 }");
+    let warning = program.warnings.last().unwrap();
+    assert_eq!(
+        warning.label,
+        "the last bank select before this is not one rasterc can see"
+    );
+    assert!(warning.secondary.is_none());
 }
