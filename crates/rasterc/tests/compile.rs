@@ -417,9 +417,8 @@ fn irq_frame_reads_a_ppu_configuration_written_through_a_value_call() {
 }
 
 /// `return` in an IRQ handler would leave the interrupt without its `RTI`, three bytes of stack at
-/// a time — a ROM that runs for eighty frames and then wanders. It is refused for the same reason
-/// a `return` inside any handler is, which is why this asserts the refusal rather than a message of
-/// its own.
+/// a time — a ROM that runs for eighty frames and then wanders. It is refused, after a store that
+/// is itself fine, in a sentence of its own; the full wording is pinned below.
 #[test]
 fn a_frame_handler_cannot_return() {
     let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
@@ -427,13 +426,7 @@ fn a_frame_handler_cannot_return() {
                   \n        return\n    }\n}\n";
     let diagnostics = compile_source(source).expect_err("a handler has nowhere to return to");
 
-    assert!(
-        diagnostics[0]
-            .message
-            .starts_with("`return` inside a timed block jumps out"),
-        "found {:?}",
-        diagnostics[0].message
-    );
+    assert_eq!(diagnostics[0].message, "an `irq` handler cannot `return`");
     assert!(diagnostics[0].span.is_some());
 }
 
@@ -1285,4 +1278,71 @@ fn a_target_block_changes_no_byte_of_the_rom() {
     let without = compile_source(&demo_source()).expect("the demo compiles");
     assert_eq!(with.image, without.image);
     assert_eq!(with.code_len, without.code_len);
+}
+
+const TIMED_BLOCK_NOTE: &str = "a timed block is costed as straight-line code; loops, branches\n\
+     and calls will be admitted once their cost can be measured";
+
+fn irq_handler(statement: &str) -> String {
+    format!(
+        "main {{\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}}\n\
+         \nframe bars using irq {{\n    at scanline 60 {{\n        {statement}\n    }}\n}}\n"
+    )
+}
+
+/// The refusal an `irq` handler's `return` earns names the `RTI` it skips, in the shape of the
+/// handler's two other refusals, and says nothing of an interrupt flag the handler never sets.
+#[test]
+fn a_return_in_an_irq_handler_names_the_rti_it_skips() {
+    let source = irq_handler("return");
+    let diagnostics = compile_source(&source).expect_err("a `return` skips the handler's `RTI`");
+
+    assert_eq!(diagnostics.len(), 1, "found {diagnostics:?}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.message, "an `irq` handler cannot `return`");
+    assert_eq!(diagnostic.label, "`return` jumps past the handler's `RTI`");
+    assert_eq!(
+        diagnostic.notes,
+        [
+            "a handler ends by acknowledging the interrupt, arming the next\n\
+             event and running `RTI`; a `return` skips all three, so no later\n\
+             event in the schedule runs",
+            "let the handler run to its last statement instead",
+        ],
+        "and not the timed-block note, which would be said beside it"
+    );
+    let span = diagnostic.span.expect("the diagnostic is source-spanned");
+    assert_eq!(&source[span.start..span.end], "return");
+}
+
+/// A call, an `if` and a `while` are refused in an `irq` handler in the shared timed-block words,
+/// with the shared note. Nothing else pins that, so a refusal could vanish unseen.
+#[test]
+fn a_call_an_if_and_a_while_are_still_refused_in_an_irq_handler() {
+    for (statement, headline) in [
+        (
+            "if true { }",
+            "branch arms inside a timed block cannot yet be balanced, because each path through them costs a different number of cycles",
+        ),
+        (
+            "while true { }",
+            "a `while` loop's trip count cannot be proven inside a timed block",
+        ),
+    ] {
+        let diagnostics = compile_source(&irq_handler(statement))
+            .expect_err("the handler is costed as straight-line code");
+        assert_eq!(diagnostics.len(), 1, "{statement}: {diagnostics:?}");
+        assert_eq!(diagnostics[0].message, headline);
+        assert_eq!(diagnostics[0].notes, [TIMED_BLOCK_NOTE]);
+    }
+
+    let call = "fn helper() { }\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                \nframe bars using irq {\n    at scanline 60 {\n        helper()\n    }\n}\n";
+    let diagnostics = compile_source(call).expect_err("a call has no measured cost");
+    assert_eq!(diagnostics.len(), 1, "found {diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].message,
+        "`helper` cannot be called inside a timed block yet: a call's cost is the callee's, and no function's cost is measured yet"
+    );
+    assert_eq!(diagnostics[0].notes, [TIMED_BLOCK_NOTE]);
 }

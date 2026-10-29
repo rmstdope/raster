@@ -11,6 +11,11 @@ pub struct SemanticError {
     pub message: String,
     pub span: Span,
     pub refusal: Refusal,
+    /// What to print under the carets, when the refusal has words of its own; otherwise the
+    /// message is repeated there.
+    pub label: Option<String>,
+    /// Notes that belong to this refusal alone.
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +78,9 @@ struct TimedBlock {
     block: bool,
     /// Whether the region carries `interruptible`, and so emits no `PHP`/`SEI`/`PLP`.
     interruptible: bool,
+    /// Whether this is a `using irq` handler, which is costed like a timed block but is an
+    /// interrupt: it saves and restores no flag, and ends in `RTI`.
+    irq_handler: bool,
 }
 
 pub fn analyze(program: &Program) -> Result<TypedProgram, Vec<SemanticError>> {
@@ -141,6 +149,25 @@ impl Analyzer {
             message: message.into(),
             span,
             refusal,
+            label: None,
+            notes: Vec::new(),
+        });
+    }
+
+    /// Refuse with a label and notes of the refusal's own.
+    fn refuse_with(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        label: impl Into<String>,
+        notes: Vec<String>,
+    ) {
+        self.errors.push(SemanticError {
+            message: message.into(),
+            span,
+            refusal: Refusal::Rejected,
+            label: Some(label.into()),
+            notes,
         });
     }
 
@@ -322,8 +349,12 @@ impl Analyzer {
             Item::Function(function) => self.check_function(function),
             Item::Frame(frame) => {
                 self.enter_scope();
+                let irq = frame
+                    .strategy
+                    .as_ref()
+                    .is_some_and(|strategy| strategy.value == "irq");
                 for event in &frame.events {
-                    self.check_frame_event(&event.value);
+                    self.check_frame_event(&event.value, irq);
                 }
                 self.leave_scope();
             }
@@ -362,6 +393,7 @@ impl Analyzer {
             self.timed_regions.push(TimedBlock {
                 block: false,
                 interruptible: spec.interruptible,
+                irq_handler: false,
             });
         }
         self.check_block_statements(&function.body);
@@ -393,7 +425,7 @@ impl Analyzer {
     /// handlers run and lowering emits the synchronization that makes it true, so demanding a
     /// `sync exact` inside every handler would be asking the author to do by hand the one thing
     /// the construct exists to do for them.
-    fn check_frame_event(&mut self, event: &FrameEvent) {
+    fn check_frame_event(&mut self, event: &FrameEvent, irq_handler: bool) {
         let outer = std::mem::replace(&mut self.synchronized, true);
         // A `using timed` handler is emitted through the same `timed_region` a `cycles(...) { }`
         // block is, with `pad` set and `interruptible` clear, so it carries the same restrictions
@@ -404,6 +436,7 @@ impl Analyzer {
         self.timed_regions.push(TimedBlock {
             block: true,
             interruptible: false,
+            irq_handler,
         });
         self.check_frame_event_body(event);
         self.timed_regions.pop();
@@ -566,6 +599,7 @@ impl Analyzer {
                 self.timed_regions.push(TimedBlock {
                     block: true,
                     interruptible: spec.interruptible,
+                    irq_handler: false,
                 });
                 self.check_block(body);
                 self.timed_regions.pop();
@@ -594,7 +628,30 @@ impl Analyzer {
                 // The two sentences differ by one clause because an `interruptible` block emits no
                 // `PHP`/`SEI`/`PLP`, so there is no interrupt flag left masked when the `return`
                 // jumps out. `reject_in_timed_region` takes one fixed message and cannot say both.
-                if let Some(block) = self.innermost_cycles_block() {
+                if self
+                    .innermost_cycles_block()
+                    .is_some_and(|block| block.irq_handler)
+                {
+                    self.refuse_with(
+                        statement_span,
+                        "an `irq` handler cannot `return`",
+                        "`return` jumps past the handler's `RTI`",
+                        vec![
+                            "a handler ends by acknowledging the interrupt, arming the next\n\
+                             event and running `RTI`; a `return` skips all three, so no later\n\
+                             event in the schedule runs"
+                                .to_owned(),
+                            "let the handler run to its last statement instead".to_owned(),
+                        ],
+                    );
+                    // The value makes no difference to the refusal, so it is not also judged
+                    // against a return type the handler does not have; it is still read, so a
+                    // misspelt name in it is still reported.
+                    if let Some(value) = value {
+                        self.expression_type(value);
+                    }
+                    return;
+                } else if let Some(block) = self.innermost_cycles_block() {
                     let message = if block.interruptible {
                         "`return` inside a timed block jumps out before the block has spent its \
                          budget, so it belongs after the block rather than inside one"
