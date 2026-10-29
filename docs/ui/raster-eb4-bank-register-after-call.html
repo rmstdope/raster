@@ -1,0 +1,115 @@
+<!doctype html>
+<title>raster-eb4 — naming the bank register a call left selected</title>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f6f6f8; color:#22242c;
+         font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+  h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+       letter-spacing:.09em; color:#666b7a; font-weight:600; }
+  .note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+  .term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+          font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          white-space: pre; overflow-x:auto; border:1px solid #000; }
+  .term .e { color: var(--red); font-weight:700; }
+  .term .w { color: var(--yel); font-weight:700; }
+  .term .g { color: var(--dim); }
+  .term .c { color: var(--cyan); }
+  .term .ok { color: var(--grn); }
+  .src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto;
+         margin:.5rem 0 .5rem; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+         padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+  .cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+  .silent { border-left:3px solid #8fd694; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#3f6b46; max-width:56em; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0d0e13; color:#d8dae4; }
+    .sub, h2, .note, .cost { color:#8b90a2; }
+    .tag { background:#1e2029; color:#a8adc0; }
+    .cost { border-color:#2a2d3a; }
+    .silent { color:#8fd694; }
+    .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  }
+</style>
+
+<main>
+<h1>raster-eb4 — naming the bank register a call left selected</h1>
+<p class="sub">Agreed: a bank data write after a call that leaves R6 or R7 selected gets the definite warning, with a second dashed marker on the call (option B). A call that leaves R0&ndash;R5 selected is silent. A call whose function can leave different registers selected keeps the soft headline but marks the call and moves the advice after it (option D).</p>
+<h2>1 &middot; Definite &mdash; the call leaves R6 selected</h2><span class="tag">OPTION B &mdash; SAME WARNING, PLUS A SECOND MARKER ON THE CALL (recommended)</span>
+<div class="src">fn tick() { mmc3.bank_select = 6 }
+
+main {
+    mmc3.bank_select = 0
+    tick()
+    mmc3.bank_data = 4
+}</div>
+<div class="term"><span class="w">warning: this write repoints the PRG window at $8000</span>
+ <span class="g">--&gt; demo.raster:6:5</span>
+  <span class="g">|</span>
+<span class="g">5 |</span>     tick()
+  <span class="g">|</span>     <span class="c">------</span> <span class="c">this call leaves R6 selected</span>
+<span class="g">6 |</span>     mmc3.bank_data = 4
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> R6 is selected, so this replaces $8000-$9FFF
+  <span class="g">= note:</span> reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the
+          bytes at $8000 are not the ones it mapped from here on
+  <span class="g">= note:</span> PRG bank switching is not supported yet: banks 0 to 2 hold $FF,
+          and bank 3 is a second view of the fixed bank at $E000</div>
+<p class="cost">The compiler-standard secondary marker (as Rust and Clang draw them): the write is still the place the warning points, and the call that changed the selection is underlined in a second style above it. Cost: one more labelled line, and the marker uses a dashed underline as well as colour so it reads without colour.</p>
+<h2>When the call leaves R0&ndash;R5 selected</h2>
+<div class="src">fn tick() { mmc3.bank_select = 2 }
+
+main {
+    tick()
+    mmc3.bank_data = 4
+}</div>
+<p class="silent">Silent &mdash; exactly as if <code>mmc3.bank_select = 2</code> were written in place of the call. Today this gets the soft &ldquo;cannot tell&rdquo; warning.</p>
+
+<h2>Nested and distant calls</h2>
+<div class="src">fn inner() { mmc3.bank_select = 7 }
+fn tick() { inner() }
+
+main {
+    tick()
+    var n: u8 = 3
+    mmc3.bank_data = n
+}</div>
+<div class="term"><span class="w">warning: this write repoints the PRG window at $A000</span>
+ <span class="g">--&gt; demo.raster:7:5</span>
+  <span class="g">|</span>
+<span class="g">5 |</span>     tick()
+  <span class="g">|</span>     <span class="c">------</span> <span class="c">this call leaves R7 selected</span>
+<span class="g">6 |</span>     var n: u8 = 3
+<span class="g">7 |</span>     mmc3.bank_data = n
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> R7 is selected, so this replaces $A000-$BFFF
+  <span class="g">= note:</span> reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the
+          bytes at $A000 are not the ones it mapped from here on
+  <span class="g">= note:</span> PRG bank switching is not supported yet: banks 0 to 2 hold $FF,
+          and bank 3 is a second view of the fixed bank at $E000</div>
+<p class="note">The marker sits on the call in the body being checked, however deep the select is. Lines between the call and the write are shown as usual (or elided the usual way when far apart).</p><h2>2 &middot; Unsure &mdash; the call can leave any register selected</h2><span class="tag">OPTION D &mdash; SOFT WARNING THAT POINTS AT THE CALL (recommended)</span>
+<div class="src">fn tick(fast: bool) {
+    if fast { mmc3.bank_select = 6 } else { mmc3.bank_select = 1 }
+}
+
+main {
+    tick(true)
+    mmc3.bank_data = 4
+}</div>
+<div class="term"><span class="w">warning: rasterc cannot tell which bank register this write lands on</span>
+ <span class="g">--&gt; demo.raster:7:5</span>
+  <span class="g">|</span>
+<span class="g">6 |</span>     tick(true)
+  <span class="g">|</span>     <span class="c">----------</span> <span class="c">this call can leave any register selected</span>
+<span class="g">7 |</span>     mmc3.bank_data = 4
+  <span class="g">|</span>     <span class="w">^^^^^^^^^^^^^^^^^^</span> rasterc cannot see which register this call leaves selected
+  <span class="g">= note:</span> R6 and R7 are the two 8 KiB PRG windows; a write landing on
+          either one repoints $8000 or $A000
+  <span class="g">= note:</span> selecting with a literal 0 to 5 after the call, before the
+          write, keeps the map reset chose</div>
+<p class="cost">Same headline as today, but the call is marked the same way as in option B, and the advice says where the fix goes. Cost: three changed lines for a case that is already understood once you look.</p>
+
+</main>
