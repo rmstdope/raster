@@ -1,0 +1,135 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Frame budget table</title>
+<style>
+:root{--bg:#f6f6f8;--fg:#22242c;--dim:#666b7a;--tb:#12131a;--tf:#d8dae4;--td:#7c8296;--red:#ff6b6b;--cy:#6fd3e8;--yel:#ffcf6b}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0e13;--fg:#d8dae4;--dim:#8b90a2}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,"Segoe UI",system-ui,sans-serif}
+main{max-width:62rem;margin:0 auto;padding:2rem 16px 4rem}
+h1{font-size:1.3rem;margin:0 0 .3rem}h2{font-size:.9rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:2rem 0 .4rem}
+p{max-width:56em}.note{color:var(--dim);font-size:.92rem}
+.term{background:var(--tb);color:var(--tf);border-radius:8px;padding:1rem 1.1rem;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow-x:auto}
+.n{color:var(--cy)}.e{color:var(--red);font-weight:700}.g{color:var(--td)}
+.cost{border-left:3px solid #c9ccd6;padding-left:.9rem;color:var(--dim);font-size:.92rem}
+</style></head><body><main>
+</head><body><main>
+<h1>raster-5vk — the frame strategy and its per-event budget table</h1>
+<p class="note">Agreed with the navigator in the UX stage. The table of spec section 7.2 follows the build summary, with a heading that names the frame and its strategy. Section 7.1 now says an omitted <code>using</code> always means <code>timed</code>. New lines are in <span style="color:#2a9bb5">cyan</span>. Summary figures come from real builds on main at 48bb178. Handler costs are real: a constant <code>ppu.mask</code> store is 6 cycles, one store from a variable is 7, and the two-statement handler is 12. The <code>irq</code> window is the 9-cycle hblank, and the <code>timed</code> window is one 114-cycle scanline.</p>
+
+<h2>01 · using irq, everything fits</h2>
+<div class="term"><span class="g">frame bars using irq {
+    at scanline 60 { ppu.mask = $1f }
+    every 8 scanlines from 96 to 200 { ppu.mask = $1e }
+}</span>
+
+$ rasterc bars.raster
+ Compiled  bars.raster -> bars.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 629 of 8186 bytes used
+    yours  497 bytes
+  runtime  132 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $E274, irq $E271
+<span class="n">
+frame bars (using irq, mmc3)
+  scanline  60             handler  6 cycles   window   9   3 spare
+  scanline  96-200 every 8 handler  6 cycles   window   9   3 spare</span></div>
+<p class="note">An <code>every</code> is one row, named the way the source names it. The handler runs the same code on every scanline and is already charged its worst case, so no figure is hidden.</p>
+
+<h2>02 · No using: timed, and it says so</h2>
+<div class="term"><span class="g">frame bars {
+    at scanline 60 { ppu.mask = $1f }
+    every 8 scanlines from 96 to 200 { ppu.mask = $1e }
+}</span>
+
+$ rasterc bars.raster
+ Compiled  bars.raster -> bars.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 3341 of 8186 bytes used
+    yours  3209 bytes
+  runtime  132 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $ED0C, irq $ED0C
+<span class="n">
+frame bars (using timed by default, mmc3)
+  scanline  60             handler  6 cycles   window 114   108 spare
+  scanline  96-200 every 8 handler  6 cycles   window 114   108 spare</span></div>
+<p class="note">With <code>using timed</code> written out, the heading reads <code>frame bars (using timed, mmc3)</code>. An omitted <code>using</code> never turns into <code>irq</code>, however well the schedule would fit.</p>
+
+<h2>03 · Alongside cycles(?) rows and warnings</h2>
+<div class="term"><span class="g">warning: …</span>
+
+ Compiled  bars.raster -> bars.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 629 of 8186 bytes used
+    yours  497 bytes
+  runtime  132 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $E274, irq $E271
+   cycles  hblank: 15 cycles
+ warnings  1
+<span class="n">
+frame bars (using irq, mmc3)
+  scanline  60             handler  6 cycles   window   9   3 spare
+  scanline  96-200 every 8 handler  7 cycles   window   9   2 spare</span></div>
+<p class="note">The table goes after the whole summary block, <code>warnings</code> included, with one blank line before its heading.</p>
+
+<h2>04 · No frame</h2>
+<div class="term">$ rasterc demo.raster
+ Compiled  examples/mvp/demo.raster -> examples/mvp/demo.nes
+   mapper  MMC3 (4), NTSC
+      prg  32 KiB, 4 banks of 8 KiB
+      chr  8 KiB RAM
+    fixed  $E000-$FFFF, 160 of 8186 bytes used
+    yours  28 bytes
+  runtime  132 bytes, the reset sequence around your program
+    entry  reset $E000, nmi $E09F, irq $E09F</div>
+<p class="note">No table, no heading and no blank line: byte for byte what prints today.</p>
+
+<h2>05 · A handler over its window</h2>
+<div class="term"><span class="g">frame bars using irq {
+    at scanline 60 {
+        ppu.mask = $1f
+        ppu.scroll = 0
+    }
+    every 8 scanlines from 96 to 200 { ppu.mask = $1e }
+}</span>
+
+$ rasterc bars.raster
+<span class="e">error</span>: an `irq` handler exceeds its hblank
+ --> bars.raster:6:5
+  |
+6 |     at scanline 60 {
+  |     ^^^^^^^^^^^^^^^^ handler costs 12 cycles, the hblank leaves 9
+  = note: the MMC3 asserts its interrupt near the end of the scanline before
+          the one this handler runs on, so a store made once the window has
+          closed lands part-way along a visible row
+  = note: split the work across two events on consecutive scanlines to give
+          each a window of its own, or use `using timed`, which gives a
+          handler the whole scanline at the cost of the frame's entire CPU time
+<span class="n">
+frame bars (using irq, mmc3)
+  scanline  60             handler 12 cycles   window   9   OVER BY 3
+  scanline  96-200 every 8 handler  6 cycles   window   9   3 spare</span>
+
+error: could not compile bars.raster (1 error)</div>
+<p class="note">The error is unchanged. The table comes after the last diagnostic and before the count line, which stays last. Whether the error is the <code>irq</code> hblank one or <code>timed block exceeds its budget</code>, every handler that is over says <code>OVER BY n</code>, in words rather than colour.</p>
+
+<h2>06 · A failure that is not a handler overrun</h2>
+<div class="term">$ rasterc bars.raster
+<span class="e">error</span>: the program does not fit the MMC3 fixed bank
+  = note: …
+
+error: could not compile bars.raster (1 error)</div>
+<p class="note">No table. A failed build prints it only when the failure is a handler over its window, so a half-measured table never appears.</p>
+
+<h2>What was considered and rejected</h2>
+<ul class="note">
+<li><b>Event rows in the summary's label column</b> (<code>scanline  60: 6 of 9 cycles</code>). It would have been one block, but the figures don't line up in columns, and it isn't the table the specification promises.</li>
+<li><b>One row per scanline an <code>every</code> fires on.</b> <code>every 1 scanlines from 0 to 239</code> would print 240 identical rows for one line of source.</li>
+<li><b>Letting the compiler choose when <code>using</code> is omitted</b> (irq when it fits, otherwise timed, with the reason in the heading). One added statement could quietly move the program from irq to timed, taking the whole frame's CPU time while the build stays green.</li>
+<li><b>Printing only the error when a handler overruns</b>, as today. You couldn't see which other events had room, and the error itself tells you to split the work across events.</li>
+<li><b><code>ok</code> in the last column</b>, the specification's word. You would have to subtract to find how much room is left, and that is the number you act on.</li>
+</ul>
+</main></body></html>
