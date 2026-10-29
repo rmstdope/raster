@@ -93,7 +93,11 @@ fn a_gap_in_the_bank_numbers_is_an_empty_bank() {
 
 /// The summary `rasterc` prints for `source`, compiled from a directory holding its pictures.
 fn summary_lines(source: &str, picture: usize, font: usize, sprites: usize) -> Vec<String> {
-    let directory = Scratch::new("picture-summary");
+    // Scratch names are stamped with a clock too coarse to tell two parallel tests apart, so each
+    // call names itself.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let directory = Scratch::new(&format!("picture-summary-{call}"));
     for (name, tiles) in [
         ("picture.png", picture),
         ("font.png", font),
