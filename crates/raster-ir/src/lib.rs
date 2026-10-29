@@ -2528,8 +2528,8 @@ impl Lowerer {
                 // Q7: one fault, one message. If lowering this statement's own
                 // value refused something — a read of a write-only register,
                 // say — the statement is being rewritten, so what its value
-                // would have been is moot and the bank-select warning below is
-                // unactionable until the refusal is fixed. Counted rather than
+                // would have been is moot and the bank-select warning in
+                // `note_bank_select` is unactionable until the refusal is fixed. Counted rather than
                 // returned, so it covers a plain assignment as well as the
                 // compound arm's early `return`.
                 let errors_before = self.errors.len();
@@ -2546,7 +2546,7 @@ impl Lowerer {
                             // next one. Nothing is pushed: the statement has
                             // been refused, so it has no `Assign` to emit — and
                             // returning here is also what keeps
-                            // `bank_select_warning` below from firing on a line
+                            // `note_bank_select` from firing on a line
                             // whose read has already been refused.
                             let _ = self.lower_value(right);
                             return;
@@ -2555,53 +2555,8 @@ impl Lowerer {
                         self.binary(left_value, binary, right, expression.span)
                     }
                 };
-                // Whether lowering this statement's own value refused something —
-                // a read of a write-only register, say. Q7 of `raster-1t9`: one
-                // fault, one message, so the bank-select warning below stands
-                // aside, because it is about a value that is now a placeholder.
-                // The bank-data warning does not, because it is about which
-                // register is selected, which is a fact about the statements
-                // before it and stays true once the read is fixed.
                 let refused = self.errors.len() != errors_before;
-                if destination == Destination::Register(Register::Mmc3BankSelect) {
-                    if !refused {
-                        if let Some(warning) = bank_select_warning(&value, expression.span) {
-                            self.warnings.push(warning);
-                        }
-                    }
-                    self.selection = match value {
-                        // A refused value lowers to a `Constant(0)` placeholder
-                        // rather than to a byte the author wrote, so it is not
-                        // a selection rasterc has seen.
-                        Value::Constant(bits) if !refused => BankSelection::known(bits),
-                        _ => BankSelection::Unknown(Unseen::InThisBody),
-                    };
-                }
-                if destination == Destination::Register(Register::Mmc3BankData) {
-                    if let Some(warning) = bank_data_warning(self.selection, expression.span) {
-                        self.warnings.push(warning);
-                    }
-                }
-                // Collected here and judged after lowering: whether it matters depends on the
-                // frame's strategy, and `Statement::Assign` carries no span to point at later.
-                // `!refused` for the reason `bank_select_warning` gives — a refused value lowers
-                // to a `Constant(0)` placeholder, and a warning about a byte the author did not
-                // write is unactionable until the refusal is fixed.
-                if destination == Destination::Register(Register::PpuCtrl)
-                    && self.in_frame_handler
-                    && !refused
-                {
-                    self.handler_ctrl_writes.push(HandlerCtrlWrite {
-                        span: expression.span,
-                        bits: match &value {
-                            Value::Constant(bits) => Some(*bits),
-                            _ => None,
-                        },
-                        // Stamped by `tag_handler_ctrl_writes` once the event this body belongs
-                        // to is built; the scanline is not known from inside the body.
-                        scanline: 0,
-                    });
-                }
+                self.note_register_write(destination, &value, refused, expression.span);
                 output.push(Statement::Assign { destination, value });
                 return;
             }
@@ -2621,6 +2576,95 @@ impl Lowerer {
                 "only direct calls and assignments are supported as statements",
             ),
         }
+    }
+
+    /// What each register has to say about, and remember from, a write that has
+    /// been lowered. This is the one list: a new register diagnostic is a new
+    /// `note_*` method and a line here, never an edit inside another's guard.
+    ///
+    /// `refused` is whether lowering the statement's own value refused
+    /// something — a read of a write-only register, say. A refused value lowers
+    /// to a `Constant(0)` placeholder rather than to a byte the author wrote, so
+    /// a rule about the value stands aside (one fault, one message, `raster-1t9`
+    /// Q7), and a rule about what the statements before it did does not. Each
+    /// rule below says which it is.
+    fn note_register_write(
+        &mut self,
+        destination: Destination,
+        value: &Value,
+        refused: bool,
+        span: Span,
+    ) {
+        self.note_bank_select(destination, value, refused, span);
+        self.note_bank_data(destination, span);
+        self.note_ppu_ctrl(destination, value, refused, span);
+    }
+
+    /// `mmc3.bank_select`: warns about the value, and remembers which register
+    /// it selected. Stands aside for `refused` when warning; when remembering,
+    /// a refused value is not a selection rasterc has seen.
+    fn note_bank_select(
+        &mut self,
+        destination: Destination,
+        value: &Value,
+        refused: bool,
+        span: Span,
+    ) {
+        if destination != Destination::Register(Register::Mmc3BankSelect) {
+            return;
+        }
+        if !refused {
+            if let Some(warning) = bank_select_warning(value, span) {
+                self.warnings.push(warning);
+            }
+        }
+        self.selection = match value {
+            Value::Constant(bits) if !refused => BankSelection::known(*bits),
+            _ => BankSelection::Unknown(Unseen::InThisBody),
+        };
+    }
+
+    /// `mmc3.bank_data`: warns about which register is selected, which is a
+    /// fact about the statements before it and stays true once a refused read
+    /// is fixed, so it does not take `refused`.
+    fn note_bank_data(&mut self, destination: Destination, span: Span) {
+        if destination != Destination::Register(Register::Mmc3BankData) {
+            return;
+        }
+        if let Some(warning) = bank_data_warning(self.selection, span) {
+            self.warnings.push(warning);
+        }
+    }
+
+    /// `ppu.ctrl` in a frame handler: collected here and judged after
+    /// lowering, because whether it matters depends on the frame's strategy and
+    /// `Statement::Assign` carries no span to point at later. Stands aside for
+    /// `refused`: a warning about a byte the author did not write is
+    /// unactionable until the refusal is fixed. Belt and braces: a refusal is an
+    /// error, and `check_timed_frame_nmi` already judges nothing while any exists.
+    fn note_ppu_ctrl(
+        &mut self,
+        destination: Destination,
+        value: &Value,
+        refused: bool,
+        span: Span,
+    ) {
+        if destination != Destination::Register(Register::PpuCtrl)
+            || !self.in_frame_handler
+            || refused
+        {
+            return;
+        }
+        self.handler_ctrl_writes.push(HandlerCtrlWrite {
+            span,
+            bits: match value {
+                Value::Constant(bits) => Some(*bits),
+                _ => None,
+            },
+            // Stamped by `tag_handler_ctrl_writes` once the event this body belongs
+            // to is built; the scanline is not known from inside the body.
+            scanline: 0,
+        });
     }
 
     fn lower_destination(&mut self, expression: &Spanned<SyntaxExpression>) -> Option<Destination> {
