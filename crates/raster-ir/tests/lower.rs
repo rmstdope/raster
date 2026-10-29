@@ -3492,3 +3492,20 @@ fn the_raw_byte_pair_still_lowers_to_the_same_two_writes() {
         ppu_addr_writes(0x3F, 0x00)
     );
 }
+
+#[test]
+fn with_every_bank_declared_the_unplaced_help_does_not_name_a_bank_32() {
+    let source =
+        format!("{PICTURE}main {{\nload_nametable(picture.nametable, picture.attributes)\n}}");
+    let syntax = parse(&source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let mut full = pictures(false);
+    full.next_free_bank = 32;
+    let errors = lower_with_pictures(&typed, &full)
+        .expect_err("the tiles are not in a bank")
+        .errors;
+    assert_eq!(
+        errors[0].help.as_deref(),
+        Some("add `picture.tiles` to one of the `chrrom` banks")
+    );
+}

@@ -835,7 +835,7 @@ fn oam_dma_uncertainty(stalls: usize, budget: u32, span: Span) -> LowerWarning {
         span,
         assumes_budget_met: true,
         help: None,
-       secondary: None,
+        secondary: None,
     }
 }
 
@@ -3309,10 +3309,15 @@ impl Lowerer {
                 message: format!("`{asset}`'s tiles are not in any `chrrom` bank"),
                 label: Some("this nametable points at tiles that are not on the cartridge".into()),
                 notes: Vec::new(),
-                help: Some(format!(
-                    "add `chrrom bank {} {{ {asset}.tiles }}`",
-                    self.pictures.next_free_bank
-                )),
+                // Banks 0 to 31 exist; with all of them declared there is no number to suggest.
+                help: Some(if self.pictures.next_free_bank > 31 {
+                    format!("add `{asset}.tiles` to one of the `chrrom` banks")
+                } else {
+                    format!(
+                        "add `chrrom bank {} {{ {asset}.tiles }}`",
+                        self.pictures.next_free_bank
+                    )
+                }),
                 span: arguments[0].span,
                 refusal: Refusal::Rejected,
             });

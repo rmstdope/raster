@@ -360,7 +360,7 @@ fn note_for(refusal: Refusal) -> Option<&'static str> {
         Refusal::NotInThisRelease => Some(SUPPORTED_SUBSET),
         Refusal::AssetNotInThisRelease => Some(ASSET_SUBSET),
         Refusal::TimedRegionCost => Some(TIMED_REGION_COST),
-        Refusal::AssetNotPlaced | Refusal::Rejected => None,
+        Refusal::Rejected => None,
     }
 }
 
@@ -640,7 +640,7 @@ mod tests {
             refusal(Refusal::NotInThisRelease),
             refusal(Refusal::AssetNotInThisRelease),
             refusal(Refusal::NotInThisRelease),
-            refusal(Refusal::AssetNotPlaced),
+            refusal(Refusal::Rejected),
         ])
         .into_iter()
         .map(|d| d.notes)
