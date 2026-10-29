@@ -348,6 +348,23 @@ impl Analyzer {
                 continue;
             }
             seen.push(name);
+            // The fields an asset has depend on its kind: §8.3 defines `driver`
+            // and `channels` for music and nothing of §8.1's for it. A kind the
+            // specification does not define is checked as an image.
+            if asset.kind.value == "music" {
+                if matches!(name, "driver" | "channels") {
+                    self.asset_not_in_this_release(
+                        field.name.span,
+                        "only `kind`, `palette` and `dedup` are supported yet",
+                    );
+                } else {
+                    self.error(
+                        field.name.span,
+                        "unknown music asset field; a music asset has `driver` and `channels`",
+                    );
+                }
+                continue;
+            }
             match name {
                 "kind" => self.require_asset_value(
                     field,
