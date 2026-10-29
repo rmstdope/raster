@@ -4,8 +4,9 @@ use std::{fs, io::Cursor};
 
 use rasterc::run;
 
-mod common;
-use common::Scratch;
+#[path = "common/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
 /// Build `source` and return the result with stdout and stderr.
 fn build(source: &str) -> (Result<(), i32>, String, String) {
