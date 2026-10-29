@@ -1,0 +1,156 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Spec asset fields refused</title><style>:root{--bg:#f6f6f8;--fg:#22242c;--dim:#666b7a;--line:#d9dce6;--src:#eceef4;--hl:#0a7d94}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d0e13;--fg:#d8dae4;--dim:#8b90a2;--line:#262a36;--src:#171922;--hl:#6fd3e8}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,"Segoe UI",system-ui,sans-serif}
+main{max-width:60rem;margin:0 auto;padding:2rem 16px 4rem}
+h1{font-size:1.3rem;margin:0 0 .3rem}.sub{color:var(--dim);margin:0 0 1.4rem;max-width:52em}
+h2{font-size:.85rem;margin:2rem 0 .4rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+.term{background:#12131a;color:#d8dae4;border-radius:8px;padding:1rem 1.1rem;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow-x:auto;border:1px solid #000}
+.term .e{color:#ff6b6b;font-weight:700}.term .g{color:#7c8296}.term .n{color:#6fd3e8;font-weight:700}.term .new{background:#16323a;display:inline-block;min-width:100%}
+.src{background:var(--src);border:1px solid var(--line);border-radius:8px;padding:.9rem 1.1rem;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow-x:auto}
+.cost{border-left:3px solid var(--line);padding-left:.9rem;margin:1rem 0;color:var(--dim);max-width:52em}
+code{font-family:ui-monospace,Menlo,monospace;font-size:.92em}.term .dimn{color:#7c8296}</style></head><body><main><h1>raster-92x — spec-defined asset fields are refused as not built yet, never as invented</h1><p class="sub">The agreed experience, one section per decision. Each section is the variant chosen. Highlighted errors are the ones that change.</p><style>section{border-top:1px solid var(--line);margin-top:2.5rem;padding-top:.5rem}</style><section><h2 style='font-size:1rem;color:inherit;text-transform:none;letter-spacing:0'>The spec’s music example, copied verbatim</h2><h3>Option A — the same words the image field <code>compress</code> already gets (recommended)</h3><p class="sub">Every field the spec defines and this release does not build reads the same. Highlighted errors are the changed ones.</p><h2>The NES developer copies the spec's music example verbatim</h2><div class="src">asset music song = fam("music/demo.fms") {
+    driver: famistudio
+    channels: 2a03
+}</div><h2>What rasterc prints</h2><div class="term">$ rasterc song.raster
+
+<span class="e">error</span>: only `asset image` is supported yet
+ <span class="g">--&gt;</span> song.raster:1:7
+  <span class="g">|</span>
+<span class="g">1 |</span> asset music song = fam("music/demo.fms") {
+  <span class="g">|</span>       <span class="e">^^^^^ only `asset image` is supported yet</span>
+  <span class="g">=</span> <span class="n">note</span>: <span class="dimn">this release reads one kind of asset: `asset image` from a `png`,</span>
+          <span class="dimn">with `kind: background`, `palette: auto(4)` and `dedup: true`, used</span>
+          <span class="dimn">through `.tiles`, `.nametable`, `.attributes` and `.palette`</span>
+
+<span class="e">error</span>: only `png` is supported yet
+ <span class="g">--&gt;</span> song.raster:1:20
+  <span class="g">|</span>
+<span class="g">1 |</span> asset music song = fam("music/demo.fms") {
+  <span class="g">|</span>                    <span class="e">^^^ only `png` is supported yet</span>
+
+<span class="new"><span class="e">error</span>: only `kind`, `palette` and `dedup` are supported yet</span>
+<span class="new"> <span class="g">--&gt;</span> song.raster:2:5</span>
+<span class="new">  <span class="g">|</span></span>
+<span class="new"><span class="g">2 |</span>     driver: famistudio</span>
+<span class="new">  <span class="g">|</span>     <span class="e">^^^^^^ only `kind`, `palette` and `dedup` are supported yet</span></span>
+
+<span class="new"><span class="e">error</span>: only `kind`, `palette` and `dedup` are supported yet</span>
+<span class="new"> <span class="g">--&gt;</span> song.raster:3:5</span>
+<span class="new">  <span class="g">|</span></span>
+<span class="new"><span class="g">3 |</span>     channels: 2a03</span>
+<span class="new">  <span class="g">|</span>     <span class="e">^^^^^^^^ only `kind`, `palette` and `dedup` are supported yet</span></span>
+
+<span class="e">error: could not compile song.raster (4 errors)</span></div><p class="cost">The note under the first error is the asset note already agreed earlier; it is shown here so you see the whole screen.</p><p class="cost">One sentence for every spec field that isn't built, already shipping for <code>compress</code>. It doesn't say these are music fields; the asset kind error two lines up does.</p><h2>Today, for comparison</h2><div class="term">$ rasterc song.raster
+
+<span class="e">error</span>: only `asset image` is supported yet
+ <span class="g">--&gt;</span> song.raster:1:7
+  <span class="g">|</span>
+<span class="g">1 |</span> asset music song = fam("music/demo.fms") {
+  <span class="g">|</span>       <span class="e">^^^^^ only `asset image` is supported yet</span>
+  <span class="g">=</span> <span class="n">note</span>: <span class="dimn">this release reads one kind of asset: `asset image` from a `png`,</span>
+          <span class="dimn">with `kind: background`, `palette: auto(4)` and `dedup: true`, used</span>
+          <span class="dimn">through `.tiles`, `.nametable`, `.attributes` and `.palette`</span>
+
+<span class="e">error</span>: only `png` is supported yet
+ <span class="g">--&gt;</span> song.raster:1:20
+  <span class="g">|</span>
+<span class="g">1 |</span> asset music song = fam("music/demo.fms") {
+  <span class="g">|</span>                    <span class="e">^^^ only `png` is supported yet</span>
+
+<span class="new"><span class="e">error</span>: unknown asset field; this release knows `kind`, `palette` and `dedup`</span>
+<span class="new"> <span class="g">--&gt;</span> song.raster:2:5</span>
+<span class="new">  <span class="g">|</span></span>
+<span class="new"><span class="g">2 |</span>     driver: famistudio</span>
+<span class="new">  <span class="g">|</span>     <span class="e">^^^^^^ unknown asset field; this release knows `kind`, `palette` and `dedup`</span></span>
+
+<span class="new"><span class="e">error</span>: unknown asset field; this release knows `kind`, `palette` and `dedup`</span>
+<span class="new"> <span class="g">--&gt;</span> song.raster:3:5</span>
+<span class="new">  <span class="g">|</span></span>
+<span class="new"><span class="g">3 |</span>     channels: 2a03</span>
+<span class="new">  <span class="g">|</span>     <span class="e">^^^^^^^^ unknown asset field; this release knows `kind`, `palette` and `dedup`</span></span>
+
+<span class="e">error: could not compile song.raster (4 errors)</span></div><p class="cost">Today the two fields copied from the spec are called unknown — as if the NES developer made them up.</p></section><section><h2 style='font-size:1rem;color:inherit;text-transform:none;letter-spacing:0'>Image and invented fields on a music asset</h2><h3>Option A — on a music asset, “unknown” names the music fields (recommended)</h3><p class="sub">Image fields and invented fields on a music asset are unknown, and the message lists what a music asset does have. Highlighted errors are the ones this question decides.</p><h2>An image field (<code>kind</code>) and an invented field (<code>tempo</code>) on a music asset</h2><div class="src">asset music song = fam("music/demo.fms") {
+    driver: famistudio
+    kind: background
+    tempo: 120
+}</div><h2>What rasterc prints</h2><div class="term">$ rasterc song.raster
+
+<span class="e">error</span>: only `asset image` is supported yet
+ <span class="g">--&gt;</span> song.raster:1:7
+  <span class="g">|</span>
+<span class="g">1 |</span> asset music song = fam("music/demo.fms") {
+  <span class="g">|</span>       <span class="e">^^^^^ only `asset image` is supported yet</span>
+  <span class="g">=</span> <span class="n">note</span>: <span class="dimn">this release reads one kind of asset: `asset image` from a `png`,</span>
+          <span class="dimn">with `kind: background`, `palette: auto(4)` and `dedup: true`, used</span>
+          <span class="dimn">through `.tiles`, `.nametable`, `.attributes` and `.palette`</span>
+
+<span class="e">error</span>: only `png` is supported yet
+ <span class="g">--&gt;</span> song.raster:1:20
+  <span class="g">|</span>
+<span class="g">1 |</span> asset music song = fam("music/demo.fms") {
+  <span class="g">|</span>                    <span class="e">^^^ only `png` is supported yet</span>
+
+<span class="e">error</span>: only `kind`, `palette` and `dedup` are supported yet
+ <span class="g">--&gt;</span> song.raster:2:5
+  <span class="g">|</span>
+<span class="g">2 |</span>     driver: famistudio
+  <span class="g">|</span>     <span class="e">^^^^^^ only `kind`, `palette` and `dedup` are supported yet</span>
+
+<span class="new"><span class="e">error</span>: unknown music asset field; a music asset has `driver` and `channels`</span>
+<span class="new"> <span class="g">--&gt;</span> song.raster:3:5</span>
+<span class="new">  <span class="g">|</span></span>
+<span class="new"><span class="g">3 |</span>     kind: background</span>
+<span class="new">  <span class="g">|</span>     <span class="e">^^^^ unknown music asset field; a music asset has `driver` and `channels`</span></span>
+
+<span class="new"><span class="e">error</span>: unknown music asset field; a music asset has `driver` and `channels`</span>
+<span class="new"> <span class="g">--&gt;</span> song.raster:4:5</span>
+<span class="new">  <span class="g">|</span></span>
+<span class="new"><span class="g">4 |</span>     tempo: 120</span>
+<span class="new">  <span class="g">|</span>     <span class="e">^^^^^ unknown music asset field; a music asset has `driver` and `channels`</span></span>
+
+<span class="e">error: could not compile song.raster (5 errors)</span></div><p class="cost">Follows the line rasterc already prints for an unknown member: “unknown asset member `x`; an image asset has …”. One more sentence to keep in step with the spec.</p></section><section><h2 style='font-size:1rem;color:inherit;text-transform:none;letter-spacing:0'>A music field on an image asset — unchanged</h2><h3>Option A — a field from a different asset kind is unknown (recommended)</h3><p class="sub">The spec defines <code>driver</code> for music only. On an image asset it is reported as unknown, exactly as today.</p><h2>A music field written on an image asset</h2><div class="src">asset image logo = png("art/logo.png") {
+    kind: background
+    driver: famistudio
+}</div><h2>What rasterc prints</h2><div class="term">$ rasterc logo.raster
+
+<span class="new"><span class="e">error</span>: unknown asset field; this release knows `kind`, `palette` and `dedup`</span>
+<span class="new"> <span class="g">--&gt;</span> song.raster:3:5</span>
+<span class="new">  <span class="g">|</span></span>
+<span class="new"><span class="g">3 |</span>     driver: famistudio</span>
+<span class="new">  <span class="g">|</span>     <span class="e">^^^^^^ unknown asset field; this release knows `kind`, `palette` and `dedup`</span></span>
+
+<span class="e">error: could not compile logo.raster (1 error)</span></div><p class="cost">Accurate: no future release will take <code>driver</code> on an image, so the developer learns it's a mistake now. Same as today — nothing changes for this case.</p><h2>And an invented field, <code>tint: red</code>, on any asset — unchanged in both options</h2><div class="term">$ rasterc logo.raster
+
+<span class="e">error</span>: unknown asset field; this release knows `kind`, `palette` and `dedup`
+ <span class="g">--&gt;</span> song.raster:3:5
+  <span class="g">|</span>
+<span class="g">3 |</span>     tint: red
+  <span class="g">|</span>     <span class="e">^^^^ unknown asset field; this release knows `kind`, `palette` and `dedup`</span>
+
+<span class="e">error: could not compile logo.raster (1 error)</span></div></section><section><h2 style='font-size:1rem;color:inherit;text-transform:none;letter-spacing:0'>An asset kind the spec doesn’t define — unchanged</h2><h3>Option A — fields checked as image fields, as today (recommended)</h3><p class="sub">rasterc has no field list for <code>sound</code>, so it checks against the one kind it builds. <code>kind: background</code> passes; <code>tempo</code> is unknown.</p><h2>An asset kind the spec doesn't define at all: <code>asset sound</code></h2><div class="src">asset sound jingle = fam("audio/jingle.fam") {
+    kind: background
+    tempo: 120
+}</div><h2>What rasterc prints</h2><div class="term">$ rasterc jingle.raster
+
+<span class="e">error</span>: only `asset image` is supported yet
+ <span class="g">--&gt;</span> song.raster:1:7
+  <span class="g">|</span>
+<span class="g">1 |</span> asset sound jingle = fam("audio/jingle.fam") {
+  <span class="g">|</span>       <span class="e">^^^^^ only `asset image` is supported yet</span>
+  <span class="g">=</span> <span class="n">note</span>: <span class="dimn">this release reads one kind of asset: `asset image` from a `png`,</span>
+          <span class="dimn">with `kind: background`, `palette: auto(4)` and `dedup: true`, used</span>
+          <span class="dimn">through `.tiles`, `.nametable`, `.attributes` and `.palette`</span>
+
+<span class="e">error</span>: only `png` is supported yet
+ <span class="g">--&gt;</span> song.raster:1:22
+  <span class="g">|</span>
+<span class="g">1 |</span> asset sound jingle = fam("audio/jingle.fam") {
+  <span class="g">|</span>                      <span class="e">^^^ only `png` is supported yet</span>
+
+<span class="e">error</span>: unknown asset field; this release knows `kind`, `palette` and `dedup`
+ <span class="g">--&gt;</span> song.raster:3:5
+  <span class="g">|</span>
+<span class="g">3 |</span>     tempo: 120
+  <span class="g">|</span>     <span class="e">^^^^^ unknown asset field; this release knows `kind`, `palette` and `dedup`</span>
+
+<span class="e">error: could not compile jingle.raster (3 errors)</span></div><p class="cost">Unchanged from today: no new words. A developer who meant <code>image</code> gets their fields checked in the same run.</p></section></main></body></html>
