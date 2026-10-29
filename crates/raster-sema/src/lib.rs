@@ -326,6 +326,9 @@ impl Analyzer {
 
     /// What an asset asks for, against what `raster-assets` actually does.
     ///
+    /// Fields are judged per asset kind: a music asset has the §8.3 fields and an
+    /// image, or a kind the specification does not define, the §8.1 ones.
+    ///
     /// Every accepted value here is a fact about the encoder rather than a
     /// preference: `BACKGROUND_SUBPALETTE_COUNT` is 4, `encode_background`
     /// deduplicates unconditionally, and the only encoder there is is a

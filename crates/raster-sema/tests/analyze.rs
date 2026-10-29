@@ -1550,22 +1550,29 @@ fn music_field_on_image_asset_and_sound_asset_keep_todays_messages() {
     );
 
     let source = "asset sound s = png(\"p.png\") { driver: x }\nmain { }";
-    let found = errors_with_spans(source);
-    assert!(
-        found.iter().any(|e| e.message
-            == "unknown asset field; this release knows `kind`, `palette` and `dedup`"),
-        "{found:?}"
+    let messages: Vec<_> = errors_with_spans(source)
+        .into_iter()
+        .map(|e| e.message)
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "only `asset image` is supported yet",
+            "unknown asset field; this release knows `kind`, `palette` and `dedup`",
+        ]
     );
 }
 
 #[test]
 fn music_asset_field_set_twice_and_no_fields() {
     let found = errors_with_spans("asset music s = fam(\"m\") { driver: a  driver: b }\nmain { }");
-    assert!(
-        found
-            .iter()
-            .any(|e| e.message == "this asset field is set twice"),
-        "{found:?}"
+    let messages: Vec<_> = found.iter().map(|e| e.message.as_str()).skip(2).collect();
+    assert_eq!(
+        messages,
+        [
+            "only `kind`, `palette` and `dedup` are supported yet",
+            "this asset field is set twice",
+        ]
     );
     let found = errors_with_spans("asset music s = fam(\"m\")\nmain { }");
     assert_eq!(found.len(), 2, "{found:?}");
