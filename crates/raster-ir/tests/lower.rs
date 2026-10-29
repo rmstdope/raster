@@ -2595,8 +2595,120 @@ fn a_nametable_whose_tiles_are_in_no_bank_is_refused_under_the_nametable_argumen
     );
     assert_eq!(
         error.help.as_deref(),
-        Some("add `picture.tiles` to `chrrom bank 0`")
+        Some("place `picture.tiles` within tiles 0–255 of `chrrom bank 0`")
     );
+}
+
+// ---- tiles on the cartridge where the reset map does not show them (raster-d5w) -----------
+
+/// `picture`'s three tiles at `first` of `bank`, outside bank 0's first pattern table.
+fn unmapped(bank: u32, first: usize) -> Pictures {
+    let mut pictures = pictures(true);
+    pictures.by_name.get_mut("picture").unwrap().nametable = Nametable::Unmapped {
+        bank,
+        first,
+        last: first + 2,
+        nametable: vec![12; 960],
+    };
+    pictures
+}
+
+fn lower_unmapped(
+    body: &str,
+    pictures: &Pictures,
+) -> Result<raster_ir::Program, Vec<(raster_ir::LowerError, String)>> {
+    let source = format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}");
+    let syntax = parse(&source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    lower_with_pictures(&typed, pictures).map_err(|failure| {
+        failure
+            .errors
+            .into_iter()
+            .map(|error| {
+                let text = source[error.span.start as usize..error.span.end as usize].to_owned();
+                (error, text)
+            })
+            .collect()
+    })
+}
+
+#[test]
+fn a_picture_in_a_bank_nothing_maps_is_refused_under_the_nametable_argument() {
+    let found = lower_unmapped(LOAD, &unmapped(1, 0)).expect_err("nothing maps bank 1");
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (error, text) = &found[0];
+    assert_eq!(
+        error.message,
+        "a picture in `chrrom bank 1` is not supported yet"
+    );
+    assert_eq!(text, "picture.nametable");
+    assert_eq!(
+        error.label.as_deref(),
+        Some("`picture`'s tiles are in `chrrom bank 1`, and nothing in this program maps it")
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("place `picture.tiles` within tiles 0–255 of `chrrom bank 0`, or map its bank with `mmc3.bank_data`")
+    );
+    assert_eq!(error.refusal, Refusal::Rejected);
+    assert!(error.notes.is_empty());
+}
+
+#[test]
+fn a_picture_in_the_second_pattern_table_nothing_selects_is_refused() {
+    let found = lower_unmapped(LOAD, &unmapped(0, 256)).expect_err("nothing selects table 1");
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (error, text) = &found[0];
+    assert_eq!(
+        error.message,
+        "a picture at tiles 256–511 is not supported yet"
+    );
+    assert_eq!(text, "picture.nametable");
+    assert_eq!(
+        error.label.as_deref(),
+        Some("`picture`'s tiles are 256–258 of `chrrom bank 0`, and nothing in this program selects them")
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("place `picture.tiles` within tiles 0–255, or set `ppu.ctrl` bit 4 to show tiles 256–511")
+    );
+    assert_eq!(error.refusal, Refusal::Rejected);
+}
+
+#[test]
+fn a_ppu_ctrl_write_with_bit_4_clear_does_not_select_the_second_pattern_table() {
+    let body = format!("ppu.ctrl = $00\n{LOAD}\nppu.ctrl = $80");
+    assert!(lower_unmapped(&body, &unmapped(0, 256)).is_err());
+}
+
+#[test]
+fn a_ppu_ctrl_write_that_may_set_bit_4_lets_the_second_pattern_table_load() {
+    // After the load is as good as before it: the screen is drawn once rendering is on.
+    for body in [
+        format!("ppu.ctrl = $10\n{LOAD}"),
+        format!("{LOAD}\nppu.ctrl = $10"),
+        format!("{LOAD}\nppu.ctrl = ppu.status"),
+    ] {
+        assert!(lower_unmapped(&body, &unmapped(0, 256)).is_ok(), "{body}");
+    }
+}
+
+#[test]
+fn an_mmc3_bank_data_write_lets_any_unmapped_picture_load() {
+    let body = format!("mmc3.bank_select = $00\nmmc3.bank_data = $08\n{LOAD}");
+    assert!(lower_unmapped(&body, &unmapped(1, 0)).is_ok());
+    assert!(lower_unmapped(&body, &unmapped(0, 256)).is_ok());
+}
+
+#[test]
+fn selecting_the_second_pattern_table_does_not_map_another_bank() {
+    let body = format!("ppu.ctrl = $10\n{LOAD}");
+    assert!(lower_unmapped(&body, &unmapped(1, 0)).is_err());
+}
+
+#[test]
+fn an_unmapped_pictures_palette_still_loads() {
+    assert!(lower_unmapped("load_palette(picture.palette)", &unmapped(1, 0)).is_ok());
 }
 
 #[test]
@@ -3605,7 +3717,7 @@ fn the_raw_byte_pair_still_lowers_to_the_same_two_writes() {
 }
 
 #[test]
-fn with_every_bank_declared_the_unplaced_help_does_not_name_a_bank_32() {
+fn with_every_bank_declared_the_unplaced_help_points_at_bank_0_not_bank_32() {
     let source =
         format!("{PICTURE}main {{\nload_nametable(picture.nametable, picture.attributes)\n}}");
     let syntax = parse(&source).expect("fixture should parse");
@@ -3617,7 +3729,7 @@ fn with_every_bank_declared_the_unplaced_help_does_not_name_a_bank_32() {
         .errors;
     assert_eq!(
         errors[0].help.as_deref(),
-        Some("add `picture.tiles` to `chrrom bank 0`")
+        Some("place `picture.tiles` within tiles 0–255 of `chrrom bank 0`")
     );
 }
 

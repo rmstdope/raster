@@ -248,11 +248,11 @@ fn tiles_crossing_the_pattern_table_line_are_an_error_on_that_item() {
     );
 }
 
-// Only CHR bank 0's first pattern table is on screen until bank switching exists, so a loaded
-// picture anywhere else would build a blank screen: raster-d5w.
+// The reset map shows CHR bank 0's first pattern table. A loaded picture anywhere else, in a
+// program that never selects or maps it, would build a blank screen: raster-d5w.
 
 #[test]
-fn a_loaded_picture_in_a_bank_other_than_0_is_not_in_this_release() {
+fn a_loaded_picture_in_a_bank_nothing_maps_is_refused() {
     let source = program(
         "chrrom bank 0 { font.tiles }\nchrrom bank 1 { picture.tiles }",
         SHOW,
@@ -267,18 +267,15 @@ fn a_loaded_picture_in_a_bank_other_than_0_is_not_in_this_release() {
             " --> demo.raster:8:20\n",
             "  |\n",
             "8 |     load_nametable(picture.nametable, picture.attributes)\n",
-            "  |                    ^^^^^^^^^^^^^^^^^ `picture`'s tiles are in `chrrom bank 1`, which nothing maps yet\n",
-            "  = note: this release reads one kind of asset: `asset image` from a `png`,\n",
-            "          with `kind: background`, `palette: auto(4)` and `dedup: true`, used\n",
-            "          through `.tiles`, `.nametable`, `.attributes` and `.palette`\n",
+            "  |                    ^^^^^^^^^^^^^^^^^ `picture`'s tiles are in `chrrom bank 1`, and nothing in this program maps it\n",
             "  |\n",
-            "  = help: place `picture.tiles` within tiles 0–255 of `chrrom bank 0`\n",
+            "  = help: place `picture.tiles` within tiles 0–255 of `chrrom bank 0`, or map its bank with `mmc3.bank_data`\n",
         )
     );
 }
 
 #[test]
-fn a_loaded_picture_in_the_second_pattern_table_is_not_in_this_release() {
+fn a_loaded_picture_in_a_second_pattern_table_nothing_selects_is_refused() {
     let source = program("chrrom bank 0 { font.tiles, picture.tiles }", SHOW);
     let found = errors(&source, &files(3, 256, 1));
 
@@ -290,12 +287,9 @@ fn a_loaded_picture_in_the_second_pattern_table_is_not_in_this_release() {
             " --> demo.raster:7:20\n",
             "  |\n",
             "7 |     load_nametable(picture.nametable, picture.attributes)\n",
-            "  |                    ^^^^^^^^^^^^^^^^^ `picture`'s tiles are 256–258 of `chrrom bank 0`, which nothing maps yet\n",
-            "  = note: this release reads one kind of asset: `asset image` from a `png`,\n",
-            "          with `kind: background`, `palette: auto(4)` and `dedup: true`, used\n",
-            "          through `.tiles`, `.nametable`, `.attributes` and `.palette`\n",
+            "  |                    ^^^^^^^^^^^^^^^^^ `picture`'s tiles are 256–258 of `chrrom bank 0`, and nothing in this program selects them\n",
             "  |\n",
-            "  = help: place `picture.tiles` within tiles 0–255 of `chrrom bank 0`\n",
+            "  = help: place `picture.tiles` within tiles 0–255, or set `ppu.ctrl` bit 4 to show tiles 256–511\n",
         )
     );
 }
@@ -308,7 +302,7 @@ fn tiles_in_no_bank_while_bank_0_exists_are_pointed_at_bank_0() {
     assert_eq!(found.len(), 1);
     assert_eq!(
         found[0].help.as_deref(),
-        Some("add `picture.tiles` to `chrrom bank 0`")
+        Some("place `picture.tiles` within tiles 0–255 of `chrrom bank 0`")
     );
 }
 
@@ -317,6 +311,15 @@ fn a_picture_in_another_bank_that_is_never_loaded_still_builds() {
     let source = program(
         "chrrom bank 0 { picture.tiles }\nchrrom bank 1 { font.tiles }",
         SHOW,
+    );
+    compile_source_with_assets(&source, &files(3, 1, 1)).expect("it compiles");
+}
+
+#[test]
+fn only_the_palette_of_a_picture_in_another_bank_still_builds() {
+    let source = program(
+        "chrrom bank 0 { font.tiles }\nchrrom bank 1 { picture.tiles }",
+        "    load_palette(picture.palette)",
     );
     compile_source_with_assets(&source, &files(3, 1, 1)).expect("it compiles");
 }
@@ -450,6 +453,18 @@ fn a_picture_placed_after_another_still_shows_correctly() {
         LOAD_THEN_SHOW,
     );
     let (expected, actual) = shown(&source, &files(33, 40, 1), 33);
+    assert_picture_on_top(&expected, &actual);
+}
+
+#[test]
+fn a_picture_in_the_second_pattern_table_shows_when_ppu_ctrl_selects_it() {
+    // The font fills pattern table 0, so the picture's tiles are 256 onwards; bit 4 of
+    // `ppu.ctrl` points the background at them.
+    let source = program(
+        "chrrom bank 0 { font.tiles, picture.tiles }",
+        &LOAD_THEN_SHOW.replace("ppu.ctrl = $00", "ppu.ctrl = $10"),
+    );
+    let (expected, actual) = shown(&source, &files(33, 256, 1), 33);
     assert_picture_on_top(&expected, &actual);
 }
 

@@ -519,6 +519,16 @@ fn bare_asset<'a>(pictures: &Pictures, argument: &'a Spanned<SyntaxExpression>) 
     }
 }
 
+/// A `load_nametable` of tiles outside the reset map, kept for `check_unmapped_loads`.
+struct UnmappedLoad {
+    asset: String,
+    bank: u32,
+    first: usize,
+    last: usize,
+    /// The nametable argument, which the refusal underlines.
+    span: Span,
+}
+
 /// `(asset, member)` for an argument written `asset.member`.
 fn asset_member_of(expression: &Spanned<SyntaxExpression>) -> Option<(&str, &str)> {
     let SyntaxExpression::Member { base, member } = &expression.value else {
@@ -560,14 +570,18 @@ pub struct Picture {
 pub enum Nametable {
     /// No `chrrom` bank holds the picture's tiles, so there is nothing to point at.
     Unplaced,
-    /// The tiles are on the cartridge where nothing maps them yet: a bank other
-    /// than 0, or tiles 256–511 of bank 0. Until bank switching exists the PPU
-    /// sees only bank 0's first pattern table. `first` and `last` count tiles
-    /// from the start of `bank`.
+    /// The tiles are on the cartridge outside what the reset map shows: a bank
+    /// other than 0, or tiles 256–511 of bank 0. The reset map puts bank 0 at
+    /// PPU `$0000` and leaves the background on its first pattern table, so
+    /// these show only if the program writes `ppu.ctrl` bit 4 or repoints a CHR
+    /// window with `mmc3.bank_data`. `first` and `last` count tiles from the
+    /// start of `bank`; `nametable` is shifted as for `Shown`, to where the
+    /// tiles sit in their pattern table.
     Unmapped {
         bank: u32,
         first: usize,
         last: usize,
+        nametable: Vec<u8>,
     },
     /// 960 tile indices for `$2000`, already shifted to where the tiles sit.
     Shown(Vec<u8>),
@@ -1696,6 +1710,7 @@ pub fn lower_with_pictures(
     lowerer.check_timed_frame_nmi();
     lowerer.check_block_nmi();
     lowerer.check_apu_frame_interrupt();
+    lowerer.check_unmapped_loads();
     if lowerer.errors.is_empty() {
         lowerer.program.warnings = lowerer.warnings;
         Ok(lowerer.program)
@@ -1755,6 +1770,13 @@ struct Lowerer {
     /// because whether it matters depends on the frame's strategy — and collected here, because
     /// `Statement::Assign` carries no span to point at afterwards.
     handler_ctrl_writes: Vec<HandlerCtrlWrite>,
+    /// Whether any `ppu.ctrl` write may set bit 4, the background's pattern table.
+    may_select_pattern_table_1: bool,
+    /// Whether any `mmc3.bank_data` write may repoint a CHR window.
+    writes_bank_data: bool,
+    /// Every `load_nametable` of tiles outside the reset map. Judged after
+    /// lowering, because a write that shows them may come after the load.
+    unmapped_loads: Vec<UnmappedLoad>,
     /// The pictures `rasterc` decoded and laid out, which `load_*` calls read.
     pictures: Pictures,
     /// The ROM block already made for an asset's member, so a block is stored once.
@@ -1798,6 +1820,9 @@ impl Lowerer {
             ppu_data_read_has_neighbour: false,
             in_frame_handler: false,
             handler_ctrl_writes: Vec::new(),
+            may_select_pattern_table_1: false,
+            writes_bank_data: false,
+            unmapped_loads: Vec::new(),
             pictures: Pictures::default(),
             data_labels: BTreeMap::new(),
             frame_counter_writes: Vec::new(),
@@ -3156,6 +3181,73 @@ impl Lowerer {
         self.note_bank_select(destination, value, refused, span);
         self.note_bank_data(destination, span);
         self.note_ppu_ctrl(destination, value, refused, span);
+        self.note_chr_window(destination, value);
+    }
+
+    /// `ppu.ctrl` and `mmc3.bank_data`: remembers whether the program may show
+    /// tiles outside the reset map, which `check_unmapped_loads` asks. Only a
+    /// constant with bit 4 clear is known not to select pattern table 1; a
+    /// refused value lowers to a placeholder, so it counts as unknown too.
+    fn note_chr_window(&mut self, destination: Destination, value: &Value) {
+        match destination {
+            Destination::Register(Register::PpuCtrl) => {
+                if !matches!(value, Value::Constant(bits) if bits & 0x10 == 0) {
+                    self.may_select_pattern_table_1 = true;
+                }
+            }
+            Destination::Register(Register::Mmc3BankData) => self.writes_bank_data = true,
+            _ => {}
+        }
+    }
+
+    /// Refuse each `load_nametable` of tiles that nothing in the program can
+    /// show, which would build a blank screen. A `mmc3.bank_data` write may
+    /// repoint any CHR window, so it lets every such load through; `ppu.ctrl`
+    /// bit 4 lets through tiles 256–511 of bank 0, and no other bank.
+    fn check_unmapped_loads(&mut self) {
+        if self.writes_bank_data {
+            return;
+        }
+        for load in std::mem::take(&mut self.unmapped_loads) {
+            let UnmappedLoad {
+                asset,
+                bank,
+                first,
+                last,
+                span,
+            } = load;
+            let (message, label, help) = if bank != 0 {
+                (
+                    format!("a picture in `chrrom bank {bank}` is not supported yet"),
+                    format!(
+                        "`{asset}`'s tiles are in `chrrom bank {bank}`, and nothing in this program maps it"
+                    ),
+                    format!(
+                        "place `{asset}.tiles` within tiles 0–255 of `chrrom bank 0`, or map its bank with `mmc3.bank_data`"
+                    ),
+                )
+            } else if !self.may_select_pattern_table_1 {
+                (
+                    "a picture at tiles 256–511 is not supported yet".to_owned(),
+                    format!(
+                        "`{asset}`'s tiles are {first}–{last} of `chrrom bank 0`, and nothing in this program selects them"
+                    ),
+                    format!(
+                        "place `{asset}.tiles` within tiles 0–255, or set `ppu.ctrl` bit 4 to show tiles 256–511"
+                    ),
+                )
+            } else {
+                continue;
+            };
+            self.errors.push(LowerError {
+                message,
+                label: Some(label),
+                notes: Vec::new(),
+                help: Some(help),
+                span,
+                refusal: Refusal::Rejected,
+            });
+        }
     }
 
     /// `apu.status`: a constant with bit 4 set starts DMC playback, whose
@@ -3521,44 +3613,31 @@ impl Lowerer {
                         "this nametable points at tiles that are not on the cartridge".into(),
                     ),
                     notes: Vec::new(),
+                    // The reset map shows bank 0's first pattern table, so that is where to go.
                     help: Some(if self.pictures.next_free_bank == 0 {
                         format!("add `chrrom bank 0 {{ {asset}.tiles }}`")
                     } else {
-                        format!("add `{asset}.tiles` to `chrrom bank 0`")
+                        format!("place `{asset}.tiles` within tiles 0–255 of `chrrom bank 0`")
                     }),
                     span: arguments[0].span,
                     refusal: Refusal::Rejected,
                 });
                 return;
             }
-            Nametable::Unmapped { bank, first, last } => {
-                let (message, label) = if bank != 0 {
-                    (
-                        format!("a picture in `chrrom bank {bank}` is not supported yet"),
-                        format!(
-                            "`{asset}`'s tiles are in `chrrom bank {bank}`, which nothing maps yet"
-                        ),
-                    )
-                } else {
-                    (
-                        "a picture at tiles 256–511 is not supported yet".to_owned(),
-                        format!(
-                            "`{asset}`'s tiles are {first}–{last} of `chrrom bank 0`, which nothing maps yet"
-                        ),
-                    )
-                };
-                self.errors.push(LowerError {
-                    message,
-                    label: Some(label),
-                    notes: Vec::new(),
-                    // Only bank 0's first pattern table is mapped, so that is where it can go.
-                    help: Some(format!(
-                        "place `{asset}.tiles` within tiles 0–255 of `chrrom bank 0`"
-                    )),
+            Nametable::Unmapped {
+                bank,
+                first,
+                last,
+                nametable,
+            } => {
+                self.unmapped_loads.push(UnmappedLoad {
+                    asset: asset.clone(),
+                    bank,
+                    first,
+                    last,
                     span: arguments[0].span,
-                    refusal: Refusal::AssetNotInThisRelease,
                 });
-                return;
+                nametable
             }
         };
         let blocks = if palette {

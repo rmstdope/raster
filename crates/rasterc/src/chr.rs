@@ -158,22 +158,29 @@ pub(crate) fn layout(program: &Program, assets: &Assets) -> Result<ChrLayout, Ve
             let tiles = image.chr().len() / TILE_BYTES;
             let nametable = match placed.get(name) {
                 None => Nametable::Unplaced,
-                // Until bank switching exists, the PPU sees bank 0's first pattern table only.
-                Some(&(bank, first)) if bank != 0 || first >= PATTERN_TABLE_TILES => {
-                    Nametable::Unmapped {
-                        bank,
-                        first,
-                        last: first + tiles.max(1) - 1,
-                    }
-                }
-                Some(&(_, first)) => Nametable::Shown(
-                    image
+                Some(&(bank, first)) => {
+                    let shifted = image
                         .nametable()
                         .iter()
-                        // `first + tiles <= 256` was checked above, so this cannot wrap.
-                        .map(|entry| entry + first as u8)
-                        .collect(),
-                ),
+                        // The crossing check above keeps the tiles inside one pattern table, so
+                        // the offset within it plus the picture's own indices cannot wrap.
+                        .map(|entry| entry + (first % PATTERN_TABLE_TILES) as u8)
+                        .collect();
+                    // The reset map shows bank 0's first pattern table; anything else shows
+                    // only if the program selects or maps it, which lowering judges.
+                    if bank == 0 && first < PATTERN_TABLE_TILES {
+                        Nametable::Shown(shifted)
+                    } else {
+                        Nametable::Unmapped {
+                            bank,
+                            first,
+                            // A decoded picture has at least one tile; `max` only keeps a
+                            // malformed one from underflowing.
+                            last: first + tiles.max(1) - 1,
+                            nametable: shifted,
+                        }
+                    }
+                }
             };
             (
                 name.clone(),
@@ -374,7 +381,9 @@ mod tests {
             Nametable::Unmapped {
                 bank: 0,
                 first: 256,
-                last: 285
+                last: 285,
+                // Tile 0 of pattern table 1, so not shifted at all.
+                nametable: picture(30).nametable().to_vec(),
             }
         );
     }
@@ -392,7 +401,8 @@ mod tests {
             Nametable::Unmapped {
                 bank: 1,
                 first: 0,
-                last: 29
+                last: 29,
+                nametable: picture(30).nametable().to_vec(),
             }
         );
     }
@@ -400,7 +410,12 @@ mod tests {
     #[test]
     fn a_picture_that_ends_exactly_on_tile_255_is_fine_and_one_more_tile_crosses() {
         let source = "chrrom bank 0 { a.tiles, b.tiles }";
-        assert!(run(source, &[("a", 200), ("b", 56)]).is_ok());
+        let fits = run(source, &[("a", 200), ("b", 56)]).unwrap();
+        // Ending on tile 255 is still the first pattern table, which the reset map shows.
+        assert!(matches!(
+            fits.pictures.by_name["b"].nametable,
+            Nametable::Shown(_)
+        ));
 
         let errors = run(source, &[("a", 200), ("b", 57)]).err().unwrap();
         assert_eq!(errors.len(), 1);
