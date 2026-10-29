@@ -576,7 +576,10 @@ pub enum Nametable {
     /// these show only if the program writes `ppu.ctrl` bit 4 or repoints a CHR
     /// window with `mmc3.bank_data`. `first` and `last` count tiles from the
     /// start of `bank`; `nametable` is shifted as for `Shown`, to where the
-    /// tiles sit in their pattern table.
+    /// tiles sit in their pattern table. That is right when the program shows
+    /// the 4 KiB half holding them, aligned, as the background's pattern table;
+    /// any other CHR window arrangement is the program's own, and the compiler
+    /// cannot see it.
     Unmapped {
         bank: u32,
         first: usize,

@@ -2617,7 +2617,17 @@ fn lower_unmapped(
     body: &str,
     pictures: &Pictures,
 ) -> Result<raster_ir::Program, Vec<(raster_ir::LowerError, String)>> {
-    let source = format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}");
+    lower_unmapped_with(body, "", pictures)
+}
+
+/// `lower_unmapped` with `items` after `main`: a function or a frame that writes the register.
+fn lower_unmapped_with(
+    body: &str,
+    items: &str,
+    pictures: &Pictures,
+) -> Result<raster_ir::Program, Vec<(raster_ir::LowerError, String)>> {
+    let source =
+        format!("{PICTURE}asset image other = png(\"o.png\")\nmain {{\n{body}\n}}\n{items}");
     let syntax = parse(&source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
     lower_with_pictures(&typed, pictures).map_err(|failure| {
@@ -2704,6 +2714,30 @@ fn an_mmc3_bank_data_write_lets_any_unmapped_picture_load() {
 fn selecting_the_second_pattern_table_does_not_map_another_bank() {
     let body = format!("ppu.ctrl = $10\n{LOAD}");
     assert!(lower_unmapped(&body, &unmapped(1, 0)).is_err());
+}
+
+#[test]
+fn a_write_in_a_function_or_a_frame_handler_counts_for_the_whole_program() {
+    let shown_by = [
+        ("fn show() { ppu.ctrl = $10 }", "show()", unmapped(0, 256)),
+        (
+            "fn map() { mmc3.bank_select = $00\n mmc3.bank_data = $08 }",
+            "map()",
+            unmapped(1, 0),
+        ),
+        (
+            "frame split using timed { at scanline 120 { ppu.ctrl = $10 } }",
+            "",
+            unmapped(0, 256),
+        ),
+    ];
+    for (items, call, pictures) in shown_by {
+        let body = format!("{LOAD}\n{call}");
+        assert!(
+            lower_unmapped_with(&body, items, &pictures).is_ok(),
+            "{items}"
+        );
+    }
 }
 
 #[test]
