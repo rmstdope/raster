@@ -28,16 +28,12 @@ fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
 /// The eight rows every successful build prints, then whatever this build adds
 /// after them. `reset` is always `$E000`, and `nmi` and `irq` share an address
 /// for a program with no `frame`. `yours` is the author's own share of
-/// `code_len`; the runtime's is the rest, which is 132 for every program.
-fn summary_of(
-    input: &Path,
-    output: &Path,
-    code_len: usize,
-    yours: usize,
-    handler: u16,
-    trailing: &str,
-) -> String {
-    let runtime = code_len - yours;
+/// `code_len`; the runtime's is the rest, the same for every program. The
+/// handler is the last byte of the code, so its address follows from both.
+fn summary_of(input: &Path, output: &Path, yours: usize, trailing: &str) -> String {
+    let runtime = raster_link::mmc3_reset_runtime_bytes();
+    let code_len = runtime + yours;
+    let handler = 0xE000 + u16::try_from(code_len - 1).unwrap();
     format!(
         " Compiled  {} -> {}\n   mapper  MMC3 (4), NTSC\n      prg  32 KiB, 4 banks of 8 KiB\n      chr  8 KiB RAM\n    fixed  $E000-$FFFF, {code_len} of 8186 bytes used\n    yours  {yours} bytes\n  runtime  {runtime} bytes, the reset sequence around your program\n    entry  reset $E000, nmi ${handler:04X}, irq ${handler:04X}\n{trailing}",
         input.display(),
@@ -47,7 +43,7 @@ fn summary_of(
 
 /// The demo's summary, which three tests assert byte for byte.
 fn summary(input: &Path, output: &Path) -> String {
-    summary_of(input, output, 160, 28, 0xE09F, "")
+    summary_of(input, output, 28, "")
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -575,10 +571,7 @@ fn a_bank_select_warning_prints_to_stderr_and_still_writes_a_rom() {
             path = input.display()
         )
     );
-    assert_eq!(
-        stdout,
-        summary_of(&input, &output, 145, 13, 0xE090, " warnings  1\n")
-    );
+    assert_eq!(stdout, summary_of(&input, &output, 13, " warnings  1\n"));
 }
 
 #[test]
@@ -646,7 +639,7 @@ fn an_empty_main_is_three_bytes_of_the_author_s_own() {
     // The three bytes are the halt loop rasterc puts at the end of every `main`.
     // They are the author's: the line is drawn at the linker, so `yours` is
     // never 0 and never 1, and neither row needs a plural.
-    assert_eq!(stdout, summary_of(&input, &output, 135, 3, 0xE086, ""));
+    assert_eq!(stdout, summary_of(&input, &output, 3, ""));
 }
 
 #[test]
@@ -669,7 +662,10 @@ fn a_program_too_big_for_the_bank_is_told_how_much_of_its_own_has_to_go() {
         "got:\n{stderr}"
     );
     assert!(
-        stderr.contains("132 of those are the reset runtime, so "),
+        stderr.contains(&format!(
+            "{} of those are the reset runtime, so ",
+            raster_link::mmc3_reset_runtime_bytes()
+        )),
         "got:\n{stderr}"
     );
     assert!(

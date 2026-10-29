@@ -140,7 +140,15 @@ fn interrupt_epilogue() -> Vec<FixedBankItem> {
 /// not. It exists because the refusal path has no `LinkedRom` to read; a caller
 /// holding one should read the field.
 pub fn mmc3_reset_runtime_bytes() -> usize {
-    crate::items_len(&prologue(RESET_LABEL)) + crate::items_len(&interrupt_epilogue())
+    mmc3_reset_prologue_bytes() + crate::items_len(&interrupt_epilogue())
+}
+
+/// The bytes of the reset prologue alone, which is also the offset from
+/// `$E000` at which the program's own code begins. Measured from the items the
+/// linker emits, so a test that says "after the prologue" never writes the
+/// number down.
+pub fn mmc3_reset_prologue_bytes() -> usize {
+    crate::items_len(&prologue(RESET_LABEL))
 }
 
 fn prologue(entry: Label) -> Vec<FixedBankItem> {

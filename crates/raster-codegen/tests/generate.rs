@@ -5,8 +5,8 @@ use raster_ir::{
     Label as IrLabel, Main, Place, PlaceDefinition, PlaceKind, Program, Statement, Value,
 };
 use raster_link::{
-    link_mmc3_program, FixedBankItem, Label, RelocationKind, INES_HEADER_SIZE,
-    MMC3_FIXED_BANK_SIZE, MMC3_PRG_ROM_SIZE,
+    link_mmc3_program, mmc3_reset_prologue_bytes, FixedBankItem, Label, RelocationKind,
+    INES_HEADER_SIZE, MMC3_FIXED_BANK_SIZE, MMC3_PRG_ROM_SIZE,
 };
 use raster_sema::analyze;
 use raster_syntax::{parse, Span};
@@ -186,15 +186,13 @@ fn generated_main_links_to_an_executable_register_store() {
     let rom = link_mmc3_program(&output.program, output.main, None, true).unwrap();
     let fixed_bank = INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - MMC3_FIXED_BANK_SIZE;
     // The fixed bank now opens with the runtime's reset sequence, and the
-    // program's own first bytes follow the 131-byte prologue.
+    // program's own first bytes follow the prologue.
     assert_eq!(
         &rom.image[fixed_bank..fixed_bank + 4],
         &[0x78, 0xd8, 0xa2, 0x40]
     );
-    assert_eq!(
-        &rom.image[fixed_bank + 131..fixed_bank + 136],
-        &[0xa9, 1, 0x8d, 1, 0x20]
-    );
+    let body = fixed_bank + mmc3_reset_prologue_bytes();
+    assert_eq!(&rom.image[body..body + 5], &[0xa9, 1, 0x8d, 1, 0x20]);
     // Reset enters the runtime, not the main label.
     assert_eq!(
         &rom.image[rom.image.len() - 4..rom.image.len() - 2],

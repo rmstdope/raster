@@ -554,7 +554,10 @@ mod tests {
             diagnostic.notes,
             [
                 "8635 bytes of code, and $E000-$FFFF holds 8186",
-                "132 of those are the reset runtime, so 449 bytes of your own\nhave to go",
+                &format!(
+                    "{} of those are the reset runtime, so 449 bytes of your own\nhave to go",
+                    mmc3_reset_runtime_bytes()
+                ),
                 "PRG bank switching is not supported yet, so all code lives\nin the fixed bank",
             ]
         );

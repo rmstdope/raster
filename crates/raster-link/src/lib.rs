@@ -19,7 +19,8 @@ pub use m5::{
     m5_background_rom, BackgroundData, PPU_ATTRIBUTE_BYTES, PPU_NAMETABLE_BYTES, PPU_PALETTE_BYTES,
 };
 pub use runtime::{
-    link_mmc3_program, mmc3_reset_runtime_bytes, LinkedRom, INTERRUPT_LABEL, RESET_LABEL,
+    link_mmc3_program, mmc3_reset_prologue_bytes, mmc3_reset_runtime_bytes, LinkedRom,
+    INTERRUPT_LABEL, RESET_LABEL,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
