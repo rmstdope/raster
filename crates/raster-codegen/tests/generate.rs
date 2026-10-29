@@ -449,6 +449,7 @@ const R: Place = Place(2);
 const HELPER: IrLabel = IrLabel(80);
 const MAIN: IrLabel = IrLabel(81);
 const HALT: IrLabel = IrLabel(82);
+const DATA: IrLabel = IrLabel(83);
 
 fn place_definition(place: Place) -> PlaceDefinition {
     PlaceDefinition {
@@ -476,6 +477,10 @@ fn program_whose_timed_block_contains(statement: Statement) -> Program {
             parameters: Vec::new(),
             statements: Vec::new(),
             span: Span::new(0, 0),
+        }],
+        data: vec![raster_ir::DataBlock {
+            label: DATA,
+            bytes: vec![0; 16],
         }],
         main: Some(Main {
             label: MAIN,
@@ -525,6 +530,8 @@ fn expectation(statement: &Statement) -> InsideATimedBlock {
         Statement::Timed { .. } => InsideATimedBlock::Straight,
         Statement::Delay { .. } => InsideATimedBlock::Refused,
         Statement::SyncExact => InsideATimedBlock::Refused,
+        // A copy loop. `raster-sema` refuses `load_*` inside a timed block before this matters.
+        Statement::PpuUpload { .. } => InsideATimedBlock::Refused,
     }
 }
 
@@ -571,10 +578,17 @@ fn every_ir_statement_is_classified_for_a_timed_block() {
             span: Span::new(0, 0),
         },
         Statement::SyncExact,
+        Statement::PpuUpload {
+            blocks: vec![raster_ir::PpuBlock {
+                address: 0x3f00,
+                data: DATA,
+                length: 16,
+            }],
+        },
     ];
     // One per `raster_ir::Statement` variant, so a variant added to `expectation` without a sample
     // here fails too.
-    assert_eq!(corpus.len(), 10);
+    assert_eq!(corpus.len(), 11);
 
     for statement in corpus {
         let expected = expectation(&statement);
@@ -926,4 +940,132 @@ fn a_nested_cycles_overrun_is_not_a_handler_overrun() {
         matches!(error, CodegenError::Timing { .. }),
         "the author's own block is a plain timing error, found {error:?}"
     );
+}
+
+
+// ---- PpuUpload ------------------------------------------------------------------------------
+
+use raster_ir::{lower_with_pictures, Picture, Pictures};
+
+/// A program that loads `picture`, whose blocks are recognisable runs of one byte each, linked
+/// into the fixed bank so the emitted bytes can be read as the 6502 would.
+fn linked_loads(body: &str) -> (Vec<u8>, usize) {
+    let source =
+        format!("asset image picture = png(\"p.png\")\nmain {{\n{body}\nppu.mask = $0A\n}}");
+    let syntax = parse(&source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let pictures = Pictures {
+        by_name: [(
+            "picture".to_owned(),
+            Picture {
+                palette: vec![0xa1; 16],
+                attributes: vec![0xa3; 64],
+                nametable: Some(vec![0xa2; 960]),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        next_free_bank: 0,
+    };
+    let ir = lower_with_pictures(&typed, &pictures).expect("fixture should lower");
+    let output = generate(&ir).expect("fixture should generate");
+    let rom = link_mmc3_program(&output.program, output.main, None, true).unwrap();
+    let fixed_bank = INES_HEADER_SIZE + MMC3_PRG_ROM_SIZE - MMC3_FIXED_BANK_SIZE;
+    (rom.image[fixed_bank..fixed_bank + rom.code_len].to_vec(), 0)
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
+    (0..haystack.len().saturating_sub(needle.len() - 1))
+        .filter(|&at| &haystack[at..at + needle.len()] == needle)
+        .collect()
+}
+
+#[test]
+fn a_palette_upload_sets_the_address_copies_sixteen_bytes_and_resets_the_latch() {
+    let (bank, _) = linked_loads("load_palette(picture.palette)");
+
+    // BIT $2002; LDA #$3F; STA $2006; LDA #$00; STA $2006; LDX #0; LDA data,X; STA $2007; INX;
+    // CPX #16; BNE back — then the reset: BIT $2002; LDA #0; STA $2005 x2; STA $2006 x2.
+    let start = find(
+        &bank,
+        &[
+            0x2c, 0x02, 0x20, 0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20, 0xa2,
+            0x00, 0xbd,
+        ],
+    );
+    assert_eq!(start.len(), 1, "one upload sequence in {bank:02x?}");
+    let at = start[0];
+    let data_address = u16::from_le_bytes([bank[at + 16], bank[at + 17]]);
+    assert_eq!(
+        &bank[at + 18..at + 18 + 11],
+        &[0x8d, 0x07, 0x20, 0xe8, 0xe0, 16, 0xd0, 0xf5, 0x2c, 0x02, 0x20]
+    );
+    assert_eq!(
+        &bank[at + 29..at + 29 + 14],
+        &[0xa9, 0x00, 0x8d, 0x05, 0x20, 0x8d, 0x05, 0x20, 0x8d, 0x06, 0x20, 0x8d, 0x06, 0x20]
+    );
+    // The data the loop reads is in the bank, after the code, and exactly once.
+    let offset = usize::from(data_address - 0xe000);
+    assert_eq!(&bank[offset..offset + 16], &[0xa1; 16]);
+    assert_eq!(find(&bank, &[0xa1; 16]).len(), 1);
+    assert!(offset > at, "data follows the code that reads it");
+}
+
+#[test]
+fn a_nametable_upload_splits_into_loops_of_at_most_255_bytes() {
+    let (bank, _) = linked_loads("load_nametable(picture.nametable, picture.attributes)");
+
+    // 960 = 255 + 255 + 255 + 195, then the 64 attribute bytes: five loops.
+    let loops = find(&bank, &[0xa2, 0x00, 0xbd]);
+    assert_eq!(loops.len(), 5);
+    let counts: Vec<u8> = loops
+        .iter()
+        .map(|&at| bank[at + 3 + 2 + 3 + 1 + 1])
+        .collect();
+    assert_eq!(counts, [255, 255, 255, 195, 64]);
+    // The two $2006 pairs: $2000 and $23C0.
+    assert_eq!(
+        find(
+            &bank,
+            &[0xa9, 0x20, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20]
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        find(
+            &bank,
+            &[0xa9, 0x23, 0x8d, 0x06, 0x20, 0xa9, 0xc0, 0x8d, 0x06, 0x20]
+        )
+        .len(),
+        1
+    );
+    // Every byte is stored once, in ROM, behind the halt loop.
+    let halt = halt_loop(&bank);
+    let data = &bank[halt + 3..];
+    assert_eq!(&data[..960], vec![0xa2; 960].as_slice());
+    assert_eq!(&data[960..960 + 64], vec![0xa3; 64].as_slice());
+}
+
+fn halt_loop(bank: &[u8]) -> usize {
+    (0..bank.len() - 2)
+        .find(|&at| {
+            bank[at] == 0x4c
+                && u16::from_le_bytes([bank[at + 1], bank[at + 2]]) == 0xe000 + at as u16
+        })
+        .expect("main ends in a halt loop")
+}
+
+#[test]
+fn the_upload_data_sits_after_the_halt_loop_where_nothing_executes_it() {
+    let (bank, _) = linked_loads("load_palette(picture.palette)");
+    let data = find(&bank, &[0xa1; 16])[0];
+    assert!(halt_loop(&bank) < data);
+}
+
+#[test]
+fn loading_twice_stores_the_data_once_but_copies_it_twice() {
+    let (bank, _) = linked_loads("load_palette(picture.palette)\nload_palette(picture.palette)");
+    assert_eq!(find(&bank, &[0xa1; 16]).len(), 1);
+    assert_eq!(find(&bank, &[0xa2, 0x00, 0xbd]).len(), 2);
 }
