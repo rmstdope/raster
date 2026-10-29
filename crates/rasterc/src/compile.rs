@@ -58,7 +58,7 @@ pub struct Rom {
 /// the failure is its handlers being over their windows - the one failure that leaves every
 /// handler measured.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Failure {
+pub(crate) struct Failure {
     pub diagnostics: Vec<Diagnostic>,
     pub frame: Option<FrameBudget>,
 }
@@ -95,7 +95,7 @@ pub fn compile_source_with_assets(
 }
 
 /// [`compile_source_with_assets`], keeping what a failure knows beyond its diagnostics.
-pub fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failure> {
+pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failure> {
     let syntax = parse(source).map_err(|errors| {
         spanned(
             errors
@@ -159,15 +159,23 @@ pub fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failure> {
         };
         // Every handler is measured before the build gives up, so a handler overrun shows the whole
         // table beside one diagnostic per handler that is over.
-        if let CodegenError::FrameHandlersOverBudget { errors, budget } = error {
+        if let CodegenError::FrameHandlersOverBudget {
+            errors,
+            budget,
+            stopped_by,
+        } = error
+        {
             kept.extend(
                 errors
                     .into_iter()
                     .map(|(error, span)| timing_diagnostic(error, span, source)),
             );
+            if let Some(other) = stopped_by {
+                kept.push(codegen_diagnostic(*other, source));
+            }
             return Failure {
                 diagnostics: kept,
-                frame: Some(budget),
+                frame: budget,
             };
         }
         beside(&kept, codegen_diagnostic(error, source)).into()

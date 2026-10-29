@@ -85,9 +85,14 @@ pub enum CodegenError {
     /// One or more of a frame's handlers is over its window. Every handler was measured, so the
     /// budget table is complete; each error is the one that handler earns on its own, in source
     /// order.
+    ///
+    /// `budget` is `None`, and `stopped_by` the error that ended emission, when something else
+    /// went wrong after some handlers had overrun: the overruns are still told, but a table of a
+    /// frame that was not fully measured is not.
     FrameHandlersOverBudget {
         errors: Vec<(TimingError, Span)>,
-        budget: FrameBudget,
+        budget: Option<FrameBudget>,
+        stopped_by: Option<Box<CodegenError>>,
     },
 }
 
@@ -183,17 +188,27 @@ pub fn generate_with_isa(
         generator.emit(0x60, Implied, None);
     }
 
-    generator.main(main, &program.global_initializers, program.frame.as_ref())?;
+    if let Err(error) = generator.main(main, &program.global_initializers, program.frame.as_ref()) {
+        if generator.frame_overruns.is_empty()
+            || matches!(error, CodegenError::FrameHandlersOverBudget { .. })
+        {
+            return Err(error);
+        }
+        let mut errors = std::mem::take(&mut generator.frame_overruns);
+        errors.sort_by_key(|(_, span)| span.start);
+        return Err(CodegenError::FrameHandlersOverBudget {
+            errors,
+            budget: None,
+            stopped_by: Some(Box::new(error)),
+        });
+    }
     let reports = std::mem::take(&mut generator.reports);
     let irq = generator.irq.map(link_label);
     let frame = program.frame.as_ref().map(|frame| FrameBudget {
         name: frame.name.clone(),
         strategy: frame.strategy,
         strategy_written: frame.strategy_written,
-        rows: std::mem::take(&mut generator.frame_rows)
-            .into_iter()
-            .map(|row| row.budget)
-            .collect(),
+        rows: generator.take_rows(),
     });
     Ok(CodegenOutput {
         frame,
@@ -275,15 +290,13 @@ impl Generator<'_> {
             let frame = frame.expect("only a frame's handlers are collected");
             return Err(CodegenError::FrameHandlersOverBudget {
                 errors,
-                budget: FrameBudget {
+                budget: Some(FrameBudget {
                     name: frame.name.clone(),
                     strategy: frame.strategy,
                     strategy_written: frame.strategy_written,
-                    rows: std::mem::take(&mut self.frame_rows)
-                        .into_iter()
-                        .map(|row| row.budget)
-                        .collect(),
-                },
+                    rows: self.take_rows(),
+                }),
+                stopped_by: None,
             });
         }
         Ok(())
@@ -473,6 +486,14 @@ impl Generator<'_> {
         self.delay(pass.trailing_delay_cycles, frame.span)?;
         self.jump(pass_top);
         Ok(())
+    }
+
+    /// The rows in the order the frame block writes its events, which is not scanline order: the
+    /// schedule is sorted for emission, and the source is read top to bottom.
+    fn take_rows(&mut self) -> Vec<EventBudget> {
+        let mut rows = std::mem::take(&mut self.frame_rows);
+        rows.sort_by_key(|row| row.span.start);
+        rows.into_iter().map(|row| row.budget).collect()
     }
 
     /// Record what one handler cost, and keep going if it was over its window.

@@ -435,8 +435,8 @@ and reports a per-event budget table after the build summary:
 
 ```
 frame main (using timed, mmc3)
-  scanline   0  handler  38 cycles   window 114   76 spare
-  scanline  64  handler 120 cycles   window 114   OVER BY 6
+  scanline  0  handler  38 cycles   window 114   76 spare
+  scanline  64 handler 120 cycles   window 114   OVER BY 6
 ```
 
 A frame whose `using` was omitted reads `(using timed by default, mmc3)`. An `every`

@@ -175,3 +175,51 @@ fn a_failure_that_is_not_a_handler_overrun_prints_no_table() {
     );
     assert!(!stderr.contains("frame bars"), "{stderr}");
 }
+
+#[test]
+fn rows_follow_the_order_the_frame_block_writes_them() {
+    let source = "main {\n    ppu.ctrl = $10\n    ppu.mask = $18\n}\nframe bars using irq {\n    every 8 scanlines from 96 to 200 {\n        ppu.mask = $1e\n    }\n    at scanline 0 {\n        ppu.mask = $1f\n    }\n}\n";
+    let (_, stdout, _) = build(source);
+
+    let every = stdout
+        .find("scanline  96-200 every 8")
+        .expect("the every row");
+    let at = stdout.find("scanline  0 ").expect("the at row");
+    assert!(every < at, "{stdout}");
+}
+
+#[test]
+fn an_earlier_overrun_is_still_told_when_a_later_error_stops_the_build() {
+    let source = "main {\n    ppu.ctrl = $10\n    ppu.mask = $18\n}\nframe bars using irq {\n    at scanline 60 {\n        ppu.mask = $1f\n        ppu.scroll = 0\n    }\n    at scanline 100 {\n        cycles(4) {\n            ppu.mask = $1f\n        }\n    }\n}\n";
+    let (result, _, stderr) = build(source);
+
+    assert_eq!(result, Err(1));
+    assert!(stderr.contains("exceeds its hblank"), "{stderr}");
+    assert!(
+        stderr.contains("timed block exceeds its budget"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("(2 errors)"), "{stderr}");
+    assert!(
+        !stderr.contains("frame bars"),
+        "no table when a handler was not measured: {stderr}"
+    );
+}
+
+#[test]
+fn the_table_follows_the_warnings_row() {
+    let (result, stdout, _) = build(&program("using timed", "ppu.ctrl = $80", "ppu.mask = $1e"));
+
+    assert_eq!(result, Ok(()));
+    let warnings = stdout.find(" warnings  ").expect("a warnings row");
+    let table = stdout.find("\n\nframe bars").expect("a table");
+    assert!(warnings < table, "{stdout}");
+}
+
+#[test]
+fn consecutive_scanlines_show_the_tighter_timed_window() {
+    let source = "main {\n    ppu.mask = $18\n}\nframe bars using timed {\n    every 1 scanlines from 10 to 40 {\n        ppu.mask = $1e\n    }\n}\n";
+    let (_, stdout, _) = build(source);
+
+    assert!(stdout.contains("window 113   98 spare"), "{stdout}");
+}

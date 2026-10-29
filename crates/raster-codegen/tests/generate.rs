@@ -915,7 +915,12 @@ fn every_handler_over_its_window_is_reported_not_only_the_first() {
     let error = generate(&lower(&typed).expect("fixture should lower"))
         .expect_err("two handlers are over the hblank");
 
-    let CodegenError::FrameHandlersOverBudget { errors, budget } = error else {
+    let CodegenError::FrameHandlersOverBudget {
+        errors,
+        budget: Some(budget),
+        ..
+    } = error
+    else {
         panic!("expected the collected overruns, found {error:?}");
     };
     assert_eq!(
