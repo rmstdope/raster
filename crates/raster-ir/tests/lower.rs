@@ -2480,3 +2480,85 @@ fn several_blocks_warn_in_source_order_after_the_frame_warning() {
     assert_eq!(slice(source, &warnings[1]), "cycles(10) pad");
     assert_eq!(slice(source, &warnings[2]), "cycles(20) pad");
 }
+
+#[test]
+fn a_call_inside_an_expression_that_enables_nmi_reaches_the_block_after_it() {
+    let warnings = block_warnings(
+        "var g: u8\nfn enable() -> u8 {\nppu.ctrl = $88\nreturn 1\n}\n\
+         main {\ng = enable()\ncycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].message, KNOWN_ON_HEADLINE);
+}
+
+#[test]
+fn a_block_in_a_function_called_from_an_expression_is_judged() {
+    let source = "var g: u8\nfn spin() -> u8 {\ncycles(114) pad { g = 1 }\nreturn 1\n}\n\
+                  main {\nppu.ctrl = $88\nvar x: u8 = spin()\n}";
+    let warnings = block_warnings(source);
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(slice(source, &warnings[0]), "cycles(114) pad");
+}
+
+#[test]
+fn call_sites_with_different_nmi_states_make_the_block_conditional() {
+    let warnings = block_warnings(
+        "var g: u8\nfn spin() {\ncycles(114) pad { g = 1 }\n}\n\
+         main {\nspin()\nppu.ctrl = $88\nspin()\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].message, UNKNOWN_HEADLINE);
+    assert!(warnings[0].notes[0].contains("on some paths into this"));
+}
+
+#[test]
+fn an_unfoldable_write_on_one_path_beats_a_clear_one() {
+    let warnings = block_warnings(
+        "var g: u8\nvar flags: u8\nvar c: u8\nmain {\n\
+         if c != 0 { ppu.ctrl = flags } else { ppu.ctrl = $08 }\n\
+         cycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].notes[0].contains("not a value"));
+}
+
+#[test]
+fn a_function_that_returns_early_joins_its_returns_with_falling_off_the_end() {
+    let warnings = block_warnings(
+        "var g: u8\nfn maybe() {\nif g != 0 {\nppu.ctrl = $88\nreturn\n}\n}\n\
+         main {\nmaybe()\ncycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].notes[0].contains("on some paths into this"));
+}
+
+#[test]
+fn two_set_values_name_the_one_reached_first_in_source_order() {
+    let warnings = block_warnings(
+        "var g: u8\nvar c: u8\nmain {\n\
+         if c != 0 { ppu.ctrl = $88 } else { ppu.ctrl = $90 }\n\
+         cycles(114) pad { g = 1 }\n}",
+    );
+
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].notes[0].contains("holds $88"), "{warnings:?}");
+}
+
+#[test]
+fn a_block_warning_prints_after_a_bank_warning() {
+    let warnings = block_warnings(
+        "var g: u8\nmain {\nppu.ctrl = $88\ncycles(114) pad { g = 1 }\nmmc3.bank_select = $80\n}",
+    );
+
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert_eq!(
+        warnings[0].message,
+        "this bank select changes the MMC3 mapping mode"
+    );
+    assert_eq!(warnings[1].message, KNOWN_ON_HEADLINE);
+}

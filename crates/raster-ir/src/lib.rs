@@ -3805,13 +3805,16 @@ impl NmiWalk<'_> {
             match statement {
                 Statement::Label(label) => {
                     let recorded = at_labels.get(label).copied().flatten();
-                    *state = join_nmi(*state, recorded);
+                    // The jumps to a label come first: a `then` arm reaches the join before the `else` falls
+                    // into it, which is the order the source has them in.
+                    *state = join_nmi(recorded, *state);
                     at_labels.insert(*label, *state);
                 }
                 Statement::Assign {
                     destination: Destination::Register(Register::PpuCtrl),
                     value,
                 } => {
+                    self.value(value, state);
                     if state.is_some() {
                         let constant = match value {
                             Value::Constant(value) => Some(*value),
@@ -3820,8 +3823,21 @@ impl NmiWalk<'_> {
                         *state = Some(NmiAtEntry::stored(constant));
                     }
                 }
-                Statement::Call { target, .. } => self.call(*target, state),
-                Statement::Branch { if_false, .. } => {
+                Statement::Assign { value, .. } => self.value(value, state),
+                Statement::Call {
+                    target, arguments, ..
+                } => {
+                    for argument in arguments {
+                        self.value(argument, state);
+                    }
+                    self.call(*target, state);
+                }
+                Statement::Branch {
+                    condition,
+                    if_false,
+                } => {
+                    self.value(&condition.left, state);
+                    self.value(&condition.right, state);
                     let recorded = at_labels.get(if_false).copied().flatten();
                     at_labels.insert(*if_false, join_nmi(recorded, *state));
                 }
@@ -3830,7 +3846,10 @@ impl NmiWalk<'_> {
                     at_labels.insert(*target, join_nmi(recorded, *state));
                     *state = None;
                 }
-                Statement::Return(_) => {
+                Statement::Return(value) => {
+                    if let Some(value) = value {
+                        self.value(value, state);
+                    }
                     *exit = join_nmi(*exit, *state);
                     *state = None;
                 }
@@ -3856,6 +3875,26 @@ impl NmiWalk<'_> {
                     self.statements(body, state, at_labels, exit);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Follow the calls a value makes, in the order they run: arguments, then the callee.
+    fn value(&mut self, value: &Value, state: &mut Option<NmiAtEntry>) {
+        match value {
+            Value::Constant(_) | Value::Place(_) | Value::Register(_) => {}
+            Value::Unary { operand, .. } => self.value(operand, state),
+            Value::Binary { left, right, .. } => {
+                self.value(left, state);
+                self.value(right, state);
+            }
+            Value::Call {
+                target, arguments, ..
+            } => {
+                for argument in arguments {
+                    self.value(argument, state);
+                }
+                self.call(*target, state);
             }
         }
     }
