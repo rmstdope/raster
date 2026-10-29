@@ -265,6 +265,16 @@ fn warned(warnings: Vec<raster_ir::LowerWarning>, source: &str) -> Vec<Diagnosti
             );
             let mut diagnostic = Diagnostic::warning(warning.message, span, warning.label);
             diagnostic.notes = warning.notes;
+            if let Some(secondary) = warning.secondary {
+                diagnostic = diagnostic.with_secondary(
+                    Span::clamped(
+                        secondary.span.start as usize,
+                        secondary.span.end as usize,
+                        source,
+                    ),
+                    secondary.label,
+                );
+            }
             diagnostic
         })
         .collect()
@@ -540,6 +550,7 @@ mod tests {
             notes: Vec::new(),
             span: raster_syntax::Span::new(at.0, at.1),
             assumes_budget_met,
+            secondary: None,
         }
     }
 

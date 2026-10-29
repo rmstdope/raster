@@ -76,6 +76,10 @@ pub struct Diagnostic {
     pub span: Option<Span>,
     pub label: String,
     pub notes: Vec<String>,
+    /// A second place the primary one is about, drawn above it with a dashed
+    /// underline so it reads without colour. Only drawn when it lies on an
+    /// earlier line than the primary span.
+    pub secondary: Option<(Span, String)>,
 }
 
 impl Span {
@@ -122,6 +126,7 @@ impl Diagnostic {
             span: Some(span),
             label: label.into(),
             notes: Vec::new(),
+            secondary: None,
         }
     }
 
@@ -137,6 +142,7 @@ impl Diagnostic {
             span: Some(span),
             label: label.into(),
             notes: Vec::new(),
+            secondary: None,
         }
     }
 
@@ -155,7 +161,14 @@ impl Diagnostic {
             message,
             span: None,
             notes: Vec::new(),
+            secondary: None,
         }
+    }
+
+    /// Marks a second span above the primary one, with its own label.
+    pub fn with_secondary(mut self, span: Span, label: impl Into<String>) -> Self {
+        self.secondary = Some((span, label.into()));
+        self
     }
 
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
@@ -187,36 +200,52 @@ pub fn render(source: &SourceFile, diagnostic: &Diagnostic) -> String {
         "diagnostic span offsets must be character boundaries"
     );
 
-    let line_start = source.source[..start]
-        .rfind('\n')
-        .map_or(0, |newline| newline + 1);
-    let line_number = source.source[..line_start]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1;
-    let line_end = source.source[start..]
-        .find('\n')
-        .map_or(source.source.len(), |offset| start + offset);
-    let line = &source.source[line_start..line_end];
-    let column = source.source[line_start..start].chars().count() + 1;
-    let underline_end = end.min(line_end);
-    let underline_width = source.source[start..underline_end].chars().count().max(1);
+    let primary = locate(&source.source, start, end);
+    let secondary = diagnostic
+        .secondary
+        .as_ref()
+        .filter(|(span, _)| {
+            span.start <= span.end
+                && span.end <= source.source.len()
+                && source.source.is_char_boundary(span.start)
+                && source.source.is_char_boundary(span.end)
+        })
+        .map(|(span, label)| (locate(&source.source, span.start, span.end), label))
+        .filter(|(place, _)| place.number <= primary.number);
 
-    let gutter = " ".repeat(line_number.to_string().len());
+    let gutter = " ".repeat(primary.number.to_string().len());
     let mut rendered = format!(
-        "{}: {}\n{gutter}--> {}:{}:{}\n{gutter} |\n{} | {}\n{gutter} | {}{} {}\n",
+        "{}: {}\n{gutter}--> {}:{}:{}\n{gutter} |\n",
         diagnostic.severity.prefix(),
         diagnostic.message,
         source.name,
-        line_number,
-        column,
-        line_number,
-        line,
-        " ".repeat(column - 1),
-        "^".repeat(underline_width),
-        diagnostic.label,
+        primary.number,
+        primary.column,
     );
+    let width = gutter.len();
+    if let Some((place, label)) = secondary {
+        rendered.push_str(&source_line(place.number, place.text, width));
+        rendered.push_str(&marker_line(&place, '-', label, width));
+        let between = (primary.number - place.number).saturating_sub(1);
+        if place.number == primary.number {
+            // Same line: it was printed once above, and the primary marker
+            // goes under the secondary's.
+            rendered.push_str(&marker_line(&primary, '^', &diagnostic.label, width));
+            for note in &diagnostic.notes {
+                rendered.push_str(&render_note(note, &gutter));
+            }
+            return rendered;
+        } else if between <= MAX_SHOWN_BETWEEN {
+            for number in place.number + 1..primary.number {
+                let text = source.source.lines().nth(number - 1).unwrap_or("");
+                rendered.push_str(&source_line(number, text, width));
+            }
+        } else {
+            rendered.push_str("...\n");
+        }
+    }
+    rendered.push_str(&source_line(primary.number, primary.text, width));
+    rendered.push_str(&marker_line(&primary, '^', &diagnostic.label, width));
     for note in &diagnostic.notes {
         rendered.push_str(&render_note(note, &gutter));
     }
@@ -239,4 +268,47 @@ fn render_note(note: &str, gutter: &str) -> String {
         rendered.push('\n');
     }
     rendered
+}
+
+/// How many lines between a secondary span and the primary one are shown; more
+/// than this and a single `...` line stands for all of them.
+const MAX_SHOWN_BETWEEN: usize = 2;
+
+/// Where a span starts: the line it is on and how much of that line it marks.
+struct Placed<'a> {
+    number: usize,
+    text: &'a str,
+    column: usize,
+    width: usize,
+}
+
+fn locate(source: &str, start: usize, end: usize) -> Placed<'_> {
+    let line_start = source[..start].rfind('\n').map_or(0, |newline| newline + 1);
+    let number = source[..line_start]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    let line_end = source[start..]
+        .find('\n')
+        .map_or(source.len(), |offset| start + offset);
+    Placed {
+        number,
+        text: source[line_start..line_end].trim_end_matches('\r'),
+        column: source[line_start..start].chars().count() + 1,
+        width: source[start..end.min(line_end)].chars().count().max(1),
+    }
+}
+
+fn source_line(number: usize, text: &str, gutter: usize) -> String {
+    format!("{number:>gutter$} | {text}\n")
+}
+
+fn marker_line(place: &Placed<'_>, mark: char, label: &str, gutter: usize) -> String {
+    format!(
+        "{} | {}{} {label}\n",
+        " ".repeat(gutter),
+        " ".repeat(place.column - 1),
+        mark.to_string().repeat(place.width),
+    )
 }

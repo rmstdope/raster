@@ -575,6 +575,100 @@ fn a_bank_select_warning_prints_to_stderr_and_still_writes_a_rom() {
 }
 
 #[test]
+fn a_bank_data_write_after_a_call_names_the_call_that_selected_the_register() {
+    let directory = Scratch::new("bankcall");
+    let input = directory.path().join("demo.raster");
+    fs::write(
+        &input,
+        "fn tick() { mmc3.bank_select = 6 }\n\nmain {\n    mmc3.bank_select = 0\n    tick()\n    mmc3.bank_data = 4\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: this write repoints the PRG window at $8000\n",
+                " --> {path}:6:5\n",
+                "  |\n",
+                "5 |     tick()\n",
+                "  |     ------ this call leaves R6 selected\n",
+                "6 |     mmc3.bank_data = 4\n",
+                "  |     ^^^^^^^^^^^^^^^^^^ R6 is selected, so this replaces $8000-$9FFF\n",
+                "  = note: reset chose a linear 32 KiB map with R6 = 0 and R7 = 1; the\n",
+                "          bytes at $8000 are not the ones it mapped from here on\n",
+                "  = note: PRG bank switching is not supported yet: banks 0 to 2 hold $FF,\n",
+                "          and bank 3 is a second view of the fixed bank at $E000\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+}
+
+#[test]
+fn an_unsure_call_before_a_bank_data_write_is_marked_and_the_advice_moves_after_it() {
+    let directory = Scratch::new("bankunsure");
+    let input = directory.path().join("demo.raster");
+    fs::write(
+        &input,
+        "fn tick(fast: u8) {\n    if fast != 0 { mmc3.bank_select = 6 } else { mmc3.bank_select = 1 }\n}\nmain {\n    tick(1)\n    mmc3.bank_data = 4\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        stderr,
+        format!(
+            concat!(
+                "warning: rasterc cannot tell which bank register this write lands on\n",
+                " --> {path}:6:5\n",
+                "  |\n",
+                "5 |     tick(1)\n",
+                "  |     ------- this call can leave any register selected\n",
+                "6 |     mmc3.bank_data = 4\n",
+                "  |     ^^^^^^^^^^^^^^^^^^ rasterc cannot see which register this call leaves selected\n",
+                "  = note: R6 and R7 are the two 8 KiB PRG windows; a write landing on\n",
+                "          either one repoints $8000 or $A000\n",
+                "  = note: selecting with a literal 0 to 5 after the call, before the\n",
+                "          write, keeps the map reset chose\n",
+                "\n",
+            ),
+            path = input.display()
+        )
+    );
+}
+
+#[test]
+fn a_call_far_above_the_bank_data_write_elides_the_lines_between() {
+    let directory = Scratch::new("bankfar");
+    let input = directory.path().join("demo.raster");
+    fs::write(
+        &input,
+        "fn tick() { mmc3.bank_select = 7 }\nmain {\n    tick()\n    var a: u8 = 1\n    var b: u8 = 2\n    var c: u8 = 3\n    mmc3.bank_data = a\n}\n",
+    )
+    .unwrap();
+
+    let (result, _stdout, stderr) = run_capturing(vec![input.display().to_string()]);
+
+    assert_eq!(result, Ok(()));
+    assert!(
+        stderr.contains(concat!(
+            "3 |     tick()\n",
+            "  |     ------ this call leaves R7 selected\n",
+            "...\n",
+            "7 |     mmc3.bank_data = a\n",
+        )),
+        "got:\n{stderr}"
+    );
+}
+
+#[test]
 fn a_build_that_fails_counts_its_errors_and_its_warnings() {
     let directory = Scratch::new("warnandfail");
     let input = directory.path().join("both.raster");

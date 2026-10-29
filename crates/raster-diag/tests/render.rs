@@ -170,3 +170,122 @@ fn renders_a_warning_with_the_same_gutter_as_an_error() {
         )
     );
 }
+
+#[test]
+fn renders_a_secondary_marker_on_the_line_above_the_primary() {
+    let source = SourceFile::new("demo.raster", "main {\n    tick()\n    write()\n}\n");
+    let diagnostic = Diagnostic::warning("careful", Span::new(22, 29), "primary")
+        .with_secondary(Span::new(11, 17), "secondary");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "warning: careful\n",
+            " --> demo.raster:3:5\n",
+            "  |\n",
+            "2 |     tick()\n",
+            "  |     ------ secondary\n",
+            "3 |     write()\n",
+            "  |     ^^^^^^^ primary\n"
+        )
+    );
+}
+
+#[test]
+fn shows_the_lines_between_a_secondary_and_the_primary_when_there_are_two_or_fewer() {
+    let source = SourceFile::new("demo.raster", "a()\nb\nc\nw()\n");
+    let diagnostic = Diagnostic::warning("careful", Span::new(8, 11), "primary")
+        .with_secondary(Span::new(0, 3), "secondary");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "warning: careful\n",
+            " --> demo.raster:4:1\n",
+            "  |\n",
+            "1 | a()\n",
+            "  | --- secondary\n",
+            "2 | b\n",
+            "3 | c\n",
+            "4 | w()\n",
+            "  | ^^^ primary\n"
+        )
+    );
+}
+
+#[test]
+fn elides_the_lines_between_a_distant_secondary_and_the_primary() {
+    let source = SourceFile::new("demo.raster", "a()\nb\nc\nd\nw()\n");
+    let diagnostic = Diagnostic::warning("careful", Span::new(10, 13), "primary")
+        .with_secondary(Span::new(0, 3), "secondary");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "warning: careful\n",
+            " --> demo.raster:5:1\n",
+            "  |\n",
+            "1 | a()\n",
+            "  | --- secondary\n",
+            "...\n",
+            "5 | w()\n",
+            "  | ^^^ primary\n"
+        )
+    );
+}
+
+#[test]
+fn widens_the_gutter_to_the_longest_line_number_when_a_secondary_is_drawn() {
+    let mut text = String::new();
+    for _ in 0..8 {
+        text.push_str("x\n");
+    }
+    let call = text.len();
+    text.push_str("a()\nb\nw()\n");
+    let write = call + "a()\nb\n".len();
+    let source = SourceFile::new("demo.raster", text);
+    let diagnostic = Diagnostic::warning("careful", Span::new(write, write + 3), "primary")
+        .with_secondary(Span::new(call, call + 3), "secondary");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "warning: careful\n",
+            "  --> demo.raster:11:1\n",
+            "   |\n",
+            " 9 | a()\n",
+            "   | --- secondary\n",
+            "10 | b\n",
+            "11 | w()\n",
+            "   | ^^^ primary\n"
+        )
+    );
+}
+
+#[test]
+fn draws_a_secondary_on_the_primarys_own_line_instead_of_dropping_it() {
+    let source = SourceFile::new("demo.raster", "if pick() { w() }\n");
+    let diagnostic = Diagnostic::warning("careful", Span::new(12, 15), "primary")
+        .with_secondary(Span::new(3, 9), "secondary");
+
+    assert_eq!(
+        render(&source, &diagnostic),
+        concat!(
+            "warning: careful\n",
+            " --> demo.raster:1:13\n",
+            "  |\n",
+            "1 | if pick() { w() }\n",
+            "  |    ------ secondary\n",
+            "  |             ^^^ primary\n"
+        )
+    );
+}
+
+#[test]
+fn prints_crlf_sources_without_the_carriage_return() {
+    let source = SourceFile::new("demo.raster", "a()\r\nb\r\nw()\r\n");
+    let diagnostic = Diagnostic::warning("careful", Span::new(8, 11), "primary")
+        .with_secondary(Span::new(0, 3), "secondary");
+
+    assert!(!render(&source, &diagnostic).contains('\r'));
+}
