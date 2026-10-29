@@ -249,9 +249,8 @@ fn keeps_the_program_and_its_data_clear_of_the_vector_table() {
 #[test]
 fn refuses_a_background_whose_data_would_reach_the_vector_table() {
     // The only input that can exhaust the bank, and the only path to the
-    // function's error. 6516 CHR bytes is the largest that links on this
-    // layout; a real background never exceeds 4096, because encode_background
-    // caps at 256 distinct tiles.
+    // function's error. A real background never exceeds 4096 CHR bytes,
+    // because encode_background caps at 256 distinct tiles.
     let palettes = [0u8; 16];
     let nametable = [0u8; 960];
     let attributes = [0u8; 64];
@@ -263,21 +262,31 @@ fn refuses_a_background_whose_data_would_reach_the_vector_table() {
             attributes: &attributes,
         })
     };
+    let program_len = |chr_len: usize| background(&vec![0u8; chr_len]).unwrap().code_len;
 
-    assert!(background(&vec![0u8; 6516]).is_ok());
-    assert!(matches!(
-        background(&vec![0u8; 6517]),
-        Err(LinkError::FixedBankTooLarge { .. })
-    ));
+    // The program's size is measured, never typed, so it moves with the reset
+    // prologue and the upload code. CHR is copied in pieces of at most 255
+    // bytes, each with its own copy loop: size(n) = fixed + n + loop * (pieces - 1).
+    let one_piece = program_len(1);
+    let piece_loop = program_len(256) - program_len(255) - 1;
+    let size = |chr_len: usize| one_piece - 1 + chr_len + piece_loop * (chr_len.div_ceil(255) - 1);
 
-    // The figure `m5_background_rom`'s doc comment quotes. It is the whole
-    // program, not the walk to the first label past the limit. If this number
-    // ever moves, move the one in that comment (`m5.rs`, `m5_background_rom`)
-    // with it - this assertion is the only thing holding the two together.
+    let largest = (1..=8192)
+        .rev()
+        .find(|&n| size(n) <= MMC3_FIXED_BANK_CODE_SIZE)
+        .expect("some background fits");
+    assert!(
+        largest > 4096,
+        "the largest real background (4096 bytes) fits"
+    );
+
+    assert_eq!(program_len(largest), size(largest));
+    // The error reports the whole program, not the walk to the first label
+    // past the limit.
     assert_eq!(
-        background(&vec![0u8; 8192]),
+        background(&vec![0u8; largest + 1]),
         Err(LinkError::FixedBankTooLarge {
-            actual: 9953,
+            actual: size(largest + 1),
             maximum: MMC3_FIXED_BANK_CODE_SIZE,
         })
     );
