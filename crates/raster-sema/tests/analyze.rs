@@ -1473,3 +1473,107 @@ fn a_function_of_the_same_name_shadows_the_builtin() {
         []
     );
 }
+
+/// §8.3's music fields are defined by the specification and not built: refused
+/// as not yet built, never as invented.
+#[test]
+fn refuses_music_asset_fields_as_not_yet_built() {
+    for field in ["driver: famistudio", "channels: 2a03"] {
+        let source = format!("asset music song = fam(\"m.fms\") {{ {field} }}\nmain {{ }}");
+        let found = errors_with_spans(&source);
+        let ours: Vec<_> = found
+            .iter()
+            .filter(|e| e.message.contains("supported yet") && e.message.starts_with("only `kind`"))
+            .collect();
+        assert_eq!(ours.len(), 1, "for `{field}`, got {found:?}");
+        assert_eq!(ours[0].refusal, Refusal::AssetNotInThisRelease);
+        let name = field.split(':').next().unwrap();
+        assert_eq!(
+            &source[ours[0].span.start as usize..ours[0].span.end as usize],
+            name
+        );
+        assert!(
+            found.iter().all(|e| !e.message.contains("unknown")),
+            "{found:?}"
+        );
+    }
+}
+
+#[test]
+fn reports_other_music_asset_fields_as_unknown_music_fields() {
+    for field in [
+        "kind: background",
+        "palette: auto(4)",
+        "dedup: true",
+        "compress: none",
+        "tempo: 3",
+    ] {
+        let source = format!("asset music song = fam(\"m.fms\") {{ {field} }}\nmain {{ }}");
+        let found = errors_with_spans(&source);
+        let ours: Vec<_> = found
+            .iter()
+            .filter(|e| e.message.starts_with("unknown"))
+            .collect();
+        assert_eq!(ours.len(), 1, "for `{field}`, got {found:?}");
+        assert_eq!(
+            ours[0].message,
+            "unknown music asset field; a music asset has `driver` and `channels`"
+        );
+        assert_eq!(ours[0].refusal, Refusal::Rejected);
+    }
+}
+
+#[test]
+fn spec_8_3_example_prints_four_errors_none_unknown() {
+    let source = "asset music song = fam(\"music/demo.fms\") { driver: famistudio  channels: 2a03 }\nmain { }";
+    let found = errors_with_spans(source);
+    let messages: Vec<_> = found.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "only `asset image` is supported yet",
+            "only `png` is supported yet",
+            "only `kind`, `palette` and `dedup` are supported yet",
+            "only `kind`, `palette` and `dedup` are supported yet",
+        ]
+    );
+}
+
+#[test]
+fn music_field_on_image_asset_and_sound_asset_keep_todays_messages() {
+    let source = "asset image p = png(\"p.png\") { driver: famistudio }\nmain { }";
+    let found = errors_with_spans(source);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].message,
+        "unknown asset field; this release knows `kind`, `palette` and `dedup`"
+    );
+
+    let source = "asset sound s = png(\"p.png\") { driver: x }\nmain { }";
+    let messages: Vec<_> = errors_with_spans(source)
+        .into_iter()
+        .map(|e| e.message)
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "only `asset image` is supported yet",
+            "unknown asset field; this release knows `kind`, `palette` and `dedup`",
+        ]
+    );
+}
+
+#[test]
+fn music_asset_field_set_twice_and_no_fields() {
+    let found = errors_with_spans("asset music s = fam(\"m\") { driver: a  driver: b }\nmain { }");
+    let messages: Vec<_> = found.iter().map(|e| e.message.as_str()).skip(2).collect();
+    assert_eq!(
+        messages,
+        [
+            "only `kind`, `palette` and `dedup` are supported yet",
+            "this asset field is set twice",
+        ]
+    );
+    let found = errors_with_spans("asset music s = fam(\"m\")\nmain { }");
+    assert_eq!(found.len(), 2, "{found:?}");
+}

@@ -1409,6 +1409,27 @@ fn the_asset_note_is_said_once_per_run() {
 }
 
 #[test]
+fn the_specifications_music_asset_is_four_refusals_with_the_note_once() {
+    let diagnostics = compile_source(
+        "asset music song = fam(\"music/demo.fms\") { driver: famistudio  channels: 2a03 }\nmain { }\n",
+    )
+    .expect_err("a music asset is refused");
+
+    let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "only `asset image` is supported yet",
+            "only `png` is supported yet",
+            "only `kind`, `palette` and `dedup` are supported yet",
+            "only `kind`, `palette` and `dedup` are supported yet",
+        ]
+    );
+    assert_eq!(diagnostics[0].notes, [ASSET_SUBSET]);
+    assert!(diagnostics[1..].iter().all(|d| d.notes.is_empty()));
+}
+
+#[test]
 fn the_asset_note_wraps_at_about_seventy_columns() {
     assert!(ASSET_SUBSET.lines().all(|line| line.len() <= 70));
 }

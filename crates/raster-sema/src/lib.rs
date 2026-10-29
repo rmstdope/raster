@@ -326,6 +326,9 @@ impl Analyzer {
 
     /// What an asset asks for, against what `raster-assets` actually does.
     ///
+    /// Fields are judged per asset kind: a music asset has the §8.3 fields and an
+    /// image, or a kind the specification does not define, the §8.1 ones.
+    ///
     /// Every accepted value here is a fact about the encoder rather than a
     /// preference: `BACKGROUND_SUBPALETTE_COUNT` is 4, `encode_background`
     /// deduplicates unconditionally, and the only encoder there is is a
@@ -348,6 +351,23 @@ impl Analyzer {
                 continue;
             }
             seen.push(name);
+            // The fields an asset has depend on its kind: §8.3 defines `driver`
+            // and `channels` for music and nothing of §8.1's for it. A kind the
+            // specification does not define is checked as an image.
+            if asset.kind.value == "music" {
+                if matches!(name, "driver" | "channels") {
+                    self.asset_not_in_this_release(
+                        field.name.span,
+                        "only `kind`, `palette` and `dedup` are supported yet",
+                    );
+                } else {
+                    self.error(
+                        field.name.span,
+                        "unknown music asset field; a music asset has `driver` and `channels`",
+                    );
+                }
+                continue;
+            }
             match name {
                 "kind" => self.require_asset_value(
                     field,
