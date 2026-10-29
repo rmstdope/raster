@@ -11,7 +11,7 @@ use rasterc::run;
 mod demo;
 #[path = "common/scratch.rs"]
 mod scratch;
-use demo::demo_source;
+use demo::backdrop_source;
 use scratch::Scratch;
 
 fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
@@ -159,7 +159,7 @@ fn writes_the_rom_beside_the_input() {
     let directory = Scratch::new("beside");
     let input = directory.path().join("demo.raster");
     let output = directory.path().join("demo.nes");
-    fs::write(&input, demo_source()).unwrap();
+    fs::write(&input, backdrop_source()).unwrap();
 
     let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
 
@@ -181,7 +181,7 @@ fn accepts_the_output_flag_before_and_after_the_input() {
         let directory = Scratch::new("flag");
         let input = directory.path().join("demo.raster");
         let output = directory.path().join("rom.nes");
-        fs::write(&input, demo_source()).unwrap();
+        fs::write(&input, backdrop_source()).unwrap();
 
         let arguments = arguments
             .iter()
@@ -252,7 +252,7 @@ fn overwrites_an_existing_rom_without_comment() {
     let directory = Scratch::new("overwrite");
     let input = directory.path().join("demo.raster");
     let output = directory.path().join("demo.nes");
-    fs::write(&input, demo_source()).unwrap();
+    fs::write(&input, backdrop_source()).unwrap();
     fs::write(&output, b"stale").unwrap();
 
     let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
@@ -271,7 +271,7 @@ fn a_missing_parent_directory_is_an_error_rather_than_a_new_tree() {
     let directory = Scratch::new("missing");
     let input = directory.path().join("demo.raster");
     let output = directory.path().join("build").join("demo.nes");
-    fs::write(&input, demo_source()).unwrap();
+    fs::write(&input, backdrop_source()).unwrap();
 
     let (result, stdout, stderr) = run_capturing(vec![
         input.display().to_string(),
@@ -292,7 +292,7 @@ fn a_missing_parent_directory_is_an_error_rather_than_a_new_tree() {
 fn refuses_to_overwrite_its_own_input() {
     let directory = Scratch::new("selfwrite");
     let input = directory.path().join("demo.nes");
-    fs::write(&input, demo_source()).unwrap();
+    fs::write(&input, backdrop_source()).unwrap();
 
     let (result, stdout, stderr) = run_capturing(vec![input.display().to_string()]);
 
@@ -306,14 +306,14 @@ fn refuses_to_overwrite_its_own_input() {
         )
     );
     // Refused before compiling, so the source is untouched.
-    assert_eq!(fs::read_to_string(&input).unwrap(), demo_source());
+    assert_eq!(fs::read_to_string(&input).unwrap(), backdrop_source());
 }
 
 #[test]
 fn refuses_to_overwrite_its_own_input_under_another_spelling() {
     let directory = Scratch::new("samefile");
     let input = directory.path().join("demo.raster");
-    fs::write(&input, demo_source()).unwrap();
+    fs::write(&input, backdrop_source()).unwrap();
     // The same file, named through `.`: a string comparison does not see it, and
     // the author's source is what gets destroyed.
     let output = directory.path().join(".").join("demo.raster");
@@ -333,7 +333,7 @@ fn refuses_to_overwrite_its_own_input_under_another_spelling() {
             input.display()
         )
     );
-    assert_eq!(fs::read_to_string(&input).unwrap(), demo_source());
+    assert_eq!(fs::read_to_string(&input).unwrap(), backdrop_source());
 }
 
 #[test]

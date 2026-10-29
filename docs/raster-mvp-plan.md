@@ -154,7 +154,8 @@ raster/
 │   ├── emu/               run ROM headless, compare framebuffer to reference PNG
 │   └── cycles/            assert measured cycle counts match compiler predictions
 └── examples/
-    └── mvp/               demo.raster + picture.png
+    ├── backdrop/          backdrop.raster
+    └── mvp/               demo.raster + art/picture.png
 ```
 
 **Proposed dependencies** — all permissive-licensed, all mature:

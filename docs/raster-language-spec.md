@@ -803,7 +803,7 @@ This is the program the MVP must compile — not one that compiles today. It par
 a test in `raster-syntax` reads it out of this document and keeps it parsing;
 everything past the parser is still ahead of the compiler, including arrays, indexed
 reads, a call inside a handler and `using irq`. For a program that compiles now, see
-`examples/mvp/demo.raster`.
+`examples/mvp/demo.raster` (and the one-colour `examples/backdrop/backdrop.raster`).
 
 ```
 target nes {

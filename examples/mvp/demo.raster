@@ -1,16 +1,28 @@
-// The whole of milestone 4: a backdrop colour, from source.
+// The MVP demo: a picture imported from a PNG, with colour
+// bars that start on chosen lines of the screen.
 //
-// rasterc wraps this in a reset sequence, a two-vblank wait and
-// the MMC3 bank layout. The summary's `yours' row is the part
-// below.
+// art/picture.png is a test card. The yellow numbers on its
+// ruler mark lines 60, 120 and 180: each tint should start
+// exactly on its mark. Build it with
+//
+//     rasterc examples/mvp/demo.raster
+//
+// and open demo.nes in an emulator.
 
-const BACKDROP: u8 = $12        // NES colour $12, a mid blue
+target nes { mapper: mmc3  region: ntsc }
+
+asset image picture = png("art/picture.png") { kind: background  palette: auto(4) }
+chrrom bank 0 { picture.tiles }
 
 main {
-    ppu.addr = $3f              // the palette lives at $3F00 ...
-    ppu.addr = $00              // ... and $3F00 is the backdrop
-    ppu.data = BACKDROP
+    load_palette(picture.palette)
+    load_nametable(picture.nametable, picture.attributes)
+    ppu.ctrl = $08   // background tiles from $0000, sprites from $1000
+    ppu.mask = $1e   // rendering on, no tint
+}
 
-    ppu.addr = $00              // leave palette space, or the screen
-    ppu.addr = $00              // shows $3F01 instead of the backdrop
+frame bars using irq {
+    at scanline  60 { ppu.mask = $3e }   // red tint (green on a PAL console)
+    at scanline 120 { ppu.mask = $5e }   // green tint (red on a PAL console)
+    at scanline 180 { ppu.mask = $1e }   // no tint again
 }
