@@ -763,19 +763,19 @@ fn refuses_asset_fields_this_release_does_not_build() {
         (
             "kind: sprites",
             "only `kind: background` is supported yet",
-            Refusal::NotInThisRelease,
+            Refusal::AssetNotInThisRelease,
             "sprites",
         ),
         (
             "palette: auto(2)",
             "only `palette: auto(4)` is supported yet",
-            Refusal::NotInThisRelease,
+            Refusal::AssetNotInThisRelease,
             "auto(2)",
         ),
         (
             "dedup: false",
             "only `dedup: true` is supported yet",
-            Refusal::NotInThisRelease,
+            Refusal::AssetNotInThisRelease,
             "false",
         ),
         (
@@ -827,7 +827,7 @@ fn refuses_an_asset_loader_and_kind_this_release_does_not_build() {
         let found = errors_with_spans(source);
         assert_eq!(found.len(), 1, "for `{source}`, got {found:?}");
         assert_eq!(found[0].message, message);
-        assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+        assert_eq!(found[0].refusal, Refusal::AssetNotInThisRelease);
         assert_eq!(
             &source[found[0].span.start as usize..found[0].span.end as usize],
             caret
@@ -847,7 +847,7 @@ fn refuses_spec_defined_asset_surface_as_not_yet_built() {
         found[0].message,
         "only `kind`, `palette` and `dedup` are supported yet"
     );
-    assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+    assert_eq!(found[0].refusal, Refusal::AssetNotInThisRelease);
     assert_eq!(
         &source[found[0].span.start as usize..found[0].span.end as usize],
         "compress"
@@ -860,7 +860,7 @@ fn refuses_spec_defined_asset_surface_as_not_yet_built() {
         found[0].message,
         "only `tiles`, `nametable`, `attributes` and `palette` are supported yet"
     );
-    assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+    assert_eq!(found[0].refusal, Refusal::AssetNotInThisRelease);
     assert_eq!(
         &source[found[0].span.start as usize..found[0].span.end as usize],
         "tile_count"
@@ -876,7 +876,7 @@ fn refuses_the_explicit_palette_by_name() {
     let found = errors_with_spans(source);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].message, "only `palette: auto(4)` is supported yet");
-    assert_eq!(found[0].refusal, Refusal::NotInThisRelease);
+    assert_eq!(found[0].refusal, Refusal::AssetNotInThisRelease);
     assert_eq!(
         &source[found[0].span.start as usize..found[0].span.end as usize],
         "[ $0F, $30, $21, $11 ]"

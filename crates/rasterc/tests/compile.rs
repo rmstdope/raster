@@ -1350,3 +1350,64 @@ fn a_call_an_if_and_a_while_are_still_refused_in_an_irq_handler() {
     );
     assert_eq!(diagnostics[0].notes, [TIMED_BLOCK_NOTE]);
 }
+
+const ASSET_SUBSET: &str = concat!(
+    "this release reads one kind of asset: `asset image` from a `png`,\n",
+    "with `kind: background`, `palette: auto(4)` and `dedup: true`, used\n",
+    "through `.tiles`, `.nametable`, `.attributes` and `.palette`"
+);
+
+#[test]
+fn every_asset_refusal_says_what_the_release_reads_for_assets() {
+    for (source, message) in [
+        (
+            "asset sound jingle = png(\"p.png\")\nmain { }\n",
+            "only `asset image` is supported yet",
+        ),
+        (
+            "asset image picture = fam(\"p.fam\")\nmain { }\n",
+            "only `png` is supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\") { kind: sprites }\nmain { }\n",
+            "only `kind: background` is supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\") { palette: auto(2) }\nmain { }\n",
+            "only `palette: auto(4)` is supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\") { dedup: false }\nmain { }\n",
+            "only `dedup: true` is supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\") { compress: none }\nmain { }\n",
+            "only `kind`, `palette` and `dedup` are supported yet",
+        ),
+        (
+            "asset image picture = png(\"p.png\")\nmain { picture.tile_count }\n",
+            "only `tiles`, `nametable`, `attributes` and `palette` are supported yet",
+        ),
+    ] {
+        let diagnostics = compile_source(source).expect_err("an asset construct is refused");
+        assert_eq!(diagnostics[0].message, message, "for `{source}`");
+        assert_eq!(diagnostics[0].notes, [ASSET_SUBSET], "for `{source}`");
+    }
+}
+
+#[test]
+fn the_asset_note_is_said_once_per_run() {
+    let diagnostics = compile_source(
+        "asset image picture = png(\"p.png\") { kind: sprites palette: auto(2) }\nmain { }\n",
+    )
+    .expect_err("two asset fields are refused");
+
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].notes, [ASSET_SUBSET]);
+    assert!(diagnostics[1].notes.is_empty());
+}
+
+#[test]
+fn the_asset_note_wraps_at_about_seventy_columns() {
+    assert!(ASSET_SUBSET.lines().all(|line| line.len() <= 70));
+}

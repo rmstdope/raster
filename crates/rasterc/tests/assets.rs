@@ -251,3 +251,33 @@ fn two_broken_pictures_are_both_reported() {
         ]
     );
 }
+
+/// The line the developer wrote is already the one this release allows, so a list of
+/// what is allowed would only describe it back to them.
+#[test]
+fn the_refusal_to_place_a_valid_asset_carries_no_note() {
+    let (_, diagnostic) = only_diagnostic(Fixture(PATH, valid_png()));
+    assert_eq!(diagnostic.message, "an `asset` does not reach the ROM yet");
+    assert!(diagnostic.notes.is_empty(), "{:?}", diagnostic.notes);
+}
+
+fn valid_png() -> Vec<u8> {
+    png_bytes(16, 16, |_, _| BLACK)
+}
+
+/// The one run that can hold both: lowering refuses the placed asset and a `loop`.
+/// The asset line carries no note, so the general note is still said, beside `loop`.
+#[test]
+fn an_unplaced_asset_does_not_use_up_the_general_note() {
+    let source = format!(
+        "asset image picture = png(\"{PATH}\") {{ kind: background }}\nmain {{ loop {{}} }}"
+    );
+    let found = compile_source_with_assets(&source, &Fixture(PATH, valid_png()))
+        .expect_err("both are refused");
+
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found[0].notes.is_empty());
+    assert_eq!(found[1].message, "`loop` is not supported yet");
+    assert_eq!(found[1].notes.len(), 1);
+    assert!(found[1].notes[0].starts_with("this release compiles `main`"));
+}

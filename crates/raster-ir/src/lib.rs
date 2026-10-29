@@ -1655,9 +1655,11 @@ impl Lowerer {
                 // picture has been reported. What is left is that no byte of it
                 // is placed yet, and a ROM built without it would be a compiler
                 // lying about what it built.
-                Item::Asset(_) => {
-                    self.not_in_this_release(item.span, "an `asset` does not reach the ROM yet")
-                }
+                Item::Asset(_) => self.refuse(
+                    item.span,
+                    "an `asset` does not reach the ROM yet",
+                    Refusal::AssetNotPlaced,
+                ),
                 Item::Other(_) => self.error(item.span, "this top-level item is not supported"),
             }
         }
