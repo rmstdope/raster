@@ -1464,7 +1464,7 @@ fn the_specification_names_the_construct_a_block_never_a_region() {
     // Joined so a word wrapped across two lines is still seen.
     let flat = spec.split_whitespace().collect::<Vec<_>>().join(" ");
     let stray = flat
-        .split(|c| c == '.' || c == '|')
+        .split(['.', '|'])
         .filter(|sentence| sentence.to_lowercase().contains("region"))
         .filter(|sentence| {
             !sentence.contains("this region costs exactly N cycles")
