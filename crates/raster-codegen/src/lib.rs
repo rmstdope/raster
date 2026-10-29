@@ -1046,6 +1046,9 @@ impl Generator<'_> {
     /// the code before it left in the shared write latch. The copy assumes `$2007` steps by one
     /// (`PPUCTRL` bit 2 clear), which the reset leaves true and the author owns afterwards.
     ///
+    /// Every `$2002` read here clears the vblank flag, so a `wait vblank` straight after a load
+    /// can wait for the next frame's flag; an upload costs most of a frame anyway.
+    ///
     /// The closing reset matters because the last `$2006` pair also set the PPU's scroll address,
     /// which the PPU reloads at the start of every frame: left alone, the picture would start
     /// wherever the upload stopped. It also leaves the address out of palette space, which a

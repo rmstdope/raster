@@ -942,7 +942,6 @@ fn a_nested_cycles_overrun_is_not_a_handler_overrun() {
     );
 }
 
-
 // ---- PpuUpload ------------------------------------------------------------------------------
 
 use raster_ir::{lower_with_pictures, Picture, Pictures};

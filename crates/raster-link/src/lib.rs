@@ -25,8 +25,7 @@ pub use m5::{
 };
 pub use runtime::{
     link_mmc3_program, link_mmc3_program_with_chr, mmc3_reset_prologue_bytes,
-    mmc3_reset_runtime_bytes, LinkedRom,
-    INTERRUPT_LABEL, RESET_LABEL,
+    mmc3_reset_runtime_bytes, LinkedRom, INTERRUPT_LABEL, RESET_LABEL,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

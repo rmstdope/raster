@@ -356,4 +356,3 @@ fn notes_come_before_the_help_line() {
         )
     );
 }
-

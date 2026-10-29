@@ -6,7 +6,7 @@ use std::{fs, io::Cursor, num::NonZeroU32};
 use raster_assets::{decode_background, encode_background};
 use raster_diag::{render, Diagnostic, SourceFile};
 use raster_emu::render_after_frames;
-use rasterc::{compile_source_with_assets, run};
+use rasterc::{compile_source_with_assets, run, AssetSource};
 
 #[path = "common/picture.rs"]
 mod fixtures;
@@ -374,4 +374,123 @@ fn a_picture_placed_after_another_still_shows_correctly() {
     );
     let (expected, actual) = shown(&source, &files(33, 40, 1), 33);
     assert_picture_on_top(&expected, &actual);
+}
+
+/// Two attribute cells, so two sub-palettes: white on the left, orange on the right. Lit pixels
+/// follow a pattern that differs from tile to tile, so a wrong tile index shows too.
+struct TwoPalettes;
+
+impl rasterc::AssetSource for TwoPalettes {
+    fn read(&self, _path: &str) -> Result<Vec<u8>, String> {
+        let (width, height) = (32usize, 16usize);
+        let mut pixels = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let lit = (x / 8 + 2 * (y / 8) + x + y) % 3 == 0;
+                pixels.extend_from_slice(&match (lit, x < 16) {
+                    (false, _) => [0, 0, 0, 0],
+                    (true, true) => [0xfc, 0xfc, 0xfc, 0xff],
+                    (true, false) => [0xf8, 0x38, 0x00, 0xff],
+                });
+            }
+        }
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, width as u32, height as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&pixels).unwrap();
+        drop(writer);
+        Ok(bytes)
+    }
+}
+
+#[test]
+fn every_sub_palette_and_attribute_reaches_the_screen() {
+    let source = "asset image picture = png(\"picture.png\")\n\
+                  chrrom bank 0 { picture.tiles }\n\
+                  main {\n\
+                  \x20   ppu.mask = $00\n\
+                  \x20   load_palette(picture.palette)\n\
+                  \x20   load_nametable(picture.nametable, picture.attributes)\n\
+                  \x20   ppu.ctrl = $00\n\
+                  \x20   ppu.mask = $0A\n\
+                  }\n";
+    let rom = compile_source_with_assets(source, &TwoPalettes).expect("it compiles");
+    let frame = render_after_frames(
+        "two-palettes.nes",
+        &rom.image,
+        NonZeroU32::new(8).expect("eight is not zero"),
+    )
+    .expect("the ROM renders");
+    let indexed = decode_background(Cursor::new(TwoPalettes.read("").unwrap())).unwrap();
+    let shown = frame.as_indices();
+    for y in 0..16 {
+        for x in 0..32 {
+            assert_eq!(
+                u16::from(indexed.pixels()[y * 32 + x]),
+                shown[y * 256 + x],
+                "pixel ({x}, {y})"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_success_line_counts_the_picture_warning() {
+    let directory = Scratch::new("picture-warning");
+    fs::write(directory.path().join("picture.png"), picture_png(3)).unwrap();
+    let input = directory.path().join("demo.raster");
+    fs::write(
+        &input,
+        "asset image picture = png(\"picture.png\")\n\
+         chrrom bank 0 { picture.tiles }\n\
+         main {\n    ppu.mask = $0A\n    load_nametable(picture.nametable, picture.attributes)\n}\n",
+    )
+    .unwrap();
+    let mut stdout = Cursor::new(Vec::new());
+    let mut stderr = Cursor::new(Vec::new());
+    run(vec![input.display().to_string()], &mut stdout, &mut stderr).expect("a warning builds");
+
+    let stdout = String::from_utf8(stdout.into_inner()).unwrap();
+    let stderr = String::from_utf8(stderr.into_inner()).unwrap();
+    assert!(
+        stdout
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("demo.nes  (1 warning)"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.starts_with("warning: `load_nametable` runs while rendering is on\n"),
+        "{stderr}"
+    );
+    assert!(directory.path().join("demo.nes").exists());
+}
+
+#[test]
+fn a_refused_picture_ends_with_the_error_count_and_writes_no_rom() {
+    let directory = Scratch::new("picture-refused");
+    fs::write(directory.path().join("picture.png"), picture_png(3)).unwrap();
+    let input = directory.path().join("demo.raster");
+    fs::write(
+        &input,
+        "asset image picture = png(\"picture.png\")\nmain {\n    load_nametable(picture.nametable, picture.attributes)\n}\n",
+    )
+    .unwrap();
+    let mut stdout = Cursor::new(Vec::new());
+    let mut stderr = Cursor::new(Vec::new());
+    let result = run(vec![input.display().to_string()], &mut stdout, &mut stderr);
+
+    assert_eq!(result, Err(1));
+    let stderr = String::from_utf8(stderr.into_inner()).unwrap();
+    assert!(
+        stderr.ends_with(&format!(
+            "error: could not compile {} (1 error)\n",
+            input.display()
+        )),
+        "{stderr}"
+    );
+    assert!(!directory.path().join("demo.nes").exists());
 }

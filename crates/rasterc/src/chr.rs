@@ -17,6 +17,8 @@ use crate::assets::Assets;
 
 /// One 8 KiB CHR ROM bank: 512 tiles of 16 bytes, the MMC3's two pattern tables.
 const BANK_BYTES: usize = 8 * 1024;
+/// Banks an MMC3 addresses; numbers 0 to 31.
+const MAX_BANKS: u32 = 32;
 const TILE_BYTES: usize = 16;
 const BANK_TILES: usize = BANK_BYTES / TILE_BYTES;
 /// One pattern table, which is as far as a nametable entry can reach.
@@ -134,7 +136,11 @@ pub(crate) fn layout(program: &Program, assets: &Assets) -> Result<ChrLayout, Ve
                     "{} of {BANK_BYTES} bytes",
                     tiles_so_far * TILE_BYTES
                 ),
-                help: format!("move some of these to `chrrom bank {}`", number + 1),
+                help: if *number + 1 < MAX_BANKS {
+                    format!("move some of these to `chrrom bank {}`", number + 1)
+                } else {
+                    "move some of these to another bank".to_owned()
+                },
                 span: bank.contents,
             });
         } else {
@@ -169,7 +175,8 @@ pub(crate) fn layout(program: &Program, assets: &Assets) -> Result<ChrLayout, Ve
         .collect();
     let next_free_bank = (0u32..)
         .find(|number| !declared.iter().any(|(declared, _)| declared == number))
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(MAX_BANKS);
 
     Ok(ChrLayout {
         banks,
@@ -390,10 +397,20 @@ mod tests {
         );
         assert_eq!(errors[0].label, "9216 of 8192 bytes");
         assert_eq!(errors[0].help, "move some of these to `chrrom bank 4`");
+
         assert_eq!(
             text(source, &errors[0]),
             "picture.tiles, font.tiles, sprites.tiles"
         );
+    }
+
+    #[test]
+    fn the_last_bank_has_no_next_bank_to_suggest() {
+        let source = "chrrom bank 31 { a.tiles, b.tiles, c.tiles }";
+        let errors = run(source, &[("a", 256), ("b", 256), ("c", 1)])
+            .err()
+            .unwrap();
+        assert_eq!(errors[0].help, "move some of these to another bank");
     }
 
     #[test]

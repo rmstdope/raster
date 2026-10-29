@@ -430,6 +430,16 @@ fn nametable_while_rendering(call: Span, turned_on: Span, bits: u8) -> LowerWarn
     }
 }
 
+/// `asset` for an argument that is just the name of a picture.
+fn bare_asset<'a>(pictures: &Pictures, argument: &'a Spanned<SyntaxExpression>) -> Option<&'a str> {
+    match &argument.value {
+        SyntaxExpression::Name(name) if pictures.by_name.contains_key(&name.value) => {
+            Some(name.value.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// `(asset, member)` for an argument written `asset.member`.
 fn asset_member_of(expression: &Spanned<SyntaxExpression>) -> Option<(&str, &str)> {
     let SyntaxExpression::Member { base, member } = &expression.value else {
@@ -1309,7 +1319,7 @@ fn stolen_vblank_flag(span: Span) -> LowerWarning {
         span,
         assumes_budget_met: false,
         help: None,
-       secondary: None,
+        secondary: None,
     }
 }
 
@@ -1334,7 +1344,7 @@ fn unreadable_handler_mask(span: Span) -> LowerWarning {
         // was met, so it is never the warning a budget refusal stands down.
         assumes_budget_met: false,
         help: None,
-       secondary: None,
+        secondary: None,
     }
 }
 
@@ -1365,7 +1375,7 @@ fn half_written_pair(opener: LatchPair, span: Span, by: LatchBreaker) -> LowerWa
         span,
         assumes_budget_met: false,
         help: None,
-       secondary: None,
+        secondary: None,
     }
 }
 
@@ -1383,7 +1393,7 @@ fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
         span,
         assumes_budget_met: false,
         help: None,
-       secondary: None,
+        secondary: None,
     };
     let Value::Constant(bits) = value else {
         return Some(LowerWarning {
@@ -1398,7 +1408,7 @@ fn bank_select_warning(value: &Value, span: Span) -> Option<LowerWarning> {
             span,
             assumes_budget_met: false,
             help: None,
-           secondary: None,
+            secondary: None,
         });
     };
     let prg = bits & MMC3_PRG_MODE != 0;
@@ -2476,6 +2486,10 @@ impl Lowerer {
                 else {
                     return None;
                 };
+                // A variable is not a register, so storing to one cannot turn rendering off.
+                if matches!(left.value, SyntaxExpression::Name(_)) && !contains_call(right) {
+                    return before;
+                }
                 let SyntaxExpression::Member { base, member } = &left.value else {
                     return None;
                 };
@@ -3200,10 +3214,10 @@ impl Lowerer {
     /// Argument shape is judged here and not in `raster-sema` because every mistake has a label
     /// naming what was passed and a help line writing the call that works. The first wrong
     /// argument is the only one reported: the second is usually wrong because the first was.
-    fn lower_load(
+    fn lower_load<'a>(
         &mut self,
         name: &Spanned<String>,
-        arguments: &[Spanned<SyntaxExpression>],
+        arguments: &'a [Spanned<SyntaxExpression>],
         output: &mut Vec<Statement>,
     ) {
         let palette = name.value == "load_palette";
@@ -3212,13 +3226,24 @@ impl Lowerer {
         } else {
             &[("nametable", "a nametable"), ("attributes", "attributes")]
         };
-        let given: Vec<Option<(&str, &str)>> = arguments.iter().map(asset_member_of).collect();
+        // Only `asset.member` where `asset` is a picture counts; `ppu.mask` is not one.
+        let given: Vec<Option<(&str, &str)>> = arguments
+            .iter()
+            .map(|argument| {
+                asset_member_of(argument)
+                    .filter(|(asset, _)| self.pictures.by_name.contains_key(*asset))
+            })
+            .collect();
+        let pictures = &self.pictures;
+        let bare = |argument: &'a Spanned<SyntaxExpression>| bare_asset(pictures, argument);
         // The asset the corrected call is written with: the first argument that names one.
         let asset = given
             .iter()
             .flatten()
+            .map(|(asset, _)| *asset)
             .next()
-            .map_or("<asset>", |(asset, _)| asset);
+            .or_else(|| arguments.iter().find_map(bare))
+            .unwrap_or("<asset>");
         let corrected = if palette {
             format!("write `load_palette({asset}.palette)`")
         } else {
@@ -3258,8 +3283,10 @@ impl Lowerer {
                 ),
                 None => (headline.clone(), format!("this is not {noun}")),
             };
-            let help = match given[index] {
-                Some((a, _)) if palette => format!("did you mean `{a}.palette`?"),
+            let help = match (given[index], bare(argument)) {
+                (Some((a, _)), _) | (None, Some(a)) if palette => {
+                    format!("did you mean `{a}.palette`?")
+                }
                 _ => corrected.clone(),
             };
             self.errors.push(LowerError {
@@ -3652,7 +3679,7 @@ impl Lowerer {
                 span,
                 assumes_budget_met: false,
                 help: None,
-               secondary: None,
+                secondary: None,
             });
         }
         Some(Value::Register(Register::PpuData))
@@ -4713,7 +4740,7 @@ fn timed_frame_nmi_warning(verdict: TimedFrameNmi, span: Span) -> LowerWarning {
         span,
         assumes_budget_met: false,
         help: None,
-       secondary: None,
+        secondary: None,
     };
     match verdict {
         TimedFrameNmi::On { ctrl } => LowerWarning {
@@ -4729,7 +4756,7 @@ fn timed_frame_nmi_warning(verdict: TimedFrameNmi, span: Span) -> LowerWarning {
             span,
             assumes_budget_met: false,
             help: None,
-           secondary: None,
+            secondary: None,
         },
         TimedFrameNmi::Unproven => unknown(
             "the last write to `ppu.ctrl` before the frame is not a value\n\
@@ -4764,7 +4791,7 @@ fn handler_nmi_warning(write: &HandlerCtrlWrite) -> Option<LowerWarning> {
             span: write.span,
             assumes_budget_met: false,
             help: None,
-           secondary: None,
+            secondary: None,
         }),
         None => Some(LowerWarning {
             message: "rasterc cannot tell whether this write enables NMI".to_owned(),
@@ -4779,7 +4806,7 @@ fn handler_nmi_warning(write: &HandlerCtrlWrite) -> Option<LowerWarning> {
             span: write.span,
             assumes_budget_met: false,
             help: None,
-           secondary: None,
+            secondary: None,
         }),
     }
 }

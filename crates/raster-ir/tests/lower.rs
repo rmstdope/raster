@@ -2587,6 +2587,48 @@ fn a_write_to_another_register_does_not_forget_that_rendering_is_on() {
 fn load_palette_never_warns() {
     assert!(warnings_of("ppu.mask = $0A\nload_palette(picture.palette)").is_empty());
 }
+
+#[test]
+fn a_register_member_is_not_mistaken_for_an_assets_member() {
+    for (body, label, help) in [
+        (
+            "load_palette(ppu.mask)",
+            "this is not a palette",
+            "write `load_palette(<asset>.palette)`",
+        ),
+        (
+            "load_nametable(ppu.ctrl, picture.attributes)",
+            "this is not a nametable",
+            "write `load_nametable(picture.nametable, picture.attributes)`",
+        ),
+    ] {
+        let found = refused_loads(body, true);
+        assert_eq!(found.len(), 1, "{body}: {found:?}");
+        assert_eq!(found[0].0.label.as_deref(), Some(label), "{body}");
+        assert_eq!(found[0].0.help.as_deref(), Some(help), "{body}");
+    }
+}
+
+#[test]
+fn a_bare_asset_name_is_pointed_at_its_member() {
+    let found = refused_loads("load_palette(picture)", true);
+    assert_eq!(
+        found[0].0.help.as_deref(),
+        Some("did you mean `picture.palette`?")
+    );
+    let found = refused_loads("load_nametable(picture, picture.attributes)", true);
+    assert_eq!(
+        found[0].0.help.as_deref(),
+        Some("write `load_nametable(picture.nametable, picture.attributes)`")
+    );
+}
+
+#[test]
+fn an_assignment_to_a_variable_does_not_make_the_compiler_forget_rendering_is_on() {
+    let warnings = warnings_of(&format!("var n: u8 = 0\nppu.mask = $1E\nn = 1\n{LOAD}"));
+    assert_eq!(warnings.len(), 1);
+}
+
 // ---- raster-72o: a `cycles` block that can start with NMI on ----
 
 const KNOWN_ON_HEADLINE: &str =

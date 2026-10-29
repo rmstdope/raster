@@ -1210,7 +1210,6 @@ fn a_local_named_vram_addr_in_a_timed_region_needs_no_sync_exact() {
     analyze(&program).expect("a variable is not a PPU write");
 }
 
-
 const PICTURE: &str = "asset image picture = png(\"art/picture.png\") { kind: background }\n";
 
 /// The errors of `PICTURE` followed by `rest`, each with the text its span covers.

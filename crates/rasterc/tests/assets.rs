@@ -250,7 +250,3 @@ fn two_broken_pictures_are_both_reported() {
         ]
     );
 }
-
-fn valid_png() -> Vec<u8> {
-    png_bytes(16, 16, |_, _| BLACK)
-}
