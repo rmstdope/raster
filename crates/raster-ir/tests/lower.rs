@@ -2301,7 +2301,7 @@ fn an_asset_does_not_reach_the_rom_yet() {
     );
     assert_eq!(
         failure.errors[0].refusal,
-        raster_diag::Refusal::NotInThisRelease
+        raster_diag::Refusal::AssetNotPlaced
     );
     assert_eq!(
         &source[failure.errors[0].span.start as usize..failure.errors[0].span.end as usize],

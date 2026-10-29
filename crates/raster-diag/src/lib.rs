@@ -22,6 +22,14 @@ pub enum Refusal {
     /// not compile it *anywhere*. These carry the list of what the release can
     /// build instead.
     NotInThisRelease,
+    /// An `asset` construct the language defines and this release does not
+    /// build. Carries the note about what this release reads for assets, not
+    /// the general list of constructs.
+    AssetNotInThisRelease,
+    /// A correct `asset` that the release reads and does not yet place in the
+    /// ROM. Carries no note: the line the author wrote is already the one the
+    /// release allows, so a list of what is allowed would only describe it back.
+    AssetNotPlaced,
     /// The construct is fine, and a timed region cannot charge its cost,
     /// because the region is costed as straight-line code. Only the cost-model
     /// gaps: a hardware wait has no cost to measure ever, and a placement rule

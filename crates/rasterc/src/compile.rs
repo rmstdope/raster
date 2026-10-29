@@ -19,6 +19,12 @@ const SUPPORTED_SUBSET: &str = "this release compiles `main`, `fn`, `if`, `while
                                 with `cycles`, `pad`, `sync exact` and `wait cycles`; and one\n\
                                 `frame` of `every ... scanlines` events";
 
+/// What this release reads for assets, listed once per run beside the first asset
+/// construct it had to refuse. The general note says nothing about assets.
+const ASSET_SUBSET: &str = "this release reads one kind of asset: `asset image` from a `png`,\n\
+                            with `kind: background`, `palette: auto(4)` and `dedup: true`, used\n\
+                            through `.tiles`, `.nametable`, `.attributes` and `.palette`";
+
 /// Why a timed region refuses a construct that is fine everywhere else, said
 /// once per run beside the first of them.
 const TIMED_REGION_COST: &str = "a timed block is costed as straight-line code; loops, branches\n\
@@ -249,8 +255,9 @@ fn lowered(errors: Vec<raster_ir::LowerError>, source: &str) -> Vec<Diagnostic> 
 fn note_for(refusal: Refusal) -> Option<&'static str> {
     match refusal {
         Refusal::NotInThisRelease => Some(SUPPORTED_SUBSET),
+        Refusal::AssetNotInThisRelease => Some(ASSET_SUBSET),
         Refusal::TimedRegionCost => Some(TIMED_REGION_COST),
-        Refusal::Rejected => None,
+        Refusal::AssetNotPlaced | Refusal::Rejected => None,
     }
 }
 
@@ -449,6 +456,29 @@ fn internal_compiler_error(error: &impl std::fmt::Debug) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each kind of note is said once, beside the first refusal of its kind, in the
+    /// order the errors arrive. No single run can hold an asset refusal (semantic
+    /// analysis) and a general one (lowering) today, so this pins `noted` directly.
+    #[test]
+    fn asset_and_general_notes_each_appear_once_beside_the_first_of_their_kind() {
+        let at = Span::clamped(0, 0, "");
+        let refusal = |kind| (Diagnostic::error("no", at, "no"), kind);
+        let notes: Vec<Vec<String>> = noted(vec![
+            refusal(Refusal::AssetNotInThisRelease),
+            refusal(Refusal::NotInThisRelease),
+            refusal(Refusal::AssetNotInThisRelease),
+            refusal(Refusal::NotInThisRelease),
+            refusal(Refusal::AssetNotPlaced),
+        ])
+        .into_iter()
+        .map(|d| d.notes)
+        .collect();
+
+        assert_eq!(notes[0], [ASSET_SUBSET]);
+        assert_eq!(notes[1], [SUPPORTED_SUBSET]);
+        assert!(notes[2..].iter().all(Vec::is_empty), "{notes:?}");
+    }
 
     /// The figures are a real overflow: 1700 `ppu.mask = 1` statements compile
     /// to 8635 bytes, of which 449 are over the bank. Pinned here rather than

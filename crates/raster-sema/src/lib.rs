@@ -138,10 +138,10 @@ impl Analyzer {
         self.refuse(span, message, Refusal::TimedRegionCost);
     }
 
-    /// Refuse a construct the language defines and this release does not build
-    /// anywhere. These carry the list of what the release can build instead.
-    fn not_in_this_release(&mut self, span: Span, message: impl Into<String>) {
-        self.refuse(span, message, Refusal::NotInThisRelease);
+    /// Refuse an `asset` construct this release does not build. These carry the
+    /// note about what the release reads for assets.
+    fn asset_not_in_this_release(&mut self, span: Span, message: impl Into<String>) {
+        self.refuse(span, message, Refusal::AssetNotInThisRelease);
     }
 
     fn refuse(&mut self, span: Span, message: impl Into<String>, refusal: Refusal) {
@@ -238,10 +238,10 @@ impl Analyzer {
     /// than one that says it cannot build it.
     fn check_asset(&mut self, asset: &raster_syntax::Asset) {
         if asset.kind.value != "image" {
-            self.not_in_this_release(asset.kind.span, "only `asset image` is supported yet");
+            self.asset_not_in_this_release(asset.kind.span, "only `asset image` is supported yet");
         }
         if asset.loader.value != "png" {
-            self.not_in_this_release(asset.loader.span, "only `png` is supported yet");
+            self.asset_not_in_this_release(asset.loader.span, "only `png` is supported yet");
         }
 
         let mut seen: Vec<&str> = Vec::new();
@@ -274,7 +274,7 @@ impl Analyzer {
                 // §8.1 of the specification defines this and this release does
                 // not build it. An author copying that block verbatim must not
                 // be told they invented it.
-                "compress" => self.not_in_this_release(
+                "compress" => self.asset_not_in_this_release(
                     field.name.span,
                     "only `kind`, `palette` and `dedup` are supported yet",
                 ),
@@ -294,7 +294,7 @@ impl Analyzer {
         message: &str,
     ) {
         if &field.value.value != wanted {
-            self.not_in_this_release(field.value.span, message);
+            self.asset_not_in_this_release(field.value.span, message);
         }
     }
 
@@ -867,7 +867,7 @@ impl Analyzer {
                     if spec_only_asset_member(&member.value) {
                         // Defined by §8.1 and not built yet, which is a
                         // different thing from a member nobody has heard of.
-                        self.not_in_this_release(
+                        self.asset_not_in_this_release(
                             member.span,
                             "only `tiles`, `nametable`, `attributes` and `palette` \
                              are supported yet",
