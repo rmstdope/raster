@@ -706,11 +706,12 @@ fn a_handler_that_does_not_fit_its_scanline_names_its_cost_and_its_budget() {
 
     assert!(
         matches!(
-            error,
-            CodegenError::Timing {
-                error: raster_timing::TimingError::OverBudget { budget: 114, .. },
-                ..
-            }
+            &error,
+            CodegenError::FrameHandlersOverBudget { errors, .. }
+                if matches!(
+                    errors[..],
+                    [(raster_timing::TimingError::OverBudget { budget: 114, .. }, _)]
+                )
         ),
         "expected an over-budget scanline body, found {error:?}"
     );
@@ -812,5 +813,150 @@ fn nothing_unmasks_irqs_before_main_has_run() {
          checked nothing. Either the arming sequence stopped unmasking interrupts,\n\
          or the fixture stopped lowering to an IRQ chain. Fix the fixture rather\n\
          than deleting the assertion."
+    );
+}
+
+/// The two-event frame every budget test reads: one `at`, one `every`.
+fn frame_source(using: &str, first: &str, second: &str) -> String {
+    format!(
+        r#"
+            main {{
+                ppu.ctrl = $10
+                ppu.mask = $18
+            }}
+            frame bars {using} {{
+                at scanline 60 {{ {first} }}
+                every 8 scanlines from 96 to 200 {{ {second} }}
+            }}
+        "#
+    )
+}
+
+fn budget_rows(output: &raster_codegen::CodegenOutput) -> Vec<(String, u32, u32)> {
+    output
+        .frame
+        .as_ref()
+        .expect("a program with a frame reports its budget")
+        .rows
+        .iter()
+        .map(|row| (row.label.clone(), row.handler_cycles, row.window_cycles))
+        .collect()
+}
+
+#[test]
+fn an_irq_frame_reports_one_row_per_event_against_the_nine_cycle_hblank() {
+    let output = generate_source(&frame_source(
+        "using irq",
+        "ppu.mask = $1f",
+        "ppu.mask = $1e",
+    ));
+
+    let frame = output.frame.as_ref().expect("the frame reports");
+    assert_eq!(frame.name, "bars");
+    assert_eq!(frame.strategy, raster_ir::FrameStrategy::Irq);
+    assert!(frame.strategy_written);
+    assert_eq!(
+        budget_rows(&output),
+        [
+            ("scanline 60".to_owned(), 6, 9),
+            ("scanline 96-200 every 8".to_owned(), 6, 9),
+        ]
+    );
+}
+
+#[test]
+fn a_timed_frame_charges_the_handler_its_save_mask_and_restore_against_a_scanline() {
+    let output = generate_source(&frame_source("", "ppu.mask = $1f", "ppu.mask = $1e"));
+
+    let frame = output.frame.as_ref().expect("the frame reports");
+    assert!(!frame.strategy_written);
+    assert_eq!(frame.strategy, raster_ir::FrameStrategy::Timed);
+    // PHP 3 + SEI 2 + PLP 4 wrap the six-cycle store.
+    assert_eq!(
+        budget_rows(&output),
+        [
+            ("scanline 60".to_owned(), 15, 114),
+            ("scanline 96-200 every 8".to_owned(), 15, 114),
+        ]
+    );
+}
+
+#[test]
+fn consecutive_scanlines_give_a_timed_handler_the_tighter_window() {
+    let output = generate_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 1 scanlines from 10 to 40 { ppu.mask = $1e }
+            }
+        "#,
+    );
+
+    let rows = budget_rows(&output);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].2, 113);
+}
+
+#[test]
+fn a_program_without_a_frame_reports_no_budget() {
+    let output = generate_source("main { ppu.mask = 0 }");
+    assert_eq!(output.frame, None);
+}
+
+#[test]
+fn every_handler_over_its_window_is_reported_not_only_the_first() {
+    let source = frame_source(
+        "using irq",
+        "ppu.mask = $1f\n ppu.scroll = 0",
+        "ppu.mask = $1e\n ppu.scroll = 0\n ppu.scroll = 0",
+    );
+    let syntax = parse(&source).expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let error = generate(&lower(&typed).expect("fixture should lower"))
+        .expect_err("two handlers are over the hblank");
+
+    let CodegenError::FrameHandlersOverBudget { errors, budget } = error else {
+        panic!("expected the collected overruns, found {error:?}");
+    };
+    assert_eq!(
+        errors
+            .iter()
+            .map(|(error, _)| error.clone())
+            .collect::<Vec<_>>(),
+        [
+            raster_timing::TimingError::IrqHandlerOverHblank {
+                measured_cycles: 12,
+                budget: 9
+            },
+            raster_timing::TimingError::IrqHandlerOverHblank {
+                measured_cycles: 18,
+                budget: 9
+            },
+        ]
+    );
+    assert_eq!(
+        budget
+            .rows
+            .iter()
+            .map(|row| (row.handler_cycles, row.window_cycles))
+            .collect::<Vec<_>>(),
+        [(12, 9), (18, 9)]
+    );
+}
+
+#[test]
+fn a_nested_cycles_overrun_is_not_a_handler_overrun() {
+    let syntax = parse(&frame_source(
+        "using timed",
+        "cycles(10) {\n ppu.mask = $1f\n ppu.mask = $1f\n }",
+        "ppu.mask = $1e",
+    ))
+    .expect("fixture should parse");
+    let typed = analyze(&syntax).expect("fixture should analyze");
+    let error = generate(&lower(&typed).expect("fixture should lower")).expect_err("over");
+
+    assert!(
+        matches!(error, CodegenError::Timing { .. }),
+        "the author's own block is a plain timing error, found {error:?}"
     );
 }
