@@ -859,10 +859,10 @@ fn a_warning_and_a_refusal_in_one_run_print_the_warning_first_and_count_both() {
     assert!(!output.exists());
     let warning = stderr
         .find("warning: this `ppu.data` read")
-        .expect(&format!("a warning: {stderr}"));
+        .unwrap_or_else(|| panic!("a warning: {stderr}"));
     let error = stderr
         .find("error: `ppu.data` cannot be the destination")
-        .expect(&format!("a refusal: {stderr}"));
+        .unwrap_or_else(|| panic!("a refusal: {stderr}"));
     assert!(warning < error, "warning first, got:\n{stderr}");
     assert!(
         stderr.ends_with(&format!(

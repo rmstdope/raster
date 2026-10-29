@@ -164,10 +164,9 @@ fn an_irq_entry_that_was_never_defined_is_refused() {
 fn reset_leaves_r7_selected_for_the_lowering_pass() {
     let last_select = PROLOGUE
         .windows(5)
-        .filter(|window| {
+        .rfind(|window| {
             window[0] == 0xa9 && window[2] == 0x8d && window[3] == 0x00 && window[4] == 0x80
         })
-        .next_back()
         .expect("the reset prologue selects bank registers");
 
     assert_eq!(
