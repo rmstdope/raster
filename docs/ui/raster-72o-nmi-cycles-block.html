@@ -1,0 +1,156 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>raster-72o — NMI and a cycles block</title><style>
+:root { --bg:#12131a; --fg:#d8dae4; --dim:#7c8296; --red:#ff6b6b; --yel:#ffcf6b; --cyan:#6fd3e8; --grn:#8fd694; }
+* { box-sizing: border-box; }
+body { margin:0; background:#f6f6f8; color:#22242c;
+       font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+main { max-width: 64rem; margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing:-.01em; }
+.sub { color:#666b7a; margin:0 0 1.6rem; font-size:.95rem; max-width:52em; }
+h2 { font-size: .95rem; margin: 2.2rem 0 .4rem; text-transform: uppercase;
+     letter-spacing:.09em; color:#666b7a; font-weight:600; }
+.note { font-size:.9rem; color:#666b7a; margin:.35rem 0 .8rem; max-width:56em; }
+.term { background:var(--bg); color:var(--fg); border-radius:8px; padding:1rem 1.1rem;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre; overflow-x:auto; border:1px solid #000; }
+.term .e { color: var(--red); font-weight:700; }
+.term .w { color: var(--yel); font-weight:700; }
+.term .g { color: var(--dim); }
+.term .c { color: var(--cyan); }
+.term .ok { color: var(--grn); }
+.src { background:#eceef4; border-radius:8px; padding:.9rem 1.1rem; border:1px solid #d9dce6;
+       font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow-x:auto;
+       margin:.5rem 0 .5rem; }
+.tag { display:inline-block; font:600 11px/1 ui-monospace,monospace; letter-spacing:.06em;
+       padding:.35rem .5rem; border-radius:4px; background:#e3e5ec; color:#4a4f61; margin-bottom:.5rem;}
+.cost { border-left:3px solid #c9ccd6; padding-left:.9rem; margin:.8rem 0 0; font-size:.9rem; color:#4a4f61; max-width:56em; }
+.silent { border-left:3px solid #8fd694; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#3f6b46; max-width:56em; }
+.bad { border-left:3px solid #ff6b6b; padding-left:.9rem; margin:.5rem 0 0; font-size:.9rem; color:#8c3535; max-width:56em; }
+table { border-collapse:collapse; margin:.6rem 0 0; font-size:.9rem; }
+th,td { text-align:left; padding:.35rem .9rem .35rem 0; border-bottom:1px solid #dfe1e9; vertical-align:top; }
+th { color:#666b7a; font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:.78rem; }
+code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#eceef4; padding:.08em .3em; border-radius:3px; }
+.nav { font-size:.85rem; color:#666b7a; margin:0 0 1.4rem; }
+.nav a { color:#3a6ea8; }
+@media (prefers-color-scheme: dark) {
+  body { background:#0d0e13; color:#d8dae4; }
+  .sub, h2, .note, .cost, .nav, th { color:#8b90a2; }
+  .tag { background:#1e2029; color:#a8adc0; }
+  .cost { border-color:#2a2d3a; }
+  .silent { color:#8fd694; }
+  .bad { color:#ff9b9b; }
+  .src { background:#171922; border-color:#262a36; color:#c9cddb; }
+  code { background:#171922; color:#c9cddb; }
+  th,td { border-color:#262a36; }
+  .nav a { color:#6fb0e8; }
+}
+</style>
+</head><body><main><h1>raster-72o &mdash; NMI and a <code>cycles</code> block outside a frame</h1><p class="sub">Agreed with the navigator over two rounds. A <code>cycles</code> block in <code>main</code> is charged nothing for an NMI that can land inside it; the <code>sei</code> bracket does not mask NMI. What ships is a warning &mdash; the ROM is still written &mdash; and a corrected rule 5 in the specification. Every terminal block below is the layout rasterc prints.</p><h2>1 · The program that compiles silently today</h2><pre class="src">1  main {
+2      ppu.ctrl = $88          // NMI on
+3      sync exact
+4      cycles(114) pad {
+5          ppu.mask = $1e
+6      }
+7  }</pre><p class="note">The <code>php</code>/<code>sei</code> … <code>plp</code> bracket masks IRQ, not NMI. One NMI inside the block costs it 13 cycles (7 to enter, 6 for the runtime’s bare <code>RTI</code>), so the 114 it asserts is false.</p><p class="cost">Decided: warn, and still build — the same severity as the <code>timed</code>-frame NMI warning. Rejected: refusing.</p><h2>2 · The message</h2><pre class="term"><span class="w">warning</span>: NMI can be on when this block runs, and a `cycles` block cannot afford one
+ <span class="c">--&gt;</span> demo.raster:4:5
+  <span class="c">|</span>
+<span class="c">4 |</span>     cycles(114) pad {
+  <span class="c">|</span> <span class="w">    ^^^^^^^^^^^^^^^</span> <span class="w">this block claims 114 cycles</span>
+  <span class="c">= note:</span> `ppu.ctrl` holds $88 when this block starts, and bit 7 is NMI;
+          the `sei` around a timed block cannot mask an NMI
+  <span class="c">= note:</span> each NMI taken inside costs the block 13 cycles; clear bit 7
+          before the block to keep its count
+
+ <span class="ok">Compiled</span>  demo.raster -&gt; demo.nes
+   mapper  MMC3 (4), NTSC
+      ...
+ <span class="w">warnings</span>  1</pre><p class="note">Carets on the <code>cycles(…)</code> header, through <code>pad</code> when present. For <code>cycles(&lt;= N)</code> the label reads <code>this block claims at most N cycles</code>. The <code>$88</code> in the first note is the value <code>ppu.ctrl</code> holds, written as the program wrote it in hex.</p><h2>3 · When the block meets NMI — every way in, round a loop included</h2><pre class="src">1  main {
+2      ppu.ctrl = $00          // NMI off
+3      sync exact
+4      cycles(114) pad {       // runs once, with NMI off
+5          ppu.mask = $1e
+6      }
+7      ppu.ctrl = $88          // NMI on, after the block
+8  }</pre><pre class="term"> <span class="ok">Compiled</span>  demo.raster -&gt; demo.nes      <span class="g">(no warning)</span></pre><pre class="src">1  main {
+2      ppu.ctrl = $00
+3      loop {
+4          sync exact
+5          cycles(114) pad {   // 2nd time round, NMI is on
+6              ppu.mask = $1e
+7          }
+8          ppu.ctrl = $88
+9      }
+10 }</pre><pre class="term"><span class="w">warning</span>: NMI can be on when this block runs, and a `cycles` block cannot afford one
+ <span class="c">--&gt;</span> demo.raster:5:9
+  <span class="c">|</span>
+<span class="c">5 |</span>         cycles(114) pad {
+  <span class="c">|</span> <span class="w">        ^^^^^^^^^^^^^^^</span> <span class="w">this block claims 114 cycles</span>
+  <span class="c">= note:</span> `ppu.ctrl` holds $88 when this block starts, and bit 7 is NMI;
+          the `sei` around a timed block cannot mask an NMI
+  <span class="c">= note:</span> each NMI taken inside costs the block 13 cycles; clear bit 7
+          before the block to keep its count</pre><p class="note">A block inside a function is reached through every call <code>main</code> makes to it; if any of those ways in has NMI on, it warns. Rejected: warning on every block whenever the program sets bit 7 anywhere.</p><h2>4 · rasterc cannot tell</h2><pre class="src">1  var flags: u8
+2  main {
+3      ppu.ctrl = flags
+4      sync exact
+5      cycles(114) pad {
+6          ppu.mask = $1e
+7      }
+8  }</pre><pre class="term"><span class="w">warning</span>: rasterc cannot tell whether NMI is on when this block runs
+ <span class="c">--&gt;</span> demo.raster:5:5
+  <span class="c">|</span>
+<span class="c">5 |</span>     cycles(114) pad {
+  <span class="c">|</span> <span class="w">    ^^^^^^^^^^^^^^^</span> <span class="w">this block claims 114 cycles</span>
+  <span class="c">= note:</span> the last write to `ppu.ctrl` before this block is not a value
+          rasterc can see, so bit 7 is unknown
+  <span class="c">= note:</span> bit 7 is NMI, and each NMI taken inside costs the block 13 cycles;
+          writing a constant with bit 7 clear keeps its count</pre><pre class="src">1  main {
+2      var x: u8 = 1
+3      if x != 0 { ppu.ctrl = $88 }
+4      sync exact
+5      cycles(114) pad {
+6          ppu.mask = $1e
+7      }
+8  }</pre><pre class="term"><span class="w">warning</span>: rasterc cannot tell whether NMI is on when this block runs
+ <span class="c">--&gt;</span> demo.raster:5:5
+  <span class="c">|</span>
+<span class="c">5 |</span>     cycles(114) pad {
+  <span class="c">|</span> <span class="w">    ^^^^^^^^^^^^^^^</span> <span class="w">this block claims 114 cycles</span>
+  <span class="c">= note:</span> `ppu.ctrl` is written with bit 7 set on some paths into this
+          block and not others, so bit 7 is unknown
+  <span class="c">= note:</span> bit 7 is NMI, and each NMI taken inside costs the block 13 cycles;
+          writing a constant with bit 7 clear keeps its count</pre><p class="note">Two first notes, because the two causes are fixed differently. “Some paths and not others” means the paths disagree about bit 7; two paths that both leave it clear are silent.</p><h2>5 · Several blocks: one warning each</h2><pre class="src">1  main {
+2      ppu.ctrl = $88
+3      sync exact
+4      cycles(114) pad { ppu.mask = $1e }
+5      cycles(114) pad { ppu.mask = $1f }
+6  }</pre><pre class="term"><span class="w">warning</span>: NMI can be on when this block runs, and a `cycles` block cannot afford one
+ <span class="c">--&gt;</span> demo.raster:4:5
+  <span class="c">|</span>
+<span class="c">4 |</span>     cycles(114) pad { ppu.mask = $1e }
+  <span class="c">|</span> <span class="w">    ^^^^^^^^^^^^^^^</span> <span class="w">this block claims 114 cycles</span>
+  <span class="c">= note:</span> `ppu.ctrl` holds $88 when this block starts, and bit 7 is NMI;
+          the `sei` around a timed block cannot mask an NMI
+  <span class="c">= note:</span> each NMI taken inside costs the block 13 cycles; clear bit 7
+          before the block to keep its count
+
+<span class="w">warning</span>: NMI can be on when this block runs, and a `cycles` block cannot afford one
+ <span class="c">--&gt;</span> demo.raster:5:5
+  <span class="c">|</span>
+<span class="c">5 |</span>     cycles(114) pad { ppu.mask = $1f }
+  <span class="c">|</span> <span class="w">    ^^^^^^^^^^^^^^^</span> <span class="w">this block claims 114 cycles</span>
+  <span class="c">= note:</span> `ppu.ctrl` holds $88 when this block starts, and bit 7 is NMI;
+          the `sei` around a timed block cannot mask an NMI
+  <span class="c">= note:</span> each NMI taken inside costs the block 13 cycles; clear bit 7
+          before the block to keep its count
+
+ <span class="ok">Compiled</span>  demo.raster -&gt; demo.nes
+   mapper  MMC3 (4), NTSC
+      ...
+ <span class="w">warnings</span>  2</pre><p class="note">Block warnings come in source order, after the warnings rasterc already prints, alongside the frame-level NMI warnings. Rejected: one warning per program with a note listing the other lines.</p><h2>6 · Silent, and asserted to stay silent</h2><table><tr><th>Program</th><th>After this change</th></tr><tr><td>a timed block in a <code>using irq</code> handler, NMI on (the language’s own flagship program)</td><td>silent — handlers run on visible scanlines 0–239 and NMI fires at 241, and each IRQ re-synchronizes</td></tr><tr><td>a timed block in a <code>using timed</code> frame handler, NMI on</td><td>silent here — the frame already gets “this program enables NMI, and a <code>timed</code> frame cannot afford one”</td></tr><tr><td><code>cycles(?) label { }</code> with NMI on</td><td>silent — it claims no count</td></tr><tr><td>a block that runs before NMI is turned on, never again</td><td>silent</td></tr><tr><td>no <code>ppu.ctrl</code> write at all</td><td>silent — reset leaves $00</td></tr></table><h2>7 · The language reference, rule 5 of §6.3</h2><p class="note">Today:</p><pre class="src">| **5. No interrupts, unless declared.** ... | **as designed** — the `php`/`sei` …
+`plp` bracket costs nine cycles and is charged to the region's own budget, so
+the annotation is the region's wall-clock cost. |</pre><p class="note">After (the “rasterc today” cell; the designed cell is unchanged):</p><pre class="src">| **5. No interrupts, unless declared.** ... | **as designed for IRQ** — the
+`php`/`sei` … `plp` bracket costs nine cycles and is charged to the region's own
+budget, so the annotation is the region's wall-clock cost while no NMI lands
+inside it. The I flag cannot mask NMI: rasterc warns when NMI can be on as a
+block in `main` starts, and says so when it cannot tell. A block in a `using
+irq` handler is not warned, since the handler runs on visible scanlines and NMI
+does not; a `using timed` frame is warned as a whole (section 7.1). |</pre></main></body></html>
