@@ -7,8 +7,12 @@ use std::{
 
 use rasterc::run;
 
-mod common;
-use common::{demo_source, Scratch};
+#[path = "common/demo.rs"]
+mod demo;
+#[path = "common/scratch.rs"]
+mod scratch;
+use demo::demo_source;
+use scratch::Scratch;
 
 fn run_capturing(args: Vec<String>) -> (Result<(), i32>, String, String) {
     let mut stdout = Cursor::new(Vec::new());
