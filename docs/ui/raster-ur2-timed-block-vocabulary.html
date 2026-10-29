@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Timed block vocabulary</title>
+<style>
+  :root{
+    --bg:#12131a; --panel:#0c0d12; --ink:#e6e7ee; --dim:#8b8fa3;
+    --line:#242634; --accent:#7ecfff; --err:#ff8b7a; --ok:#8fe08a; --warn:#ffd479;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;}
+  .wrap{max-width:900px;margin:0 auto;padding:48px 24px 96px}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
+  .tag{display:inline-block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);border:1px solid var(--line);border-radius:99px;padding:3px 10px;margin-bottom:18px}
+  .lede{color:var(--dim);margin:0 0 32px;max-width:66ch}
+  h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);
+    margin:40px 0 10px;font-weight:600}
+  h2 .n{color:var(--line);margin-right:8px}
+  .note{color:var(--dim);font-size:13px;margin:8px 0 0;max-width:70ch}
+  .doc{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:22px 26px;margin:0}
+  .doc h3{font-size:17px;margin:0 0 12px;color:var(--ink);letter-spacing:-.01em}
+  .doc h4{font-size:14px;margin:22px 0 8px;color:var(--ink)}
+  .doc p{margin:0 0 12px;max-width:68ch}
+  .doc ol{margin:0 0 12px;padding-left:22px} .doc ul{margin:0 0 12px;padding-left:22px}
+  .doc li{margin:0 0 10px;max-width:66ch}
+  .doc code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:rgba(126,207,255,.08);border-radius:3px;padding:1px 4px;color:var(--accent)}
+  pre.term,pre.src{background:#07080c;border:1px solid var(--line);border-radius:6px;
+    padding:14px 16px;overflow-x:auto;margin:0 0 14px;
+    font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;}
+  table{border-collapse:collapse;width:100%;margin:0 0 14px;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+  .e{color:var(--err)} .g{color:var(--ok)} .w{color:var(--warn)} .d{color:var(--dim)} .p{color:var(--accent)}
+  .pill{display:inline-block;font:11px/1.5 ui-monospace,Menlo,monospace;border-radius:99px;
+    padding:1px 8px;border:1px solid var(--line);white-space:nowrap}
+  .pill.now{color:var(--ok);border-color:rgba(143,224,138,.4)}
+  .pill.strict{color:var(--warn);border-color:rgba(255,212,121,.4)}
+  .pill.soon{color:var(--dim)}
+  ins{background:rgba(143,224,138,.14);text-decoration:none;color:var(--ok);border-radius:3px;padding:0 2px}
+  del{background:rgba(255,139,122,.12);color:var(--err);border-radius:3px;padding:0 2px}
+  footer{margin-top:56px;border-top:1px solid var(--line);padding-top:16px;color:var(--dim);font-size:12px}
+</style></head><body><div class="wrap">
+</head><body><div class="wrap">
+<span class="tag">raster-ur2 · agreed</span>
+<h1>The timed-block vocabulary, finished</h1>
+<p class="lede">Every place the spec still says <i>region</i> for a <code>cycles</code> block now says <i>block</i> or <i>timed block</i> — the same word the compiler's own messages already use. Six edits in §6.3–§6.5, plus §6.6's marker becomes <i>stricter</i>.</p>
+<h2><span class="n">01</span> §6.3 — the paragraph under the heading</h2>
+<div class="doc"><p>rasterc costs <del>a region</del><ins>a block</ins> by adding up its instructions, so anything whose generated code can move the program counter elsewhere is refused.</p></div>
+<h2><span class="n">02</span> §6.3 — rule 5, the "rasterc today" column</h2>
+<div class="doc"><p><b>as designed for IRQ</b> — the <code>php</code>/<code>sei</code> … <code>plp</code> bracket costs nine cycles and is charged to the <del>region's</del><ins>block's</ins> own budget, so the annotation is the <del>region's</del><ins>block's</ins> wall-clock cost while no NMI lands inside it. …</p></div>
+<h2><span class="n">03</span> §6.3 — rule 6, the designed column</h2>
+<div class="doc"><p><b>6. A <del>region</del><ins>timed block</ins> must be straight-line.</b> Generated code that can go anywhere but the next instruction … is a compile error whatever construct produced it.</p></div>
+<h2><span class="n">04</span> §6.4 — missed last time because it wraps across two lines</h2>
+<div class="doc"><p>Raster's position is that inside a <del>timed region</del><ins>timed block</ins>, "I cannot prove this" must be a compile error and not a shrug.</p></div>
+<h2><span class="n">05</span> §6.5 — "rasterc today" note</h2>
+<div class="doc"><p>… widen the budget and let <code>pad</code> fill it instead. Outside <del>a region</del><ins>a timed block</ins>, <code>wait cycles(N)</code> is built for any N ≥ 2; …</p></div>
+
+<h2><span class="n">06</span> §6.6 — "rasterc today" note</h2>
+<div class="doc">
+<p><del><b>rasterc today:</b> as designed, and enforced — a timed block that writes a PPU register with no preceding <code>sync exact</code> is refused. A <code>frame</code> handler is entered already synchronized and needs none of its own.</del></p>
+<p><ins><b>rasterc today:</b> stricter — a timed block that writes a PPU register is refused unless a <code>sync exact</code> comes earlier in the same list of statements, whether or not the screen is rendering; one further out does not count. A <code>frame</code> handler is entered already synchronized and needs none of its own.</ins></p>
+</div>
+<p class="note">Uses the spec's own definition: <span class="pill strict">stricter</span> the compiler refuses more than the text allows. The designed text asks for <code>sync exact</code> only <i>during rendering</i>; the compiler asks for it always.</p>
+<h2><span class="n">··</span> Left exactly as they are, in both options</h2>
+<div class="doc">
+<p><b>§1, the motivation</b> — <i>…it has no way to express "this region costs exactly N cycles."</i> &nbsp;<span class="d">ordinary English, written before the construct had a name.</span></p>
+<p><b>The target header</b> — <code>region: ntsc</code>, <code>region: dual</code> &nbsp;<span class="d">the TV standard; a different word entirely.</span></p>
+</div>
+<footer>Green is added, red is struck; every word on this page ships verbatim in the language spec. Lines not shown are unchanged.</footer>
+</div></body></html>
