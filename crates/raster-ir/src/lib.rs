@@ -3877,14 +3877,8 @@ impl Lowerer {
             }
             SyntaxExpression::Prefix { operator, operand } => match operator.value {
                 Operator::Plus => self.lower_value(operand),
-                Operator::Minus => Value::Unary {
-                    operator: UnaryOperator::Negate,
-                    operand: Box::new(self.lower_value(operand)),
-                },
-                Operator::Tilde => Value::Unary {
-                    operator: UnaryOperator::Not,
-                    operand: Box::new(self.lower_value(operand)),
-                },
+                Operator::Minus => self.unary(UnaryOperator::Negate, operand),
+                Operator::Tilde => self.unary(UnaryOperator::Not, operand),
                 Operator::Bang => {
                     self.not_in_this_release(operator.span, "bool expressions are not supported");
                     let _ = self.lower_value(operand);
@@ -4156,7 +4150,24 @@ impl Lowerer {
         false
     }
 
+    /// A unary operation, folded into its value when its operand is a constant.
+    fn unary(&mut self, operator: UnaryOperator, operand: &Spanned<SyntaxExpression>) -> Value {
+        match (operator, self.lower_value(operand)) {
+            (UnaryOperator::Negate, Value::Constant(value)) => {
+                Value::Constant(value.wrapping_neg())
+            }
+            (UnaryOperator::Not, Value::Constant(value)) => Value::Constant(!value),
+            (operator, operand) => Value::Unary {
+                operator,
+                operand: Box::new(operand),
+            },
+        }
+    }
+
     fn binary(&mut self, left: Value, operator: BinaryOperator, right: Value, span: Span) -> Value {
+        if let (Value::Constant(left), Value::Constant(right)) = (&left, &right) {
+            return Value::Constant(fold(*left, operator, *right));
+        }
         Value::Binary {
             left: Box::new(left),
             operator,
@@ -4703,6 +4714,23 @@ fn parse_number(number: &str) -> Option<u32> {
 
 fn to_u8(value: u32) -> Option<u8> {
     u8::try_from(value).ok()
+}
+
+/// An operation on two constants, as the code it would otherwise emit computes it: eight bits
+/// that wrap, a shift of eight or more that leaves nothing, and a division by zero that is zero.
+fn fold(left: u8, operator: BinaryOperator, right: u8) -> u8 {
+    match operator {
+        BinaryOperator::Add => left.wrapping_add(right),
+        BinaryOperator::Subtract => left.wrapping_sub(right),
+        BinaryOperator::Multiply => left.wrapping_mul(right),
+        BinaryOperator::Divide => left.checked_div(right).unwrap_or(0),
+        BinaryOperator::Remainder => left.checked_rem(right).unwrap_or(0),
+        BinaryOperator::And => left & right,
+        BinaryOperator::Or => left | right,
+        BinaryOperator::Xor => left ^ right,
+        BinaryOperator::ShiftLeft => left.checked_shl(u32::from(right)).unwrap_or(0),
+        BinaryOperator::ShiftRight => left.checked_shr(u32::from(right)).unwrap_or(0),
+    }
 }
 
 fn binary_operator(operator: Operator) -> Option<BinaryOperator> {

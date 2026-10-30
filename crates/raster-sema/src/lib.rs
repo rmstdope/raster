@@ -1313,10 +1313,15 @@ impl Analyzer {
         }
         let left_type = self.expression_type(left);
         let right_type = self.expression_type(right);
+        // `raster-ir` folds an operation on two constants into its value, so `2*3` costs what
+        // the constant 6 costs and emits no loop at all.
+        let folded =
+            self.evaluate_constant(left).is_some() && self.evaluate_constant(right).is_some();
         match operator.value {
+            _ if folded => {}
             // Each of these lowers to a `DEX`/`BNE` loop over one of its operands, so its cost
-            // is a loop's cost however constant the operands are. A straight-line region would
-            // charge a single pass: `v * 3` was predicted at 38 cycles and spends 69.
+            // is a loop's cost. A straight-line region would charge a single pass: `v * 3` was
+            // predicted at 38 cycles and spends 69.
             Operator::Star | Operator::Slash | Operator::Percent => self.reject_in_timed_block(
                 operator.span,
                 "multiplication, division and remainder inside a timed block compile to loops \

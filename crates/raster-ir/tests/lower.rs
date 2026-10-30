@@ -649,7 +649,7 @@ fn a_bank_select_that_sets_both_mode_bits_is_one_warning() {
 fn a_bank_select_rasterc_cannot_fold_is_a_warning() {
     for source in [
         "main { var which: u8 = 3\n mmc3.bank_select = which }",
-        "main { mmc3.bank_select = $40 | $06 }",
+        "main { var which: u8 = 3\n mmc3.bank_select = which | $06 }",
         "fn pick() -> u8 { return 3 }\nmain { mmc3.bank_select = pick() }",
     ] {
         let program = lower_source(source);
@@ -709,18 +709,19 @@ fn warnings_survive_a_failed_lowering() {
 }
 
 #[test]
-fn a_bank_select_rasterc_cannot_fold_still_warns() {
-    // `binary` builds a `Value::Binary` unconditionally, so a value rasterc
-    // could fold by eye is not a constant to it. This used to be shown with
-    // `mmc3.bank_select += $80`, which is now refused outright for reading
-    // $8000; a plain assignment of a binary expression makes the same point.
-    let program = lower_source("main { mmc3.bank_select = $40 | $06 }");
+fn a_bank_select_of_constant_arithmetic_is_judged_as_its_value() {
+    // `$40 | $06` folds to `$46`, so rasterc sees bit 6 and says what it does, exactly as it does
+    // for the literal; before raster-mjf this was a value it could not see.
+    let folded = lower_source("main { mmc3.bank_select = $40 | $06 }");
+    let literal = lower_source("main { mmc3.bank_select = $46 }");
 
-    assert_eq!(program.warnings.len(), 1);
+    assert_eq!(folded.warnings.len(), 1);
     assert_eq!(
-        program.warnings[0].label,
-        "rasterc cannot see this value here, so bits 6 and 7 are unknown"
+        folded.warnings[0].message,
+        "this bank select changes the MMC3 mapping mode"
     );
+    assert_eq!(folded.warnings[0].label, literal.warnings[0].label);
+    assert_eq!(folded.warnings[0].notes, literal.warnings[0].notes);
 }
 
 #[test]
@@ -843,12 +844,13 @@ fn a_bank_data_write_after_an_unfoldable_select_warns_softly() {
 
 #[test]
 fn a_bank_select_rasterc_cannot_fold_leaves_the_selection_unknown() {
-    // `binary` builds a `Value::Binary` unconditionally, so a selection rasterc
-    // could fold by eye is not a constant to it. This used to be shown with
-    // `mmc3.bank_select += 1`, which `raster-1t9` now refuses outright for
-    // reading $8000; a plain assignment of a binary expression is the same
-    // unfoldable selection and makes the same point.
-    let program = lower_source("main { mmc3.bank_select = 6 | 1\n mmc3.bank_data = 2 }");
+    // A selection computed from a variable is one rasterc cannot fold. This
+    // used to be shown with `mmc3.bank_select += 1`, which `raster-1t9` now
+    // refuses outright for reading $8000, and then with `6 | 1`, which
+    // `raster-mjf` folds to the constant 7.
+    let program = lower_source(
+        "main { var which: u8 = 6\n mmc3.bank_select = which | 1\n mmc3.bank_data = 2 }",
+    );
 
     assert_eq!(program.warnings.len(), 2);
     assert_eq!(
@@ -3984,4 +3986,40 @@ fn an_indexed_read_of_a_variable_array_is_still_refused() {
             .any(|error| error.message == "arrays are not supported yet"),
         "{errors:?}"
     );
+}
+
+// ---- constant folding (raster-mjf) ----
+
+/// An operation on two constants lowers to its value, computed as the loop it replaces would
+/// compute it: eight bits that wrap, a shift of eight or more that leaves nothing, and a division
+/// or remainder by zero that is zero.
+#[test]
+fn an_operation_on_two_constants_folds_to_the_value_the_emitted_code_would_compute() {
+    let cases: &[(&str, u8)] = &[
+        ("2*3", 6),
+        ("200*2", 144),
+        ("1-2", 255),
+        ("200+100", 44),
+        ("7/2", 3),
+        ("7%2", 1),
+        ("7/0", 0),
+        ("7%0", 0),
+        ("1<<9", 0),
+        ("$80>>8", 0),
+        ("$81>>1", 0x40),
+        ("(2*3)+1", 7),
+        ("~1*2", 0xFC),
+        ("-1", 0xFF),
+    ];
+    for (expression, value) in cases {
+        let source = format!("main {{\n    ppu.data = {expression}\n}}\n");
+        assert_eq!(
+            main_assigns(&source),
+            [(
+                raster_ir::Destination::Register(Register::PpuData),
+                raster_ir::Value::Constant(*value)
+            )],
+            "`{expression}` folds to {value}"
+        );
+    }
 }

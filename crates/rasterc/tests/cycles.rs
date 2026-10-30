@@ -508,4 +508,39 @@ fn a_delay_whose_loop_count_turns_on_its_jumps_is_spent_exactly() {
             bracketed_delay(cycles),
         );
     }
+
+fn constant_arithmetic_in_a_timed_region_is_folded_and_reported_at_its_cost() {
+    let source = fixture("constant-arithmetic.raster");
+    let rom = compile_source(&source).expect("constant arithmetic has a fixed cost");
+    assert_eq!(rom.reports, vec![("c".to_owned(), 15)]);
+    let region: Vec<(u8, Option<u16>)> = timed_region(&source)
+        .iter()
+        .map(|instruction| (instruction.opcode, instruction.operand))
+        .collect();
+    // PHP SEI, LDA #$06 STA $2007, PLP: the product is a constant, not a loop.
+    assert_eq!(
+        region,
+        [
+            (PHP, None),
+            (0x78, None),
+            (0xA9, Some(6)),
+            (0x8D, Some(0x2007)),
+            (PLP, None)
+        ]
+    );
+    assert_prediction_is_spent("constant-arithmetic.raster");
+}
+
+#[test]
+fn a_vram_addr_written_as_constant_arithmetic_builds_in_a_timed_region() {
+    let source = fixture("constant-vram-addr.raster");
+    let rom = compile_source(&source).expect("constant arithmetic has a fixed cost");
+    assert_eq!(rom.reports, vec![("v".to_owned(), 21)]);
+    let operands: Vec<Option<u16>> = timed_region(&source)
+        .iter()
+        .filter(|instruction| instruction.opcode == 0xA9)
+        .map(|instruction| instruction.operand)
+        .collect();
+    assert_eq!(operands, [Some(0x20), Some(0x82)]);
+    assert_prediction_is_spent("constant-vram-addr.raster");
 }
