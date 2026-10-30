@@ -1171,3 +1171,21 @@ fn a_run_whose_handler_cannot_spare_a_turn_s_end_is_unrolled_rather_than_refused
     let rows = budget_rows(&output);
     assert_eq!(rows, [("scanline 10-16 every 1".to_owned(), 109, 113)]);
 }
+
+#[test]
+fn a_run_that_would_leave_a_looped_handler_one_cycle_short_is_unrolled() {
+    // 93 cycles leave a 113-cycle turn end one cycle over the 19 a turn takes, and nothing spends
+    // a single cycle, so that frame's copy of the run stays unrolled rather than being refused.
+    let output = generate_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 1 scanlines from 10 to 30 {
+                    cycles(84) pad { }
+                }
+            }
+        "#,
+    );
+
+    assert_eq!(budget_rows(&output)[0].1, 93);
+}

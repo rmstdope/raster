@@ -627,8 +627,9 @@ impl Generator<'_> {
     /// and so are the ones a whole turn does not cover.
     ///
     /// A loop is how the compiler saves space, never a reason to refuse a program: a run whose
-    /// handler cannot also spare the [`LOOP_TURN_CYCLES`] the end of a turn takes is unrolled, and
-    /// judged against its whole scanline as it always was.
+    /// handler cannot also spare the [`LOOP_TURN_CYCLES`] the end of a turn takes, or would be left
+    /// exactly one cycle to pad, is unrolled, and judged against its whole scanline as it always
+    /// was.
     fn segments(
         &mut self,
         events: &[FrameEvent],
@@ -654,9 +655,13 @@ impl Generator<'_> {
                 && periodic
                 && self
                     .handler_cycles(&events[start], halt_label)
-                    .is_some_and(|cycles| {
-                        cycles + LOOP_TURN_CYCLES <= handlers[last_of_turn].budget_cycles
-                    });
+                    .and_then(|cycles| {
+                        handlers[last_of_turn]
+                            .budget_cycles
+                            .checked_sub(cycles + LOOP_TURN_CYCLES)
+                    })
+                    // A single spare cycle has no filler to spend it.
+                    .is_some_and(|spare| spare != 1);
             let unrolled_from = if looped {
                 segments.push(Segment::Loop { start, turns });
                 start + turns * SCANLINES_PER_TURN

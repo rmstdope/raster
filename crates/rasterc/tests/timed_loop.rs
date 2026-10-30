@@ -97,3 +97,39 @@ fn every_looped_handler_lands_at_the_same_point_of_its_scanline() {
         }
     }
 }
+
+#[test]
+fn a_run_looped_in_some_frames_of_the_pass_and_unrolled_in_others_lands_every_handler() {
+    let rom =
+        compile_source(&cycles_fixture("stripes-mixed.raster")).expect("the fixture compiles");
+    let budget = rom.frame.expect("the fixture has a frame");
+    assert_eq!(
+        (budget.rows[0].handler_cycles, budget.rows[0].window_cycles),
+        (95, 95),
+        "looped where a turn ends on a 114-cycle scanline, and only there"
+    );
+
+    for frames in [8, 9, 10] {
+        let frame = render_after_frames(
+            "stripes-mixed.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs");
+        let entries = frame.as_indices();
+        let column = |y: usize| {
+            let row = &entries[y * FRAME_WIDTH..(y + 1) * FRAME_WIDTH];
+            (1..FRAME_WIDTH)
+                .find(|&x| row[x] != row[0])
+                .unwrap_or_else(|| panic!("frame {frames}: row {y} never changes colour"))
+        };
+        for y in 43..=100 {
+            assert_eq!(
+                column(y),
+                column(y - 3),
+                "frame {frames}: row {y} lands at a different column from row {}",
+                y - 3
+            );
+        }
+    }
+}
