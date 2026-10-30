@@ -963,6 +963,33 @@ fn a_frame_handler_holds_the_constant_it_repeats_in_x() {
     );
 }
 
+/// An unpadded exact block keeps its code only while it is being emitted: a bounded block after
+/// it holds its constants as if it were alone.
+#[test]
+fn a_bounded_block_after_an_exact_one_still_holds_its_constants() {
+    let output = generate_source(
+        r#"
+            main {
+                sync exact
+                cycles(21) {
+                    ppu.mask = 1
+                    ppu.mask = 1
+                }
+                cycles(<= 60) {
+                    ppu.addr = $00
+                    ppu.addr = $00
+                }
+            }
+        "#,
+    );
+
+    let stores_from_x = program_instructions(&output)
+        .iter()
+        .filter(|instruction| instruction.opcode == 0x8e && instruction.operand == Some(0x2006))
+        .count();
+    assert_eq!(stores_from_x, 2, "both `$00` stores come from X");
+}
+
 #[test]
 fn a_program_without_a_frame_reports_no_budget() {
     let output = generate_source("main { ppu.mask = 0 }");
