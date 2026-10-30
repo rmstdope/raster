@@ -881,8 +881,8 @@ handler and `using irq` with a loop in `main`. A near-identical demo, with its p
 scanline at a time, three bars in red, orange and yellow, passing in front of one another,
 are in `examples/copper-bars/copper-bars.raster`, the
 same bar drawn once and scrolled is in `examples/copper-scroll/copper.raster`, a picture
-never drawn for the NES, converted and split across both pattern tables, is in
-`examples/zombie/zombie.raster` (and the one-colour `examples/backdrop/backdrop.raster`).
+converted and split across both pattern tables is in `examples/zombie/zombie.raster` (and
+the one-colour `examples/backdrop/backdrop.raster`).
 
 ```
 target nes {

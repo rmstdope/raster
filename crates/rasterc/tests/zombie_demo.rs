@@ -1,5 +1,10 @@
 //! The zombie picture example end to end: `examples/zombie/zombie.raster` built and run, and every
 //! pixel of the frame compared with the picture `raster-assets` converts the PNG into.
+//!
+//! The compiler converts with the same function, so this does not judge the conversion, which
+//! `raster-assets`' own tests and `split_picture.rs` do. It proves the rest: the tiles laid out
+//! across both pattern tables, the nametable, attributes and palette loaded, and the example's
+//! two `ppu.ctrl` switches landing on the right lines.
 
 use std::{fs, io::Cursor, num::NonZeroU32};
 
@@ -56,8 +61,13 @@ fn build() -> Vec<u8> {
 
 #[test]
 fn every_pixel_of_the_frame_is_the_converted_picture() {
-    let png = fs::read(zombie_demo_path().with_file_name("../assets/zombie-nes.png"))
-        .expect("the picture is readable");
+    let png = fs::read(
+        zombie_demo_path()
+            .parent()
+            .expect("the example is in a directory")
+            .join("../assets/zombie-nes.png"),
+    )
+    .expect("the picture is readable");
     let picture = convert_background_split(png.as_slice()).expect("the picture converts");
     let rom = build();
 
