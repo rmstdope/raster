@@ -21,14 +21,10 @@ use scratch::Scratch;
 
 const BACKDROP: u16 = 0x0f;
 
-/// The bar from its top line down, in the NES colours the example loads: three lines of each
-/// shade, four of white in the middle.
+/// The bar from its top line down, in the NES colours the example loads: one line of each shade,
+/// white in the middle.
 fn bar() -> Vec<u16> {
-    let shades = [0x02, 0x12, 0x22, 0x32, 0x30, 0x32, 0x22, 0x12, 0x02];
-    shades
-        .iter()
-        .flat_map(|&shade| vec![shade; if shade == 0x30 { 4 } else { 3 }])
-        .collect()
+    vec![0x02, 0x12, 0x22, 0x32, 0x30, 0x32, 0x22, 0x12, 0x02]
 }
 
 /// Builds the example into a scratch directory; the summary, the diagnostics and the ROM.
@@ -136,6 +132,6 @@ fn the_bar_is_set_line_by_line_and_swings() {
         "the bar moves every frame: {tops:?}"
     );
     for top in tops {
-        assert!((16..=196).contains(&top), "the bar's top is line {top}");
+        assert!((16..=215).contains(&top), "the bar's top is line {top}");
     }
 }
