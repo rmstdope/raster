@@ -103,9 +103,6 @@ fn resolve_one(asset: &Asset, source: &dyn AssetSource) -> Result<NesBackground,
             ConvertError::Decode { message } => {
                 format!("`{path}` is not a readable PNG: {message}")
             }
-            ConvertError::TooManyTiles { tile_count } => {
-                encode_message(path, BackgroundEncodeError::TooManyTiles { tile_count })
-            }
         });
     }
     let indexed =

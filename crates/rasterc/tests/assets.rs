@@ -283,8 +283,9 @@ fn a_picture_too_large_for_the_screen_compiles_when_converted() {
 }
 
 #[test]
-fn a_converted_picture_of_too_many_tiles_says_how_many_it_needs() {
-    // Every tile different: its first rows count the tile's index in binary.
+fn a_converted_picture_of_too_many_tiles_compiles_in_256() {
+    // Every tile different: its first rows count the tile's index in binary. Refused as it
+    // stands, and drawn in 256 tiles when converted.
     let picture = png_bytes(256, 240, |x, y| {
         let tile = (y / 8) * 32 + x / 8;
         let bit = (x % 8) * 8 + y % 8;
@@ -294,17 +295,13 @@ fn a_converted_picture_of_too_many_tiles_says_how_many_it_needs() {
             BLACK
         }
     });
-    let source = converting_source();
 
-    let found =
-        compile_source_with_assets(&source, &Fixture(PATH, picture)).expect_err("too many tiles");
+    let found = compile_source_with_assets(&source(), &Fixture(PATH, picture.clone()))
+        .expect_err("too many tiles as it stands");
+    assert!(found[0].message.contains("distinct tiles"), "got {found:?}");
 
-    assert_eq!(found.len(), 1, "got {found:?}");
-    assert_eq!(
-        found[0].message,
-        "`art/picture.png` needs 960 distinct tiles; a background allows 256"
-    );
-    assert_points_at_the_path(&source, &found[0]);
+    compile_source_with_assets(&converting_source(), &Fixture(PATH, picture))
+        .expect("converted, it compiles");
 }
 
 #[test]

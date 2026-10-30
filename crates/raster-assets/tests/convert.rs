@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use raster_assets::{convert_background, ConvertError, NesBackground, NAMETABLE_WIDTH_TILES};
+use raster_assets::{convert_background, NesBackground, NAMETABLE_WIDTH_TILES};
 
 /// The FCEUX colour of the NES entries these pictures are drawn in.
 fn rgb(entry: u8) -> [u8; 3] {
@@ -186,7 +186,7 @@ fn a_transparent_pixel_shows_the_backdrop() {
 }
 
 #[test]
-fn a_picture_of_more_distinct_tiles_than_a_pattern_table_holds_is_refused_with_the_count() {
+fn a_picture_of_more_distinct_tiles_than_a_pattern_table_holds_is_drawn_in_256() {
     // Every tile of this picture is different: its rows count the tile's index in binary.
     let mut picture = vec![0x0fu8; 256 * 240];
     for tile in 0..960usize {
@@ -198,9 +198,88 @@ fn a_picture_of_more_distinct_tiles_than_a_pattern_table_holds_is_refused_with_t
         }
     }
 
-    let error = convert_background(Cursor::new(picture_png(256, 240, &picture, 1))).unwrap_err();
+    let background = convert_background(Cursor::new(picture_png(256, 240, &picture, 1))).unwrap();
 
-    assert_eq!(error, ConvertError::TooManyTiles { tile_count: 960 });
+    assert!(
+        background.chr().len() / 16 <= 256,
+        "{} tiles",
+        background.chr().len() / 16
+    );
+}
+
+#[test]
+fn tiles_alike_share_a_pattern_and_tiles_unlike_keep_theirs() {
+    // 200 tiles of white noise, each unlike the others in about half its pixels, and 760 copies
+    // of them with one pixel changed: 960 distinct tiles, of which the 200 are what matter.
+    // Drawn in 256, every tile is its own noise or that noise with its one pixel back.
+    let mut seed = 0x2545_f491u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let noise: Vec<u64> = (0..200)
+        .map(|_| u64::from(next()) << 32 | u64::from(next()))
+        .collect();
+    let mut picture = vec![0x0fu8; 256 * 240];
+    for tile in 0..960usize {
+        let mut bits = noise[tile % 200];
+        if tile >= 200 {
+            bits ^= 1 << (tile / 200 * 13 + tile % 7);
+        }
+        for bit in 0..64 {
+            if bits >> bit & 1 == 1 {
+                picture[((tile / 32) * 8 + bit / 8) * 256 + (tile % 32) * 8 + bit % 8] = 0x20;
+            }
+        }
+    }
+
+    let background = convert_background(Cursor::new(picture_png(256, 240, &picture, 1))).unwrap();
+
+    assert!(background.chr().len() / 16 <= 256);
+    let shown = shown_picture(&background);
+    for tile in 0..960usize {
+        let differing = (0..64)
+            .filter(|bit| {
+                let index = ((tile / 32) * 8 + bit / 8) * 256 + (tile % 32) * 8 + bit % 8;
+                shown[index] != picture[index]
+            })
+            .count();
+        assert!(differing <= 1, "tile {tile} is {differing} pixels off");
+    }
+}
+
+#[test]
+fn a_cell_of_fewer_than_three_colours_does_not_split_a_shared_pattern() {
+    // Noise in four colours on the left, and in black and green only on the right, whose cells
+    // need one colour besides the backdrop. A pattern shared by tiles on both sides must still be
+    // one tile.
+    let mut seed = 0x9e37_79b9u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as usize
+    };
+    let picture: Vec<u8> = (0..256 * 240)
+        .map(|index| {
+            let choice = next() % 4;
+            if index % 256 < 128 {
+                [0x0f, 0x20, 0x16, 0x01][choice]
+            } else {
+                [0x0f, 0x19][choice % 2]
+            }
+        })
+        .collect();
+
+    let background = convert_background(Cursor::new(picture_png(256, 240, &picture, 1))).unwrap();
+
+    assert!(
+        background.chr().len() / 16 <= 256,
+        "{} tiles",
+        background.chr().len() / 16
+    );
 }
 
 #[test]

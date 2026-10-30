@@ -542,8 +542,9 @@ covers, or the nearest pixel when the picture is smaller than the screen, and a 
 mostly transparent is the backdrop. A 256 by 224 capture of an NES screen fits as it is.
 Four palettes of three colours beside a black backdrop are fitted to it, each 16×16
 attribute cell drawing in the palette that loses it least, and every pixel takes the
-nearest colour its cell allows. A converted picture still needs at most 256 distinct
-tiles, and is refused with the number it needs when it does not fit.
+nearest colour its cell allows. A converted picture that needs more than the 256
+distinct tiles a pattern table holds is drawn in at most 256: the blank tile, and patterns
+fitted so that each tile is drawn in the one that looks most like it in its own palette.
 
 An explicit palette can be supplied instead of `auto`:
 
