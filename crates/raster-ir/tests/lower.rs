@@ -620,6 +620,88 @@ fn a_construct_this_release_does_not_have_is_refused_as_such() {
 }
 
 #[test]
+fn a_timed_frame_knows_whether_it_runs_over_a_rendered_picture() {
+    let frame = |main: &str| {
+        lower_source(&format!(
+            "main {{\n{main}\n}}\nframe bars using timed {{\n    at scanline 60 {{ ppu.addr = $01 }}\n}}\n"
+        ))
+        .frame
+        .expect("the frame lowers")
+    };
+
+    assert_eq!(
+        frame("    ppu.mask = $0a").rendering,
+        raster_timing::Rendering::On
+    );
+    assert_eq!(
+        frame("    ppu.mask = $00").rendering,
+        raster_timing::Rendering::Off
+    );
+    assert_eq!(
+        frame("    ppu.ctrl = $00").rendering,
+        raster_timing::Rendering::Off
+    );
+}
+
+/// The dot is skipped or not on the pre-render line, which sees whatever the frame's handlers
+/// stored in `ppu.mask` last, not what `main` stored: that is what decides the pass.
+#[test]
+fn a_timed_frame_counts_the_rendering_its_handlers_leave_for_the_next_frame() {
+    let frame = |main: &str, handlers: &str| {
+        lower_source(&format!(
+            "main {{\n    ppu.mask = {main}\n}}\nframe bars using timed {{\n{handlers}\n}}\n"
+        ))
+        .frame
+        .expect("the frame lowers")
+        .rendering
+    };
+
+    // Blanked at the last line and back on at the first: off on the pre-render line.
+    assert_eq!(
+        frame(
+            "$0a",
+            "    at scanline 0 { ppu.mask = $0a }\n    at scanline 239 { ppu.mask = $00 }"
+        ),
+        raster_timing::Rendering::Off
+    );
+    // Off before the frame, and turned on by it: on from then on.
+    assert_eq!(
+        frame("$00", "    at scanline 0 { ppu.mask = $0a }"),
+        raster_timing::Rendering::On
+    );
+}
+
+#[test]
+fn a_timed_frame_whose_handler_stores_a_mask_rasterc_cannot_read_is_warned() {
+    let program = lower_source(
+        "var mask: u8 = $0a\nmain {\n    ppu.mask = $0a\n}\nframe bars using timed {\n    at scanline 239 { ppu.mask = mask }\n}\n",
+    );
+
+    assert_eq!(program.warnings.len(), 1, "{:?}", program.warnings);
+    assert_eq!(
+        program.warnings[0].message,
+        "rasterc cannot tell whether rendering is on as this frame wraps"
+    );
+}
+
+#[test]
+fn a_timed_frame_that_cannot_tell_whether_rendering_is_on_is_warned() {
+    let program = lower_source(
+        "var mask: u8 = $0a\nmain {\n    ppu.mask = mask\n}\nframe bars using timed {\n    at scanline 60 { ppu.addr = $01 }\n}\n",
+    );
+
+    assert_eq!(
+        program.frame.expect("the frame lowers").rendering,
+        raster_timing::Rendering::Off
+    );
+    assert_eq!(program.warnings.len(), 1, "{:?}", program.warnings);
+    assert_eq!(
+        program.warnings[0].message,
+        "rasterc cannot tell whether rendering is on as this frame wraps"
+    );
+}
+
+#[test]
 fn a_bank_select_that_inverts_the_chr_map_is_a_warning() {
     let program = lower_source("main { mmc3.bank_select = $80 }");
 

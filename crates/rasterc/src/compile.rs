@@ -212,12 +212,13 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
         // Nothing is refused at a span here, so nothing is withdrawn.
         return Err(failed(lower_warnings, &[], deferred, source).into());
     }
-    // Only `using timed` pays the three-frame pass the fixed-bank note describes; an `irq`
-    // frame emits its handlers once.
-    let timed_frame = ir
+    // Only `using timed` pays the pass the fixed-bank note describes, three frames or six over
+    // a rendered picture; an `irq` frame emits its handlers once.
+    let timed_frames = ir
         .frame
         .as_ref()
-        .is_some_and(|frame| frame.strategy == FrameStrategy::Timed);
+        .filter(|frame| frame.strategy == FrameStrategy::Timed)
+        .map(|frame| frame.rendering.frames_per_pass());
     let rom = link_mmc3_program_with_chr(
         &output.program,
         output.main,
@@ -230,7 +231,7 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
         failed(
             lower_warnings,
             &[],
-            vec![link_diagnostic(error, timed_frame)],
+            vec![link_diagnostic(error, timed_frames)],
             source,
         )
     })?;
@@ -569,10 +570,11 @@ handler the whole scanline at the cost of the frame's entire CPU time",
     }
 }
 
-/// A link failure, as a diagnostic. `has_timed_frame` is not decoration: a timed frame emits its
-/// schedule once per frame of its pass, so an author whose program overflows the bank is otherwise
-/// shown a byte count three times the size of anything they wrote, with nothing to explain it.
-fn link_diagnostic(error: LinkError, has_timed_frame: bool) -> Diagnostic {
+/// A link failure, as a diagnostic. `timed_frames`, the frames of a timed frame's pass, is not
+/// decoration: a timed frame emits its schedule once per frame of its pass, so an author whose
+/// program overflows the bank is otherwise shown a byte count three or six times the size of
+/// anything they wrote, with nothing to explain it.
+fn link_diagnostic(error: LinkError, timed_frames: Option<u32>) -> Diagnostic {
     match error {
         LinkError::FixedBankTooLarge { actual, maximum } => {
             let runtime = mmc3_reset_runtime_bytes();
@@ -593,13 +595,15 @@ fn link_diagnostic(error: LinkError, has_timed_frame: bool) -> Diagnostic {
                         "PRG bank switching is not supported yet, so all code lives\n\
                      in the fixed bank",
                     );
-            if has_timed_frame {
-                diagnostic.with_note(
-                    "a `frame ... using timed` emits its schedule once per frame of its\n\
-                     three-frame pass, so a handler costs three times its own size",
-                )
-            } else {
-                diagnostic
+            match timed_frames {
+                Some(frames) => {
+                    let count = if frames == 6 { "six" } else { "three" };
+                    diagnostic.with_note(format!(
+                        "a `frame ... using timed` emits its schedule once per frame of its\n\
+                         {count}-frame pass, so a handler costs {count} times its own size"
+                    ))
+                }
+                None => diagnostic,
             }
         }
         LinkError::RelativeBranchOutOfRange { from, target } => {
@@ -716,6 +720,29 @@ mod tests {
     /// each, plus the 3-byte halt loop) on top of the reset runtime. Pinned here rather than
     /// through `compile_source` so the strings are asserted without a 1700-line
     /// fixture, and so a codegen change elsewhere cannot silently move them.
+    /// A timed frame's schedule is emitted once per frame of its pass, and a pass over a rendered
+    /// picture is six frames, not three: the note says which the author is paying for.
+    #[test]
+    fn the_overflow_refusal_counts_the_frames_of_the_timed_pass_it_paid_for() {
+        let overflow = || LinkError::FixedBankTooLarge {
+            actual: 9000,
+            maximum: 8186,
+        };
+        for (frames, words) in [(3, "three"), (6, "six")] {
+            let diagnostic = link_diagnostic(overflow(), Some(frames));
+            assert_eq!(
+                diagnostic.notes.last().map(String::as_str),
+                Some(
+                    format!(
+                        "a `frame ... using timed` emits its schedule once per frame of its\n\
+                         {words}-frame pass, so a handler costs {words} times its own size"
+                    )
+                    .as_str()
+                )
+            );
+        }
+    }
+
     #[test]
     fn the_overflow_refusal_says_how_many_of_the_author_s_own_bytes_have_to_go() {
         let actual = 1700 * 5 + 3 + mmc3_reset_runtime_bytes();
@@ -725,7 +752,7 @@ mod tests {
                 actual,
                 maximum: 8186,
             },
-            false,
+            None,
         );
 
         assert_eq!(

@@ -309,12 +309,10 @@ pub const SCANLINES_PER_FRAME: u32 = 262;
 /// cycles exactly, so a pass of three is the shortest one a cycle-counted loop can repeat forever
 /// without drifting.
 ///
-/// **With rendering disabled**, which is every ROM this release emits. With background rendering
-/// on, NTSC skips dot (339, 261) on odd frames, so frames alternate 89342 and 89341 dots and a pass
-/// of three is a dot short every other time round. Spec Appendix A's 29,780.5 cycles a frame is
-/// that alternation averaged; the numbers here are the rendering-off frame, which is the one the
-/// compiler can currently produce. A timed frame over a rendered picture needs its own pass length
-/// and its own evidence.
+/// **With rendering disabled.** With rendering on, NTSC skips dot (339, 261) on odd frames, so
+/// frames alternate 89342 and 89341 dots, and three of them are one or two dots short of a pass of
+/// three in turn: half a dot a frame, which slides a schedule along the picture. That pass is
+/// [`Rendering::On`]'s six frames instead.
 pub const FRAMES_PER_PASS: u32 = 3;
 /// The cycles one pass of a timed frame loop spends, from its origin back to its origin.
 pub const PASS_CYCLES: u32 = scanline_cycles(SCANLINES_PER_FRAME * FRAMES_PER_PASS);
@@ -390,6 +388,54 @@ pub const fn scanline_origin_cycles(frame: u32, scanline: u32) -> u32 {
     scanline_cycles(frame * SCANLINES_PER_FRAME + SCANLINES_FROM_VBLANK_TO_PICTURE + scanline)
 }
 
+/// Whether the PPU renders while a timed frame runs, which decides how long its frames are.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Rendering {
+    /// Every frame is 89342 dots, and three are a whole number of cycles.
+    Off,
+    /// NTSC skips dot (339, 261) every other frame, so frames alternate 89342 and 89341 dots and
+    /// six are a whole number of cycles: 536049 dots, 178683 cycles. Which frame skips first
+    /// depends on where the loop synchronized, which nothing can see; counting the skip in the
+    /// second frame of each pair is at most a dot, a third of a cycle, from either answer.
+    On,
+}
+
+impl Rendering {
+    /// Frames in one pass of a timed frame loop: the fewest that are a whole number of cycles.
+    pub const fn frames_per_pass(self) -> u32 {
+        match self {
+            Rendering::Off => FRAMES_PER_PASS,
+            Rendering::On => 2 * FRAMES_PER_PASS,
+        }
+    }
+
+    /// The cycles one pass spends, from its origin back to its origin.
+    pub const fn pass_cycles(self) -> u32 {
+        let frames = self.frames_per_pass();
+        (frames * SCANLINES_PER_FRAME * DOTS_PER_SCANLINE - self.skipped_dots(frames))
+            / DOTS_PER_CPU_CYCLE
+    }
+
+    /// The cycle, counted from a pass's origin, at which `scanline` of `frame` of the pass begins:
+    /// [`scanline_origin_cycles`], less a dot for every frame up to this one whose pre-render line
+    /// skipped one.
+    pub const fn origin_cycles(self, frame: u32, scanline: u32) -> u32 {
+        let dots = (frame * SCANLINES_PER_FRAME + SCANLINES_FROM_VBLANK_TO_PICTURE + scanline)
+            * DOTS_PER_SCANLINE
+            - self.skipped_dots(frame);
+        (dots + DOTS_PER_CPU_CYCLE / 2) / DOTS_PER_CPU_CYCLE
+    }
+
+    /// The dots skipped before the picture of `frame`: one in every second frame, counting the
+    /// pass's second frame as the first to skip.
+    const fn skipped_dots(self, frame: u32) -> u32 {
+        match self {
+            Rendering::Off => 0,
+            Rendering::On => frame.div_ceil(2),
+        }
+    }
+}
+
 /// Where one handler of a timed frame sits: what to spend before it, and what it must cost.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScheduledHandler {
@@ -426,24 +472,28 @@ pub struct TimedFramePass {
 /// closes the loop. It comes out of the pass's own budget, because a pass that pays for its
 /// schedule and then spends three cycles more is three cycles longer than the picture it is
 /// tracking, which is a dot of drift a frame and a scanline of it every three seconds. Measured.
-pub fn plan_timed_frame(scanlines: &[u32], closing_cycles: u32) -> TimedFramePass {
+pub fn plan_timed_frame(
+    scanlines: &[u32],
+    closing_cycles: u32,
+    rendering: Rendering,
+) -> TimedFramePass {
     debug_assert!(
         scanlines.windows(2).all(|pair| pair[0] < pair[1]),
         "a frame schedule is sorted and has one handler per scanline"
     );
-    let mut handlers = Vec::with_capacity(scanlines.len() * FRAMES_PER_PASS as usize);
+    let mut handlers = Vec::with_capacity(scanlines.len() * rendering.frames_per_pass() as usize);
     let mut position = 0;
-    for frame in 0..FRAMES_PER_PASS {
+    for frame in 0..rendering.frames_per_pass() {
         for (index, &scanline) in scanlines.iter().enumerate() {
-            let start = scanline_origin_cycles(frame, scanline);
+            let start = rendering.origin_cycles(frame, scanline);
             let next = scanlines
                 .get(index + 1)
-                .map(|&next| scanline_origin_cycles(frame, next))
+                .map(|&next| rendering.origin_cycles(frame, next))
                 .or_else(|| {
                     scanlines
                         .first()
-                        .filter(|_| frame + 1 < FRAMES_PER_PASS)
-                        .map(|&first| scanline_origin_cycles(frame + 1, first))
+                        .filter(|_| frame + 1 < rendering.frames_per_pass())
+                        .map(|&first| rendering.origin_cycles(frame + 1, first))
                 });
             let distance_to_next = next.map_or(SCANLINE_BODY_CYCLES, |next| next - start);
             // Widened to reach the next handler rather than left a cycle short of it: a gap of
@@ -465,7 +515,7 @@ pub fn plan_timed_frame(scanlines: &[u32], closing_cycles: u32) -> TimedFramePas
     }
     TimedFramePass {
         handlers,
-        trailing_delay_cycles: PASS_CYCLES - position - closing_cycles,
+        trailing_delay_cycles: rendering.pass_cycles() - position - closing_cycles,
     }
 }
 

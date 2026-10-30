@@ -673,7 +673,7 @@ fn a_timed_frame_delays_from_the_origin_to_each_handlers_scanline() {
     );
     let instructions = program_instructions(&output);
 
-    let pass = raster_timing::plan_timed_frame(&[60, 120], 3);
+    let pass = raster_timing::plan_timed_frame(&[60, 120], 3, raster_timing::Rendering::Off);
     assert!(pass.handlers.iter().all(|handler| handler.delay_cycles > 0));
     assert_eq!(
         timed_region_costs(&instructions),
@@ -898,15 +898,35 @@ fn a_looped_run_charges_the_end_of_each_turn_to_its_last_handler() {
         r#"
             main { ppu.mask = 0 }
             frame bars using timed {
+                every 1 scanlines from 10 to 40 { ppu.mask = $01 }
+            }
+        "#,
+    );
+
+    // A 113-cycle scanline less the 19 cycles a turn spends going round, or leaving. The handler
+    // leaves rendering off, so the pass is the rendering-off one this figure belongs to.
+    let rows = budget_rows(&output);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].2, 113 - 19);
+}
+
+#[test]
+fn a_looped_run_over_a_rendered_picture_loops_in_each_of_its_six_frames() {
+    let output = generate_source(
+        r#"
+            main { ppu.mask = $1e }
+            frame bars using timed {
                 every 1 scanlines from 10 to 40 { ppu.mask = $1e }
             }
         "#,
     );
 
-    // A 113-cycle scanline less the 19 cycles a turn spends going round, or leaving.
+    // Rendering on, the pass is six frames, whose turns all end on 114-cycle scanlines: the window
+    // is that less the 19 cycles a turn spends, where the rendering-off pass of
+    // `a_looped_run_charges_the_end_of_each_turn_to_its_last_handler` has a 113 among its three.
     let rows = budget_rows(&output);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].2, 113 - 19);
+    assert_eq!(rows[0].2, 114 - 19);
 }
 
 #[test]

@@ -444,7 +444,8 @@ fn a_scanline_starts_a_whole_number_of_cycles_after_the_pass_origin() {
 #[test]
 fn a_timed_frame_schedule_puts_every_handler_on_its_own_scanline_in_every_frame() {
     let scanlines = [0, 8, 9, 10, 200];
-    let pass = raster_timing::plan_timed_frame(&scanlines, CLOSING_CYCLES);
+    let pass =
+        raster_timing::plan_timed_frame(&scanlines, CLOSING_CYCLES, raster_timing::Rendering::Off);
 
     assert_eq!(
         pass.handlers.len(),
@@ -475,9 +476,68 @@ fn a_timed_frame_schedule_puts_every_handler_on_its_own_scanline_in_every_frame(
     );
 }
 
+/// With rendering on, NTSC skips dot (339, 261) every other frame, so frames alternate 89342 and
+/// 89341 dots. Three frames are then not a whole number of cycles, and six are: 536049 dots,
+/// 178683 cycles exactly. A pass over a rendered picture is six frames, each handler where its
+/// scanline begins once the dots skipped before its picture are taken off.
+#[test]
+fn a_timed_frame_over_a_rendered_picture_is_six_frames_of_whole_cycles() {
+    use raster_timing::Rendering;
+
+    assert_eq!(Rendering::Off.frames_per_pass(), 3);
+    assert_eq!(Rendering::Off.pass_cycles(), raster_timing::PASS_CYCLES);
+    assert_eq!(Rendering::On.frames_per_pass(), 6);
+    assert_eq!(Rendering::On.pass_cycles(), 178_683);
+    assert_eq!(Rendering::On.pass_cycles() * 3, 6 * 262 * 341 - 3);
+
+    let scanlines = [0, 100, 101, 239];
+    let pass = raster_timing::plan_timed_frame(&scanlines, CLOSING_CYCLES, Rendering::On);
+    assert_eq!(pass.handlers.len(), scanlines.len() * 6);
+
+    let mut position = 0;
+    let mut handlers = pass.handlers.iter();
+    for frame in 0..6 {
+        for scanline in scanlines {
+            let handler = handlers.next().expect("a handler per scanline per frame");
+            position += handler.delay_cycles;
+            assert_eq!(
+                position,
+                Rendering::On.origin_cycles(frame, scanline),
+                "the handler for scanline {scanline} of frame {frame} starts where it does"
+            );
+            position += handler.budget_cycles;
+        }
+    }
+    assert_eq!(
+        position + pass.trailing_delay_cycles + CLOSING_CYCLES,
+        Rendering::On.pass_cycles()
+    );
+
+    // Rendering off, origins are what they always were; rendering on, a frame's picture starts a
+    // dot earlier for every frame before it that skipped one.
+    for frame in 0..3 {
+        assert_eq!(
+            Rendering::Off.origin_cycles(frame, 60),
+            raster_timing::scanline_origin_cycles(frame, 60)
+        );
+    }
+    let dots = |frame: u32, skipped: u32| (frame * 262 + 21 + 60) * 341 - skipped;
+    for (frame, skipped) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 2), (5, 3)] {
+        assert_eq!(
+            Rendering::On.origin_cycles(frame, 60),
+            (dots(frame, skipped) + 1) / 3,
+            "frame {frame}"
+        );
+    }
+}
+
 #[test]
 fn adjacent_handlers_carry_the_correction_that_keeps_the_frame_budget_exact() {
-    let pass = raster_timing::plan_timed_frame(&[0, 1, 2, 3], CLOSING_CYCLES);
+    let pass = raster_timing::plan_timed_frame(
+        &[0, 1, 2, 3],
+        CLOSING_CYCLES,
+        raster_timing::Rendering::Off,
+    );
     let budgets: Vec<_> = pass.handlers[..4]
         .iter()
         .map(|handler| handler.budget_cycles)
@@ -494,7 +554,8 @@ fn adjacent_handlers_carry_the_correction_that_keeps_the_frame_budget_exact() {
 
 #[test]
 fn a_handler_with_room_after_it_gets_one_scanline_body_and_a_delay_to_the_next() {
-    let pass = raster_timing::plan_timed_frame(&[60, 120], CLOSING_CYCLES);
+    let pass =
+        raster_timing::plan_timed_frame(&[60, 120], CLOSING_CYCLES, raster_timing::Rendering::Off);
 
     assert_eq!(pass.handlers[0].budget_cycles, 114);
     assert_eq!(pass.handlers[1].budget_cycles, 114);

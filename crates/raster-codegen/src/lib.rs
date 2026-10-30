@@ -512,10 +512,11 @@ impl Generator<'_> {
     ///
     /// The loop is entered once through the read-$2002-and-branch sequence of spec section 6.6,
     /// which waits for vblank and fixes the origin every handler's position is counted from. After
-    /// that nothing polls: each pass spends exactly [`raster_timing::PASS_CYCLES`], so the loop
-    /// stays locked to the picture for as long as the console is on.
+    /// that nothing polls: each pass spends exactly [`raster_timing::Rendering::pass_cycles`], so
+    /// the loop stays locked to the picture for as long as the console is on.
     ///
-    /// A pass is three frames, and the schedule runs in each of them. One frame is 29780 CPU cycles
+    /// A pass is three frames, or six over a rendered picture, whose frames alternate a dot
+    /// shorter, and the schedule runs in each of them. One frame is 29780 CPU cycles
     /// and two dots, so a loop of one frame cannot be exact — and a loop that re-polls `$2002` each
     /// frame instead sweeps its reads across the dot where the vblank flag is set. A read within two
     /// cycles of it returns the flag clear and suppresses it, and that frame's whole schedule is
@@ -537,7 +538,7 @@ impl Generator<'_> {
     /// still leave NMI off and start no DMC transfer.
     fn timed_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
         let scanlines: Vec<_> = frame.events.iter().map(|event| event.scanline).collect();
-        let pass = plan_timed_frame(&scanlines, JMP_ABSOLUTE_CYCLES);
+        let pass = plan_timed_frame(&scanlines, JMP_ABSOLUTE_CYCLES, frame.rendering);
         let mut frames = Vec::new();
         for handlers in pass.handlers.chunks(frame.events.len()) {
             frames.push(self.segments(&frame.events, handlers, halt_label));

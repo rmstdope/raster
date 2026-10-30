@@ -526,3 +526,98 @@ fn an_irq_event_at_scanline_240_may_run_nearly_the_whole_line() {
         );
     }
 }
+
+/// Where, in dots from the top of the picture, the first pixel showing red emphasis is.
+fn first_red_dot(entries: &[u16]) -> usize {
+    entries
+        .iter()
+        .position(|&entry| entry & 0x40 != 0)
+        .expect("some pixel is emphasised")
+}
+
+/// A timed frame over a rendered picture keeps its place: with rendering on, NTSC frames are a
+/// dot shorter every other time, and a pass that counted three rendering-off frames slid half a
+/// dot a frame along the picture. The write lands part-way along a line on purpose, so where the
+/// emphasis starts is where the handler ran, to the dot. What decides it is the mask on the
+/// pre-render line, so a frame that blanks the picture after its last line and shows it again
+/// on its first must hold still as well.
+#[test]
+fn a_timed_frame_over_a_rendered_picture_does_not_drift() {
+    for (before, blanking) in [
+        ("$0a", ""),
+        (
+            "$0a",
+            "    at scanline 0 { ppu.mask = $0a }\n    at scanline 239 { ppu.mask = $00 }\n",
+        ),
+        // Off before the frame, and turned on by it: on, from the second frame on.
+        ("$00", "    at scanline 0 { ppu.mask = $0a }\n"),
+    ] {
+        assert_holds_still(&format!(
+            "main {{\n\
+             \x20   ppu.addr = $3f\n\
+             \x20   ppu.addr = $00\n\
+             \x20   ppu.data = $0f\n\
+             \x20   ppu.addr = $00\n\
+             \x20   ppu.addr = $00\n\
+             \x20   ppu.ctrl = $00\n\
+             \x20   ppu.mask = {before}\n\
+             }}\n\
+             frame tint using timed {{\n\
+             \x20   at scanline 100 {{ ppu.mask = $2a }}   // red emphasis from where this lands\n\
+             \x20   at scanline 140 {{ ppu.mask = $0a }}\n\
+             {blanking}\
+             }}\n"
+        ));
+    }
+}
+
+fn assert_holds_still(source: &str) {
+    let rom = compile_source(source).expect("the program compiles");
+    assert!(rom.warnings.is_empty(), "{:?}", rom.warnings);
+    let render = |frames: u32| {
+        let frame = render_after_frames(
+            "rendered-timed.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs");
+        *frame.as_indices()
+    };
+
+    // A handler starts on a whole cycle, and a frame is not one: 29780.5 cycles on average with
+    // rendering on, 29780 and two dots with it off. So the frames of a pass meet the picture a
+    // dot or two apart from one another, a pattern that repeats every two frames or every three.
+    let pass: Vec<usize> = (10..16)
+        .map(|frames| first_red_dot(&render(frames)))
+        .collect();
+    assert!(
+        !pass[0].is_multiple_of(FRAME_WIDTH),
+        "the write lands part-way along a line, so a drift would show"
+    );
+    let spread = pass.iter().max().unwrap() - pass.iter().min().unwrap();
+    assert!(
+        spread <= 2,
+        "frames 10-15 start the emphasis {spread} dots apart, in\n{source}"
+    );
+    // Whatever drifts goes on drifting, so the same frame of the pattern minutes later is where
+    // it was. Six frames apart is the same frame of either.
+    for (frames, expected) in [
+        (16, pass[0]),
+        (22, pass[0]),
+        (64, pass[0]),
+        (304, pass[0]),
+        (17, pass[1]),
+        (305, pass[1]),
+    ] {
+        let at = first_red_dot(&render(frames));
+        assert_eq!(
+            at,
+            expected,
+            "frame {frames}: the emphasis starts at ({}, {}), not ({}, {}), in\n{source}",
+            at % FRAME_WIDTH,
+            at / FRAME_WIDTH,
+            expected % FRAME_WIDTH,
+            expected / FRAME_WIDTH
+        );
+    }
+}
