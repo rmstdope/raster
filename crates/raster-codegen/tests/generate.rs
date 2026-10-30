@@ -260,6 +260,7 @@ fn timed_region_emits_analyzed_bytes_without_post_analysis_changes() {
                 pad: true,
                 interruptible: false,
                 instructions: measured,
+                page_aligned_reads: Vec::new(),
             },
             true,
         )

@@ -684,6 +684,7 @@ impl Generator<'_> {
                 pad,
                 interruptible,
                 instructions,
+                page_aligned_reads: Vec::new(),
             },
             self.legal_isa,
         )

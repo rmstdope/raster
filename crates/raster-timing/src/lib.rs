@@ -20,6 +20,10 @@ pub struct TimedRegion {
     pub pad: bool,
     pub interruptible: bool,
     pub instructions: Vec<Instruction>,
+    /// Indices into `instructions` of indexed reads whose base address starts a page. An 8-bit
+    /// index cannot carry such a read onto the next page, so it costs exactly its base cycles
+    /// rather than the worst case every other indexed read is charged.
+    pub page_aligned_reads: Vec<usize>,
 }
 
 /// What analysing a region established.
@@ -178,7 +182,8 @@ pub fn analyze(region: &TimedRegion, legal_isa: bool) -> Result<TimingReport, Ti
             opcode: instruction.opcode,
         });
     }
-    let measured_cycles = worst_case_cycles(&region.instructions);
+    let measured_cycles =
+        worst_case_cycles_with_aligned_reads(&region.instructions, &region.page_aligned_reads);
     let budget = match &region.constraint {
         CycleConstraint::Exact(budget) | CycleConstraint::AtMost(budget) => *budget,
         CycleConstraint::Report { label } => {
@@ -228,12 +233,21 @@ pub fn analyze(region: &TimedRegion, legal_isa: bool) -> Result<TimingReport, Ti
 /// should call it rather than re-derive the same sum: a test that agrees with itself proves
 /// nothing.
 pub fn worst_case_cycles(instructions: &[Instruction]) -> u32 {
+    worst_case_cycles_with_aligned_reads(instructions, &[])
+}
+
+/// [`worst_case_cycles`], except that the indexed reads at `page_aligned_reads` are proven never to
+/// cross a page and are charged no penalty — see [`TimedRegion::page_aligned_reads`].
+pub fn worst_case_cycles_with_aligned_reads(
+    instructions: &[Instruction],
+    page_aligned_reads: &[usize],
+) -> u32 {
     let mut context = CycleContext::default();
     for (index, instruction) in instructions.iter().enumerate() {
         if opcode(instruction.opcode).mode == AddressingMode::Relative {
             context.taken_branches.push(index);
             context.branch_page_crossings.push(index);
-        } else {
+        } else if !page_aligned_reads.contains(&index) {
             context.indexed_read_page_crossings.push(index);
         }
     }
