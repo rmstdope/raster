@@ -2297,8 +2297,9 @@ impl Lowerer {
     /// runs while it is at `$1000` keeps its line and its hblank is not judged here.
     ///
     /// The mask is held at its opening value, because handler masks are judged by
-    /// [`Self::check_irq_handler_masks`]. A `ppu.ctrl` this cannot read ends the walk unjudged, as a
-    /// computed mask is warned about rather than refused.
+    /// [`Self::check_irq_handler_masks`]. A `ppu.ctrl` this cannot read ends the walk unjudged and
+    /// silently: a computed ctrl is how a split picks its nametable, and refusing it would refuse
+    /// correct programs.
     fn check_irq_handler_ctrl(&mut self) {
         let Some(frame) = &self.program.frame else {
             return;
