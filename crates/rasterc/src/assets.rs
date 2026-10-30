@@ -6,9 +6,9 @@
 //! here is testable from bytes held in memory.
 
 use raster_assets::{
-    convert_background, convert_background_split, decode_background, encode_background,
-    encode_background_split, BackgroundEncodeError, ConvertError, NesBackground,
-    PngBackgroundError, SPLIT_SHARED_TILES,
+    convert_background_with, decode_background, encode_background, encode_background_split,
+    BackgroundEncodeError, Conversion, ConvertError, NesBackground, PngBackgroundError,
+    SPLIT_SHARED_TILES,
 };
 use raster_syntax::{Asset, AssetValue, Item, Program, Span};
 
@@ -101,16 +101,17 @@ fn resolve_one(asset: &Asset, source: &dyn AssetSource) -> Result<NesBackground,
     }
     let split = splits(asset);
     if converts(asset) {
-        let converted = if split {
-            convert_background_split(bytes.as_slice())
-        } else {
-            convert_background(bytes.as_slice())
+        let conversion = Conversion {
+            width: width(asset).unwrap_or(Conversion::default().width),
+            split,
         };
-        return converted.map_err(|error| match error {
-            ConvertError::Decode { message } => {
-                format!("`{path}` is not a readable PNG: {message}")
-            }
-        });
+        return convert_background_with(bytes.as_slice(), conversion).map_err(
+            |error| match error {
+                ConvertError::Decode { message } => {
+                    format!("`{path}` is not a readable PNG: {message}")
+                }
+            },
+        );
     }
     let indexed =
         decode_background(bytes.as_slice()).map_err(|error| decode_message(path, error))?;
@@ -129,6 +130,18 @@ fn splits(asset: &Asset) -> bool {
         field.name.value == "tiles"
             && matches!(&field.value.value, AssetValue::Number(number) if number == "512")
     })
+}
+
+/// The asset's `width: N`, the pixels from the left a converted picture is fitted into, which
+/// `raster-sema` has checked.
+fn width(asset: &Asset) -> Option<usize> {
+    asset
+        .fields
+        .iter()
+        .find_map(|field| match &field.value.value {
+            AssetValue::Number(number) if field.name.value == "width" => number.parse().ok(),
+            _ => None,
+        })
 }
 
 /// Whether the asset says `convert: true`: made into a picture the NES can show, rather than

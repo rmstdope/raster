@@ -3,7 +3,9 @@ use std::io::Read;
 mod convert;
 mod nes;
 
-pub use convert::{convert_background, convert_background_split, ConvertError};
+pub use convert::{
+    convert_background, convert_background_split, convert_background_with, Conversion, ConvertError,
+};
 
 pub use nes::{
     encode_background, encode_background_split, BackgroundEncodeError, NesBackground,

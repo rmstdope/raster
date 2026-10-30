@@ -380,7 +380,7 @@ impl Analyzer {
                 if matches!(name, "driver" | "channels") {
                     self.asset_not_in_this_release(
                         field.name.span,
-                        "only `kind`, `palette`, `dedup`, `convert` and `tiles` are supported yet",
+                        "only `kind`, `palette`, `dedup`, `convert`, `tiles` and `width` are supported yet",
                     );
                 } else {
                     self.error(
@@ -409,6 +409,11 @@ impl Analyzer {
                     &AssetValue::Word("true".into()),
                     "only `dedup: true` is supported yet",
                 ),
+                "width" => {
+                    if !valid_width(&field.value.value) {
+                        self.error(field.value.span, "`width` is a multiple of 16 from 16 to 256");
+                    }
+                }
                 "tiles" => {
                     if !matches!(&field.value.value, AssetValue::Number(number) if number == "256" || number == "512")
                     {
@@ -426,13 +431,30 @@ impl Analyzer {
                 // be told they invented it.
                 "compress" => self.asset_not_in_this_release(
                     field.name.span,
-                    "only `kind`, `palette`, `dedup`, `convert` and `tiles` are supported yet",
+                    "only `kind`, `palette`, `dedup`, `convert`, `tiles` and `width` are supported yet",
                 ),
                 _ => self.error(
                     field.name.span,
-                    "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert` and `tiles`",
+                    "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert`, `tiles` and `width`",
                 ),
             }
+        }
+        // A width places a converted picture on the screen; a picture imported as it stands is
+        // already exactly as wide as it is. A width that is wrong in itself has been said already.
+        let converts = asset.fields.iter().any(|field| {
+            field.name.value == "convert"
+                && matches!(&field.value.value, AssetValue::Word(word) if word == "true")
+        });
+        if let Some(width) = asset
+            .fields
+            .iter()
+            .find(|field| field.name.value == "width" && valid_width(&field.value.value))
+            .filter(|_| !converts)
+        {
+            self.error(
+                width.name.span,
+                "`width` places a converted picture; add `convert: true`",
+            );
         }
     }
 
@@ -2105,6 +2127,13 @@ fn is_ppu_register_write(expression: &Spanned<Expression>, vram_addr: bool) -> b
 /// de-jitter, and refusing it would send the author looking for a rule that is not there.
 fn is_sync_exact(statement: &Spanned<Statement>) -> bool {
     matches!(&statement.value, Statement::Sync(strategy) if strategy.value == "exact")
+}
+
+/// A `width` an asset may take: pixels, a multiple of 16 from 16 to 256, which is whole attribute
+/// cells of the screen.
+fn valid_width(value: &AssetValue) -> bool {
+    matches!(value, AssetValue::Number(number)
+        if number.parse::<u32>().is_ok_and(|width| (16..=256).contains(&width) && width % 16 == 0))
 }
 
 #[cfg(test)]

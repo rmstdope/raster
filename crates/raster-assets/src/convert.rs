@@ -38,20 +38,52 @@ type Palette = [u8; 3];
 /// How many of a region's pixels are nearest each NES entry.
 type Histogram = [u32; 64];
 
+/// How a picture is converted: the width of the screen it is fitted into, from the left, and
+/// whether it is split across two pattern tables.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Conversion {
+    /// Pixels from the left edge, a multiple of 16 up to 256: the picture is fitted into that
+    /// much of the screen, centred in it, and the rest is backdrop.
+    pub width: usize,
+    /// Split at [`SPLIT_TILE_ROW`] across two pattern tables, as
+    /// [`convert_background_split`] does.
+    pub split: bool,
+}
+
+impl Default for Conversion {
+    fn default() -> Self {
+        Conversion {
+            width: WIDTH,
+            split: false,
+        }
+    }
+}
+
 pub fn convert_background(png: impl Read) -> Result<NesBackground, ConvertError> {
-    convert(png, false)
+    convert_background_with(png, Conversion::default())
 }
 
 /// [`convert_background`] across two pattern tables, as
 /// [`encode_background_split`](crate::encode_background_split) lays them out: each half of the
 /// screen is drawn in up to 256 tiles of its own.
 pub fn convert_background_split(png: impl Read) -> Result<NesBackground, ConvertError> {
-    convert(png, true)
+    convert_background_with(
+        png,
+        Conversion {
+            split: true,
+            ..Conversion::default()
+        },
+    )
 }
 
-fn convert(png: impl Read, split: bool) -> Result<NesBackground, ConvertError> {
+/// [`convert_background`] as `conversion` says.
+pub fn convert_background_with(
+    png: impl Read,
+    conversion: Conversion,
+) -> Result<NesBackground, ConvertError> {
+    let split = conversion.split;
     let (width, height, rgba) = decode_rgba(png)?;
-    let screen = scale(width, height, &rgba);
+    let screen = scale(width, height, &rgba, conversion.width.clamp(1, WIDTH));
     let colours = Colours::new();
 
     let mut histograms = vec![[0; 64]; REGIONS_WIDE * REGIONS_HIGH];
@@ -177,22 +209,20 @@ fn decode_rgba(png: impl Read) -> Result<(usize, usize, Vec<[u8; 4]>), ConvertEr
     Ok((frame.width as usize, frame.height as usize, pixels))
 }
 
-/// The picture scaled to fit the screen with its shape kept, centred, and the backdrop around
-/// it: each screen pixel the average of the source pixels it covers, or the nearest one when
-/// the picture is smaller. A pixel mostly transparent is `None`, the backdrop.
-fn scale(width: usize, height: usize, rgba: &[[u8; 4]]) -> Vec<Option<[u8; 3]>> {
-    let (fit_width, fit_height) = if width * HEIGHT >= height * WIDTH {
-        (
-            WIDTH,
-            ((height * WIDTH + width / 2) / width).clamp(1, HEIGHT),
-        )
+/// The picture scaled to fit the left `area` pixels of the screen with its shape kept, centred
+/// in them, and the backdrop around it: each screen pixel the average of the source pixels it
+/// covers, or the nearest one when the picture is smaller. A pixel mostly transparent is `None`,
+/// the backdrop.
+fn scale(width: usize, height: usize, rgba: &[[u8; 4]], area: usize) -> Vec<Option<[u8; 3]>> {
+    let (fit_width, fit_height) = if width * HEIGHT >= height * area {
+        (area, ((height * area + width / 2) / width).clamp(1, HEIGHT))
     } else {
         (
-            ((width * HEIGHT + height / 2) / height).clamp(1, WIDTH),
+            ((width * HEIGHT + height / 2) / height).clamp(1, area),
             HEIGHT,
         )
     };
-    let (left_border, top_border) = ((WIDTH - fit_width) / 2, (HEIGHT - fit_height) / 2);
+    let (left_border, top_border) = ((area - fit_width) / 2, (HEIGHT - fit_height) / 2);
     let span = |index: usize, source: usize, screen: usize| {
         let start = index * source / screen;
         (start, ((index + 1) * source / screen).max(start + 1))

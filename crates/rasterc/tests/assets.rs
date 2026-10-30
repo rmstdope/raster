@@ -316,3 +316,13 @@ fn a_jpeg_named_png_is_called_a_jpeg() {
         );
     }
 }
+
+#[test]
+fn a_converted_picture_with_a_width_compiles() {
+    let picture = png_bytes(480, 480, |_, _| [0xf8, 0x38, 0x00, 0xff]);
+    let source = format!(
+        "asset image picture = png(\"{PATH}\") {{ kind: background  convert: true  width: 144 }}\nmain {{ }}"
+    );
+
+    compile_source_with_assets(&source, &Fixture(PATH, picture)).expect("it compiles");
+}

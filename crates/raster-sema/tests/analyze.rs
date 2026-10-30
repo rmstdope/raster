@@ -811,6 +811,12 @@ fn refuses_asset_fields_this_release_does_not_build() {
             "300",
         ),
         (
+            "width: 100",
+            "`width` is a multiple of 16 from 16 to 256",
+            Refusal::Rejected,
+            "100",
+        ),
+        (
             "convert: maybe",
             "`convert` is `true` or `false`",
             Refusal::Rejected,
@@ -818,7 +824,7 @@ fn refuses_asset_fields_this_release_does_not_build() {
         ),
         (
             "sharpness: 3",
-            "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert` and `tiles`",
+            "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert`, `tiles` and `width`",
             Refusal::Rejected,
             "sharpness",
         ),
@@ -845,6 +851,23 @@ fn accepts_tiles_256_and_512() {
         let program = parse(&source).expect("fixture should parse");
         assert!(analyze(&program).is_ok(), "for `tiles: {value}`");
     }
+}
+
+#[test]
+fn a_width_places_a_converted_picture_and_nothing_else() {
+    let accepted = "asset image picture = png(\"p.png\") { convert: true  width: 144 }\nmain { }";
+    let program = parse(accepted).expect("fixture should parse");
+    assert!(
+        analyze(&program).is_ok(),
+        "a converted picture takes a width"
+    );
+
+    let found = errors_with_spans("asset image picture = png(\"p.png\") { width: 144 }\nmain { }");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].message,
+        "`width` places a converted picture; add `convert: true`"
+    );
 }
 
 #[test]
@@ -905,7 +928,7 @@ fn refuses_spec_defined_asset_surface_as_not_yet_built() {
     assert_eq!(found.len(), 1);
     assert_eq!(
         found[0].message,
-        "only `kind`, `palette`, `dedup`, `convert` and `tiles` are supported yet"
+        "only `kind`, `palette`, `dedup`, `convert`, `tiles` and `width` are supported yet"
     );
     assert_eq!(found[0].refusal, Refusal::AssetNotInThisRelease);
     assert_eq!(
@@ -1593,8 +1616,8 @@ fn spec_8_3_example_prints_four_errors_none_unknown() {
         [
             "only `asset image` is supported yet",
             "only `png` is supported yet",
-            "only `kind`, `palette`, `dedup`, `convert` and `tiles` are supported yet",
-            "only `kind`, `palette`, `dedup`, `convert` and `tiles` are supported yet",
+            "only `kind`, `palette`, `dedup`, `convert`, `tiles` and `width` are supported yet",
+            "only `kind`, `palette`, `dedup`, `convert`, `tiles` and `width` are supported yet",
         ]
     );
 }
@@ -1606,7 +1629,7 @@ fn music_field_on_image_asset_and_sound_asset_keep_todays_messages() {
     assert_eq!(found.len(), 1);
     assert_eq!(
         found[0].message,
-        "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert` and `tiles`"
+        "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert`, `tiles` and `width`"
     );
 
     let source = "asset sound s = png(\"p.png\") { driver: x }\nmain { }";
@@ -1618,7 +1641,7 @@ fn music_field_on_image_asset_and_sound_asset_keep_todays_messages() {
         messages,
         [
             "only `asset image` is supported yet",
-            "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert` and `tiles`",
+            "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert`, `tiles` and `width`",
         ]
     );
 }
@@ -1630,7 +1653,7 @@ fn music_asset_field_set_twice_and_no_fields() {
     assert_eq!(
         messages,
         [
-            "only `kind`, `palette`, `dedup`, `convert` and `tiles` are supported yet",
+            "only `kind`, `palette`, `dedup`, `convert`, `tiles` and `width` are supported yet",
             "this asset field is set twice",
         ]
     );
