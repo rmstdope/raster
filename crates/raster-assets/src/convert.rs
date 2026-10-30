@@ -3,11 +3,13 @@
 //! [`decode_background`](crate::decode_background) refuses a picture the NES cannot show as it
 //! stands; this makes one it can. The picture is scaled to the screen, and four palettes of three
 //! colours are fitted to it, each 16-by-16 region drawing in the backdrop and the palette that
-//! loses it least. Every pixel then takes the nearest colour it is allowed.
+//! loses it least. Every pixel then takes the nearest colour it is allowed. A picture that needs
+//! more tiles than a pattern table holds is drawn in as many as it does, each tile in the pattern
+//! that looks most like it in its own palette.
 
 use std::io::Read;
 
-use crate::nes::{assemble, BackgroundEncodeError, BACKGROUND_SUBPALETTE_COUNT};
+use crate::nes::{assemble, BACKGROUND_SUBPALETTE_COUNT};
 use crate::{
     IndexedBackground, NesBackground, FCEUX_2C02_PALETTE, MAX_TILES_HIGH, MAX_TILES_WIDE,
     TRANSPARENT_COLOUR,
@@ -20,11 +22,15 @@ const REGIONS_HIGH: usize = HEIGHT / 16;
 /// How many rounds of assigning regions and refitting palettes are tried before the palettes
 /// are taken as they are. They settle in a handful.
 const FITTING_ROUNDS: usize = 32;
+/// The distinct tiles a pattern table holds, the blank one every background starts from among
+/// them.
+const PATTERN_TABLE_TILES: usize = 256;
+/// Likewise for assigning tiles to patterns and refitting the patterns.
+const TILE_ROUNDS: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConvertError {
     Decode { message: String },
-    TooManyTiles { tile_count: usize },
 }
 
 /// A palette's three colours besides the backdrop.
@@ -50,43 +56,64 @@ pub fn convert_background(png: impl Read) -> Result<NesBackground, ConvertError>
         .map(|histogram| colours.best_of(histogram, &palettes))
         .collect();
 
-    let pixels = screen
+    let records: Vec<[u8; 4]> = palettes
         .iter()
-        .enumerate()
-        .map(|(index, pixel)| match pixel {
-            None => TRANSPARENT_COLOUR,
-            Some(rgb) => {
-                let region = (index / WIDTH / 16) * REGIONS_WIDE + (index % WIDTH) / 16;
-                let palette = palettes[assignment[region]];
-                colours.nearest(
-                    *rgb,
-                    &[TRANSPARENT_COLOUR, palette[0], palette[1], palette[2]],
-                )
+        .map(|palette| [TRANSPARENT_COLOUR, palette[0], palette[1], palette[2]])
+        .collect();
+    let record_of = |x: usize, y: usize| records[assignment[(y / 16) * REGIONS_WIDE + x / 16]];
+    let tiles: Vec<Tile> = (0..MAX_TILES_HIGH as usize * MAX_TILES_WIDE as usize)
+        .map(|tile| {
+            let (left, top) = (
+                (tile % MAX_TILES_WIDE as usize) * 8,
+                (tile / MAX_TILES_WIDE as usize) * 8,
+            );
+            let palette = record_of(left, top);
+            let mut pixels = [TRANSPARENT_COLOUR; 64];
+            for (index, pixel) in pixels.iter_mut().enumerate() {
+                if let Some(rgb) = screen[(top + index / 8) * WIDTH + left + index % 8] {
+                    *pixel = colours.nearest(rgb, &palette);
+                }
             }
+            Tile { pixels, palette }
         })
         .collect();
+    let patterns = colours.reduce(&tiles, PATTERN_TABLE_TILES);
+
+    let mut pixels = vec![TRANSPARENT_COLOUR; WIDTH * HEIGHT];
+    for (index, (tile, pattern)) in tiles.iter().zip(&patterns).enumerate() {
+        let (left, top) = (
+            (index % MAX_TILES_WIDE as usize) * 8,
+            (index / MAX_TILES_WIDE as usize) * 8,
+        );
+        for (pixel, value) in pattern.iter().enumerate() {
+            pixels[(top + pixel / 8) * WIDTH + left + pixel % 8] =
+                tile.palette[usize::from(*value)];
+        }
+    }
     let background = IndexedBackground {
         width_tiles: MAX_TILES_WIDE,
         height_tiles: MAX_TILES_HIGH,
         pixels,
     };
 
-    let records: Vec<[u8; 4]> = palettes
-        .iter()
-        .map(|palette| [TRANSPARENT_COLOUR, palette[0], palette[1], palette[2]])
-        .collect();
     // The attribute table has a sixteenth row of regions below the screen, which shows nothing.
     let mut region_palette_ids = [[0; 16]; 16];
     for (region, palette) in assignment.iter().enumerate() {
         region_palette_ids[region / REGIONS_WIDE][region % REGIONS_WIDE] = *palette as u8;
     }
-    assemble(&background, &records, &region_palette_ids).map_err(|error| match error {
-        BackgroundEncodeError::TooManyTiles { tile_count } => {
-            ConvertError::TooManyTiles { tile_count }
-        }
-        other => unreachable!("every region draws in a palette of its own: {other:?}"),
-    })
+    Ok(assemble(&background, &records, &region_palette_ids)
+        .expect("every pixel is in its region's palette, in at most a pattern table of tiles"))
 }
+
+/// One tile of the picture: the NES colour of each of its pixels, row by row, and the palette its
+/// region draws in, backdrop first.
+struct Tile {
+    pixels: [u8; 64],
+    palette: [u8; 4],
+}
+
+/// Which of its palette's four colours each pixel of a tile shows, row by row.
+type Pattern = [u8; 64];
 
 /// The picture's width, height and pixels as RGBA, whatever colour type the PNG holds.
 fn decode_rgba(png: impl Read) -> Result<(usize, usize, Vec<[u8; 4]>), ConvertError> {
@@ -319,6 +346,116 @@ impl Colours {
             palettes = refitted;
         }
         palettes
+    }
+
+    /// The pattern each of `tiles` is drawn in, among at most `limit` distinct ones.
+    ///
+    /// A picture whose tiles fit is drawn exactly. Otherwise the blank pattern is kept, as the
+    /// tile every background starts from, and each next one is the tile drawn worst by the
+    /// patterns so far. Then, until nothing changes, every tile takes the pattern that looks most
+    /// like it in its own palette, and every pattern but the blank one is refitted, pixel by
+    /// pixel, to the tiles that took it.
+    fn reduce(&self, tiles: &[Tile], limit: usize) -> Vec<Pattern> {
+        let exact: Vec<Pattern> = tiles
+            .iter()
+            .map(|tile| {
+                tile.pixels.map(|colour| {
+                    tile.palette
+                        .iter()
+                        .position(|entry| *entry == colour)
+                        .expect("every pixel is in its tile's palette") as u8
+                })
+            })
+            .collect();
+        let mut distinct: Vec<Pattern> = vec![[0; 64]];
+        for pattern in &exact {
+            if !distinct.contains(pattern) {
+                distinct.push(*pattern);
+            }
+        }
+        if distinct.len() <= limit {
+            return exact;
+        }
+
+        let mut patterns: Vec<Pattern> = vec![[0; 64]];
+        let mut worst: Vec<u64> = tiles
+            .iter()
+            .map(|tile| self.drawn(tile, &patterns[0]))
+            .collect();
+        while patterns.len() < limit {
+            let (tile, cost) = worst
+                .iter()
+                .enumerate()
+                .max_by_key(|(index, cost)| (**cost, std::cmp::Reverse(*index)))
+                .expect("a screen has tiles");
+            if *cost == 0 {
+                break;
+            }
+            let pattern = exact[tile];
+            for (cost, tile) in worst.iter_mut().zip(tiles) {
+                *cost = (*cost).min(self.drawn(tile, &pattern));
+            }
+            patterns.push(pattern);
+        }
+
+        let mut assignment = vec![usize::MAX; tiles.len()];
+        for _ in 0..TILE_ROUNDS {
+            let assigned: Vec<usize> = tiles
+                .iter()
+                .map(|tile| {
+                    (0..patterns.len())
+                        .min_by_key(|&index| self.drawn(tile, &patterns[index]))
+                        .expect("there is always the blank pattern")
+                })
+                .collect();
+            if assigned == assignment {
+                break;
+            }
+            assignment = assigned;
+            for (index, pattern) in patterns.iter_mut().enumerate().skip(1) {
+                let members: Vec<&Tile> = tiles
+                    .iter()
+                    .zip(&assignment)
+                    .filter(|(_, assigned)| **assigned == index)
+                    .map(|(tile, _)| tile)
+                    .collect();
+                if members.is_empty() {
+                    continue;
+                }
+                for (pixel, value) in pattern.iter_mut().enumerate() {
+                    *value = (0..4u8)
+                        .min_by_key(|&value| {
+                            members
+                                .iter()
+                                .map(|tile| {
+                                    let shown = tile.palette[usize::from(value)];
+                                    u64::from(
+                                        self.distance[usize::from(tile.pixels[pixel])]
+                                            [usize::from(shown)],
+                                    )
+                                })
+                                .sum::<u64>()
+                        })
+                        .expect("a pixel has four values");
+                }
+            }
+        }
+        // Refitting can make two patterns alike, which only lowers the count.
+        assignment.iter().map(|&index| patterns[index]).collect()
+    }
+
+    /// How unlike `tile` looks drawn in `pattern` in its own palette.
+    fn drawn(&self, tile: &Tile, pattern: &Pattern) -> u64 {
+        tile.pixels
+            .iter()
+            .zip(pattern)
+            .map(|(&colour, &value)| {
+                u64::from(
+                    self.distance[usize::from(colour)]
+                        [usize::from(tile.palette[usize::from(value)])],
+                )
+            })
+            .sum()
     }
 
     /// A palette unlike any of `palettes`: the one that draws best the cell they draw worst,
