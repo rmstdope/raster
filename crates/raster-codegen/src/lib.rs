@@ -684,7 +684,11 @@ impl Generator<'_> {
     /// What a handler's body costs with its interrupt masking, measured by emitting it and taking
     /// it back out. `None` when it cannot be measured, which the handler's own emission will say.
     fn handler_cycles(&mut self, event: &FrameEvent, halt_label: IrLabel) -> Option<u32> {
-        let (items, reports) = (self.output.items.len(), self.reports.len());
+        let (items, reports, islands) = (
+            self.output.items.len(),
+            self.reports.len(),
+            self.islands.len(),
+        );
         let cycles = self
             .timed_region(
                 &CycleConstraint::AtMost(u32::MAX),
@@ -697,6 +701,7 @@ impl Generator<'_> {
             .ok();
         self.output.items.truncate(items);
         self.reports.truncate(reports);
+        self.islands.truncate(islands);
         cycles
     }
 
@@ -863,37 +868,7 @@ impl Generator<'_> {
             } => {
                 self.timed_region(constraint, *pad, *interruptible, body, *span, halt_label)?;
             }
-            Statement::Delay { cycles, span } => {
-                let plan = |cycles| {
-                    plan_delay(cycles, self.legal_isa)
-                        .map_err(|error| CodegenError::Timing { error, span: *span })
-                };
-                let inline = plan(*cycles)?;
-                if !inline
-                    .iter()
-                    .any(|step| matches!(step, DelayStep::Loop { .. }))
-                {
-                    for step in &inline {
-                        self.delay_step(step);
-                    }
-                    return Ok(());
-                }
-                // A loop closes on a branch, which costs a cycle more when it crosses a page, and
-                // where the linker puts it is not known here. So the loop runs in an island kept
-                // on one page, and the jumps there and back come out of the delay.
-                let looped = plan(*cycles - 2 * JMP_ABSOLUTE_CYCLES)?;
-                let island = self.internal_label();
-                let back = self.internal_label();
-                self.jump(island);
-                self.emit_label(back);
-                let start = self.output.items.len();
-                self.emit_label(island);
-                for step in &looped {
-                    self.delay_step(step);
-                }
-                self.jump(back);
-                self.keep_on_one_page(start);
-            }
+            Statement::Delay { cycles, span } => self.delay_on_pages(*cycles, *span)?,
             Statement::SyncExact => {
                 // Spec section 6.6's read-and-branch de-jitter: spin on the PPU status register
                 // until its vblank flag is set, which lands every entry on the same alignment.
@@ -997,6 +972,60 @@ impl Generator<'_> {
             })
             .map(|(index, _)| index)
             .collect()
+    }
+
+    /// Spend exactly `cycles`, with every loop on a page of its own.
+    ///
+    /// A loop leaves through a `BEQ`, which costs a cycle more when it crosses a page, and where
+    /// the linker puts code is not known here. So each loop runs in an island kept on one page, and
+    /// the jumps there and back, six cycles a loop, come out of the delay: the plan is made for
+    /// what is left, again until its loops are the ones paid for. A delay too short to keep a loop
+    /// once the jumps are paid is spent as filler, which has no branch at all.
+    fn delay_on_pages(&mut self, cycles: u32, span: Span) -> Result<(), CodegenError> {
+        let timing = |error| CodegenError::Timing { error, span };
+        let loops = |plan: &[DelayStep]| {
+            plan.iter()
+                .filter(|step| matches!(step, DelayStep::Loop { .. }))
+                .count() as u32
+        };
+        let inline = plan_delay(cycles, self.legal_isa).map_err(timing)?;
+        let mut paid = loops(&inline);
+        let plan = loop {
+            if paid == 0 {
+                break inline;
+            }
+            let hops = 2 * JMP_ABSOLUTE_CYCLES * paid;
+            let Some(plan) = cycles
+                .checked_sub(hops)
+                .and_then(|left| plan_delay(left, self.legal_isa).ok())
+                .filter(|plan| loops(plan) > 0)
+            else {
+                let filler =
+                    raster_timing::synthesize_padding(cycles, self.legal_isa).map_err(timing)?;
+                break vec![DelayStep::Filler(filler)];
+            };
+            if loops(&plan) == paid {
+                break plan;
+            }
+            paid = loops(&plan);
+        };
+        for step in &plan {
+            match step {
+                DelayStep::Filler(_) => self.delay_step(step),
+                DelayStep::Loop { .. } => {
+                    let island = self.internal_label();
+                    let back = self.internal_label();
+                    self.jump(island);
+                    self.emit_label(back);
+                    let start = self.output.items.len();
+                    self.emit_label(island);
+                    self.delay_step(step);
+                    self.jump(back);
+                    self.keep_on_one_page(start);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Emit one piece of a planned delay.

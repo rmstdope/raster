@@ -479,8 +479,8 @@ pub enum DelayStep {
     /// The `JMP` back is what makes this exact. A `DEX`/`BNE` loop takes its branch on every pass
     /// but the last, and a taken branch costs an extra cycle when it crosses a page — so a
     /// thousand-cycle delay could spend twelve hundred depending on where the linker put it.
-    /// Here exactly one branch is ever taken, so at worst one cycle is unaccounted for, and
-    /// removing even that needs an alignment the linker cannot yet express.
+    /// Here exactly one branch is ever taken, and `raster-codegen` keeps each loop on a page of its
+    /// own, so that branch never crosses one and the delay is exact.
     Loop { outer: Option<u32>, inner: u32 },
 }
 

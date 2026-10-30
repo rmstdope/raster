@@ -42,7 +42,8 @@ fn emitted(source: &str) -> Vec<Instruction> {
     // The same ISA policy `compile_source` builds a ROM under, so this measures what ships.
     let output = generate_with_isa(&lower(&typed).expect("the fixture lowers"), true)
         .expect("the fixture generates");
-    // Instructions only: the islands a loop is kept on are laid out after a page alignment.
+    // Instructions only, in layout order: the islands a loop is kept on are laid out after all the
+    // code, behind a page alignment.
     output
         .program
         .items
@@ -422,16 +423,18 @@ fn direct_operands_spend_exactly_the_budget_their_region_was_held_to() {
 
 #[test]
 fn a_delay_spends_exactly_its_planned_cycles_wherever_its_loop_lands() {
-    // `value = 1` is four bytes, so 0 to 63 of them ahead of the delay move its loop through every
-    // position on a page, among them the ones where the branch closing the loop crosses into the
-    // next. A timed frame never re-synchronizes, so one cycle more there is a cycle more every pass.
+    // `value = 1` is four bytes and `ppu.mask = 0` five, so 0 to 63 of one and 0 to 3 of the other
+    // ahead of the delay move its loop through every position on a page, among them the ones where
+    // the branch closing the loop crosses into the next. A timed frame never re-synchronizes, so
+    // one cycle more there is a cycle more every pass.
     let planned = delay_cycles(&plan_delay(1000, true).expect("a thousand cycles are reachable"));
     let predicted = planned + cost(&[bare(PLP), bare(PHP)]);
     let mut wrong = Vec::new();
-    for shift in 0..64 {
+    for shift in (0..64).flat_map(|fours| (0..4).map(move |fives| (fours, fives))) {
         let source = format!(
-            "main {{\n    var value: u8 = 0\n{}    cycles(?) before {{\n        value = 1\n    }}\n    wait cycles(1000)\n    cycles(?) after {{\n        value = 2\n    }}\n}}\n",
-            "    value = 1\n".repeat(shift)
+            "main {{\n    var value: u8 = 0\n{}{}    cycles(?) before {{\n        value = 1\n    }}\n    wait cycles(1000)\n    cycles(?) after {{\n        value = 2\n    }}\n}}\n",
+            "    value = 1\n".repeat(shift.0),
+            "    ppu.mask = 0\n".repeat(shift.1)
         );
         let actual = cycles_between(
             "shifted-delay.raster",
@@ -445,6 +448,51 @@ fn a_delay_spends_exactly_its_planned_cycles_wherever_its_loop_lands() {
     }
     assert!(
         wrong.is_empty(),
-        "the delay was planned at {predicted} cycles and spent otherwise (shift, cycles): {wrong:?}"
+        "the delay was planned at {predicted} cycles and spent otherwise \
+         ((four-byte, five-byte statements), cycles): {wrong:?}"
+    );
+}
+
+/// What `wait cycles(cycles)` spends between the regions bracketing it, measured.
+fn bracketed_delay(cycles: u32) -> u32 {
+    let source = format!(
+        "main {{\n    var value: u8 = 0\n    cycles(?) before {{\n        value = 1\n    }}\n    wait cycles({cycles})\n    cycles(?) after {{\n        value = 2\n    }}\n}}\n"
+    );
+    cycles_between(
+        "bracketed-delay.raster",
+        &compile_source(&source).expect("the fixture compiles").image,
+        Window::new(PLP, PHP),
+    )
+    .expect("the fixture is measurable")
+}
+
+#[test]
+fn a_delay_too_short_to_loop_on_its_own_page_is_spent_exactly() {
+    // Seven cycles plan as a loop, and the jumps to an island and back would leave it one.
+    for cycles in [7, 8, 12, 14] {
+        compare(
+            &format!("wait cycles({cycles})"),
+            cycles + cost(&[bare(PLP), bare(PHP)]),
+            bracketed_delay(cycles),
+        );
+    }
+}
+
+#[test]
+fn a_delay_too_long_for_one_page_still_compiles() {
+    // Nine million cycles, about five seconds, are more loops than one page holds, so each loop
+    // has an island of its own. Too long to measure here, since the emulator stops at two million
+    // instructions; how exactly each island spends its loop is measured by the delays above.
+    compile_source("main {\n    wait cycles(9000000)\n}\n")
+        .map(|_| ())
+        .expect("a long delay compiles");
+
+    // A million and a half is still several loops, each in its own island, and short enough to
+    // measure: the jumps between them are paid for exactly.
+    let cycles = 1_500_000;
+    compare(
+        "wait cycles(1500000)",
+        cycles + cost(&[bare(PLP), bare(PHP)]),
+        bracketed_delay(cycles),
     );
 }

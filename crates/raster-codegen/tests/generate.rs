@@ -11,8 +11,8 @@ use raster_link::{
 use raster_sema::analyze;
 use raster_syntax::{parse, Span};
 
-/// Every instruction a program emits, in order, leaving out the page alignments and data blocks
-/// laid out among them.
+/// Every instruction a program emits, in layout order, leaving out the page alignments and data
+/// blocks laid out among them. Layout is not execution order: islands sit after all the code.
 fn program_instructions(output: &raster_codegen::CodegenOutput) -> Vec<raster_6502::Instruction> {
     output
         .program
