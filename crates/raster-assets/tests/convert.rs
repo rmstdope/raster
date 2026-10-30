@@ -202,3 +202,142 @@ fn a_picture_of_more_distinct_tiles_than_a_pattern_table_holds_is_refused_with_t
 
     assert_eq!(error, ConvertError::TooManyTiles { tile_count: 960 });
 }
+
+#[test]
+fn a_picture_scaled_down_is_the_average_of_what_each_screen_pixel_covers() {
+    // Twice the screen, in 2-by-2 blocks of white and black: their average, (7C, 7C, 7C), is
+    // NES grey $00, a colour the picture never draws. Three wide and one tall, the same mix
+    // two whites to a black is nearer light grey $10 than grey or white.
+    let checker: Vec<[u8; 4]> = (0..480)
+        .flat_map(|y| (0..512).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            if (x + y) % 2 == 0 {
+                [0xf8, 0xf8, 0xf8, 0xff]
+            } else {
+                [0x00, 0x00, 0x00, 0xff]
+            }
+        })
+        .collect();
+    let background = convert_background(Cursor::new(png(512, 480, &checker))).unwrap();
+    assert!(shown_picture(&background)
+        .iter()
+        .all(|&entry| entry == 0x00));
+
+    let wide: Vec<[u8; 4]> = (0..240)
+        .flat_map(|_| 0..768)
+        .map(|x| {
+            if x % 3 == 2 {
+                [0x00, 0x00, 0x00, 0xff]
+            } else {
+                [0xf8, 0xf8, 0xf8, 0xff]
+            }
+        })
+        .collect();
+    let background = convert_background(Cursor::new(png(768, 240, &wide))).unwrap();
+    assert!(shown_picture(&background)
+        .iter()
+        .all(|&entry| entry == 0x10));
+}
+
+#[test]
+fn a_screen_pixel_mostly_transparent_is_the_backdrop_and_mostly_opaque_is_not() {
+    // In 2-by-2 blocks: a block with one transparent pixel of four is red, and one with three
+    // is the backdrop.
+    let red = [0xf8, 0x38, 0x00, 0xff];
+    let clear = [0x00, 0x00, 0x00, 0x00];
+    let pixels: Vec<[u8; 4]> = (0..480)
+        .flat_map(|y| (0..512).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let transparent_in_block = if (x / 2) % 2 == 0 { 1 } else { 3 };
+            if (y % 2) * 2 + x % 2 < transparent_in_block {
+                clear
+            } else {
+                red
+            }
+        })
+        .collect();
+
+    let background = convert_background(Cursor::new(png(512, 480, &pixels))).unwrap();
+
+    for x in 0..256 {
+        let expected = if x % 2 == 0 { 0x16 } else { 0x0f };
+        assert_eq!(shown(&background, x, 0), expected, "x = {x}");
+    }
+}
+
+/// A 256-by-240 PNG of one colour, written in `colour_type` at `depth` from the bytes of one
+/// pixel, with `palette` for an indexed one.
+fn solid_png(
+    colour_type: png::ColorType,
+    depth: png::BitDepth,
+    pixel: &[u8],
+    palette: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut encoder = png::Encoder::new(&mut output, 256, 240);
+    encoder.set_color(colour_type);
+    encoder.set_depth(depth);
+    if let Some(palette) = palette {
+        encoder.set_palette(palette.to_vec());
+    }
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&pixel.repeat(256 * 240)).unwrap();
+    drop(writer);
+    output
+}
+
+#[test]
+fn every_png_colour_type_decodes_to_the_colour_it_holds() {
+    use png::{BitDepth::*, ColorType::*};
+    for (name, picture) in [
+        ("rgb", solid_png(Rgb, Eight, &[0xf8, 0x38, 0x00], None)),
+        (
+            "rgb16",
+            solid_png(Rgb, Sixteen, &[0xf8, 0, 0x38, 0, 0x00, 0], None),
+        ),
+        (
+            "rgba16",
+            solid_png(Rgba, Sixteen, &[0xf8, 0, 0x38, 0, 0, 0, 0xff, 0xff], None),
+        ),
+        (
+            "indexed",
+            solid_png(Indexed, Eight, &[1], Some(&[0, 0, 0, 0xf8, 0x38, 0x00])),
+        ),
+    ] {
+        let background = convert_background(Cursor::new(picture)).unwrap();
+        assert_eq!(shown(&background, 100, 100), 0x16, "{name}");
+    }
+    for (name, picture) in [
+        ("grey", solid_png(Grayscale, Eight, &[0x7c], None)),
+        ("grey16", solid_png(Grayscale, Sixteen, &[0x7c, 0], None)),
+        (
+            "grey alpha",
+            solid_png(GrayscaleAlpha, Eight, &[0x7c, 0xff], None),
+        ),
+    ] {
+        let background = convert_background(Cursor::new(picture)).unwrap();
+        assert_eq!(shown(&background, 100, 100), 0x00, "{name}");
+    }
+}
+
+#[test]
+fn no_two_palettes_are_the_same() {
+    // A red-to-blue ramp repeated across 10000 pixels and one row: every screen pixel averages
+    // about 39 of them, so the cells differ only a little, and a palette fitted to the cell drawn
+    // worst can come out the same as one already chosen. A copy is a palette wasted.
+    let pixels: Vec<[u8; 4]> = (0..10000)
+        .map(|x| [(x % 256) as u8, 0, 255 - (x % 256) as u8, 0xff])
+        .collect();
+
+    let background = convert_background(Cursor::new(png(10000, 1, &pixels))).unwrap();
+
+    let palettes: Vec<&[u8]> = background.palettes().chunks(4).collect();
+    for first in 0..4 {
+        for second in first + 1..4 {
+            assert_ne!(
+                palettes[first], palettes[second],
+                "palettes {first} and {second}: {palettes:02x?}"
+            );
+        }
+    }
+}

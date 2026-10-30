@@ -260,9 +260,9 @@ impl Colours {
 
     /// Four palettes for the regions `histograms` describe.
     ///
-    /// The first draws the whole picture best; each next one draws best the region the palettes
-    /// so far draw worst. Then, until nothing changes, every region takes the palette that draws
-    /// it best and every palette is refitted to the regions that took it.
+    /// The first draws the whole picture best; each next one is [`fresh`](Self::fresh_palette).
+    /// Then, until nothing changes, every region takes the palette that draws it best and every
+    /// palette is refitted to the regions that took it.
     fn fit(&self, histograms: &[Histogram]) -> Vec<Palette> {
         let total = histograms.iter().fold([0; 64], |mut total, histogram| {
             for (sum, count) in total.iter_mut().zip(histogram) {
@@ -272,19 +272,10 @@ impl Colours {
         });
         let mut palettes = vec![self.best_palette(&total)];
         while palettes.len() < BACKGROUND_SUBPALETTE_COUNT {
-            let (worst, cost) = histograms
-                .iter()
-                .enumerate()
-                .map(|(index, histogram)| {
-                    let best = self.best_of(histogram, &palettes);
-                    (index, self.cost(histogram, &palettes[best]))
-                })
-                .max_by_key(|(index, cost)| (*cost, std::cmp::Reverse(*index)))
-                .expect("a screen has regions");
-            if cost == 0 {
+            let Some(palette) = self.fresh_palette(histograms, &palettes) else {
                 break;
-            }
-            palettes.push(self.best_palette(&histograms[worst]));
+            };
+            palettes.push(palette);
         }
 
         for _ in 0..FITTING_ROUNDS {
@@ -295,23 +286,48 @@ impl Colours {
                     *sum += count;
                 }
             }
-            let refitted: Vec<Palette> = members
-                .iter()
-                .zip(&palettes)
-                .map(|(members, palette)| {
-                    if members.iter().all(|count| *count == 0) {
-                        *palette
-                    } else {
-                        self.best_palette(members)
-                    }
-                })
-                .collect();
+            let mut refitted: Vec<Palette> = Vec::with_capacity(palettes.len());
+            for (members, palette) in members.iter().zip(&palettes) {
+                let palette = if members.iter().all(|count| *count == 0) {
+                    *palette
+                } else {
+                    self.best_palette(members)
+                };
+                // Two palettes refitted alike would draw the same cells: the copy is fitted
+                // afresh instead, to cells the others draw badly.
+                let palette = if refitted.contains(&palette) {
+                    self.fresh_palette(histograms, &refitted).unwrap_or(palette)
+                } else {
+                    palette
+                };
+                refitted.push(palette);
+            }
             if refitted == palettes {
                 break;
             }
             palettes = refitted;
         }
         palettes
+    }
+
+    /// A palette unlike any of `palettes`: the one that draws best the cell they draw worst,
+    /// or the next worst when that one would be a copy. `None` when every cell is drawn
+    /// perfectly or none would give a new palette.
+    fn fresh_palette(&self, histograms: &[Histogram], palettes: &[Palette]) -> Option<Palette> {
+        let mut worst: Vec<(u64, usize)> = histograms
+            .iter()
+            .enumerate()
+            .map(|(index, histogram)| {
+                let best = self.best_of(histogram, palettes);
+                (self.cost(histogram, &palettes[best]), index)
+            })
+            .filter(|(cost, _)| *cost > 0)
+            .collect();
+        worst.sort_by_key(|&(cost, index)| (std::cmp::Reverse(cost), index));
+        worst
+            .into_iter()
+            .map(|(_, index)| self.best_palette(&histograms[index]))
+            .find(|palette| !palettes.contains(palette))
     }
 }
 

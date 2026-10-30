@@ -150,9 +150,9 @@ fn an_attribute_cell_over_four_colours_is_located() {
 #[test]
 fn too_many_distinct_tiles_says_the_count() {
     // 32 by 30 tiles is 960, and each tile draws its own index in binary — eight
-    // bits along its top row and a ninth below — so the first 512 are distinct,
-    // and with the blank tile every background starts from that is 513, every one
-    // of them counted. Two colours everywhere keeps every attribute cell and the
+    // bits along its top row and a ninth below — so the first 512 are distinct.
+    // Opaque black is entry $0D, not the backdrop, so tile 0 is not the blank tile
+    // every background starts from, and that is 513, every one of them counted. Two colours everywhere keeps every attribute cell and the
     // sub-palette budget well inside their limits, so it is the tile count that is
     // reached.
     let bytes = png_bytes(256, 240, |x, y| {

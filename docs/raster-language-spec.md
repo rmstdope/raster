@@ -536,12 +536,13 @@ unique tiles for a single pattern table, or colours outside the NES palette (wit
 nearest legal colour suggested).
 
 `convert: true` makes the picture representable instead of refusing it, for art that
-was not drawn for the NES. The picture is scaled to 256 by 240, each screen pixel the
-average of the pixels it covers, and a pixel mostly transparent is the backdrop. Four
-palettes of three colours beside a black backdrop are fitted to it, each 16×16
+was not drawn for the NES. The picture is stretched to 256 by 240, whatever its shape:
+each screen pixel is the average of the pixels it covers, or the nearest pixel when the
+picture is smaller than the screen, and a pixel mostly transparent is the backdrop.
+Four palettes of three colours beside a black backdrop are fitted to it, each 16×16
 attribute cell drawing in the palette that loses it least, and every pixel takes the
-nearest colour its cell allows. A converted picture still needs at most 256 distinct tiles, and is
-refused with the number it needs when it does not fit.
+nearest colour its cell allows. A converted picture still needs at most 256 distinct
+tiles, and is refused with the number it needs when it does not fit.
 
 An explicit palette can be supplied instead of `auto`:
 
