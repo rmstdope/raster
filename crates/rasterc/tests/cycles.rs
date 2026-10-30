@@ -496,3 +496,16 @@ fn a_delay_too_long_for_one_page_still_compiles() {
         bracketed_delay(cycles),
     );
 }
+
+#[test]
+fn a_delay_whose_loop_count_turns_on_its_jumps_is_spent_exactly() {
+    // Paying six cycles of jumps for each of these lengths' loops leaves a length planned with one
+    // loop fewer, and the compiler once searched back and forth between the two for ever.
+    for cycles in [1812, 3613] {
+        compare(
+            &format!("wait cycles({cycles})"),
+            cycles + cost(&[bare(PLP), bare(PHP)]),
+            bracketed_delay(cycles),
+        );
+    }
+}

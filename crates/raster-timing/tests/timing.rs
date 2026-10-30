@@ -832,3 +832,40 @@ fn an_indexed_read_from_a_page_aligned_base_costs_exactly_its_base_cycles() {
         })
     );
 }
+
+#[test]
+fn a_delay_planned_for_islands_costs_exactly_what_was_asked_for_at_every_length() {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    // Every length up to twenty thousand cycles, and the lengths either side of each whole number
+    // of the longest nested loop, where the number of loops a plan needs changes. Each loop is run
+    // out of line for six cycles of jumps, which the plan has to leave room for.
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let longest = 7 * 256 * 257;
+        let lengths = (2..20_000).chain((1..=40).flat_map(|k| k * longest - 8..k * longest + 8));
+        for cycles in lengths {
+            for legal_isa in [true, false] {
+                let plan = raster_timing::plan_delay_in_islands(cycles, legal_isa, 6)
+                    .unwrap_or_else(|error| panic!("{cycles} cycles: {error:?}"));
+                let spent = raster_timing::delay_cycles(&plan) + 6 * raster_timing::loops(&plan);
+                if sender.send((cycles, spent)).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    let mut last = 1;
+    loop {
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok((cycles, spent)) => {
+                assert_eq!(spent, cycles, "a delay of {cycles} cycles spends {spent}");
+                last = cycles;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("planning the delay after {last} cycles never finishes")
+            }
+        }
+    }
+}

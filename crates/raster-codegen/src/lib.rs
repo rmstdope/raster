@@ -13,7 +13,7 @@ use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, Relocati
 use raster_syntax::Span;
 use raster_timing::{
     analyze, mmc3_latch_for_delta, mmc3_latch_for_first_event, mmc3_latch_for_next_frame,
-    plan_delay, plan_timed_frame, DelayStep, ScheduledHandler, TimedRegion, TimingError,
+    plan_timed_frame, DelayStep, ScheduledHandler, TimedRegion, TimingError,
     IRQ_HANDLER_BODY_CYCLES,
 };
 
@@ -982,33 +982,9 @@ impl Generator<'_> {
     /// what is left, again until its loops are the ones paid for. A delay too short to keep a loop
     /// once the jumps are paid is spent as filler, which has no branch at all.
     fn delay_on_pages(&mut self, cycles: u32, span: Span) -> Result<(), CodegenError> {
-        let timing = |error| CodegenError::Timing { error, span };
-        let loops = |plan: &[DelayStep]| {
-            plan.iter()
-                .filter(|step| matches!(step, DelayStep::Loop { .. }))
-                .count() as u32
-        };
-        let inline = plan_delay(cycles, self.legal_isa).map_err(timing)?;
-        let mut paid = loops(&inline);
-        let plan = loop {
-            if paid == 0 {
-                break inline;
-            }
-            let hops = 2 * JMP_ABSOLUTE_CYCLES * paid;
-            let Some(plan) = cycles
-                .checked_sub(hops)
-                .and_then(|left| plan_delay(left, self.legal_isa).ok())
-                .filter(|plan| loops(plan) > 0)
-            else {
-                let filler =
-                    raster_timing::synthesize_padding(cycles, self.legal_isa).map_err(timing)?;
-                break vec![DelayStep::Filler(filler)];
-            };
-            if loops(&plan) == paid {
-                break plan;
-            }
-            paid = loops(&plan);
-        };
+        let plan =
+            raster_timing::plan_delay_in_islands(cycles, self.legal_isa, 2 * JMP_ABSOLUTE_CYCLES)
+                .map_err(|error| CodegenError::Timing { error, span })?;
         for step in &plan {
             match step {
                 DelayStep::Filler(_) => self.delay_step(step),

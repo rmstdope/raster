@@ -509,6 +509,54 @@ pub fn delay_cycles(steps: &[DelayStep]) -> u32 {
         .sum()
 }
 
+/// A delay of exactly `cycles` whose every loop the caller runs out of line, spending `hop_cycles`
+/// more on the way there and back: the plan is made for what the hops leave.
+///
+/// How many loops a plan needs is not steady in its length: paying hops for one loop can leave a
+/// length planned with one fewer, and putting those cycles back brings it again. So the hops paid
+/// for only ever grow, which ends the search, and any paid for a loop the plan did not use are
+/// spent as filler; a whole number of hops is never the single cycle filler cannot reach.
+///
+/// A delay too short to keep a loop once its hops are paid is filler alone, which has no branch.
+pub fn plan_delay_in_islands(
+    cycles: u32,
+    legal_isa: bool,
+    hop_cycles: u32,
+) -> Result<Vec<DelayStep>, TimingError> {
+    let inline = plan_delay(cycles, legal_isa)?;
+    let mut paid = loops(&inline);
+    loop {
+        if paid == 0 {
+            return Ok(inline);
+        }
+        let Some(mut plan) = cycles
+            .checked_sub(hop_cycles * paid)
+            .and_then(|left| plan_delay(left, legal_isa).ok())
+            .filter(|plan| loops(plan) > 0)
+        else {
+            return Ok(vec![DelayStep::Filler(synthesize_padding(
+                cycles, legal_isa,
+            )?)]);
+        };
+        let used = loops(&plan);
+        if used <= paid {
+            let unused = hop_cycles * (paid - used);
+            if unused > 0 {
+                plan.push(DelayStep::Filler(synthesize_padding(unused, legal_isa)?));
+            }
+            return Ok(plan);
+        }
+        paid = used;
+    }
+}
+
+/// How many loops a delay plan holds.
+pub fn loops(plan: &[DelayStep]) -> u32 {
+    plan.iter()
+        .filter(|step| matches!(step, DelayStep::Loop { .. }))
+        .count() as u32
+}
+
 /// A plan that spends exactly `requested_cycles` cycles doing nothing.
 ///
 /// The bulk goes into counted loops whose iteration counts are constants, so the cost is proven
