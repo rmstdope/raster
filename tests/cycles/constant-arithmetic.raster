@@ -1,0 +1,9 @@
+// Arithmetic on constants is folded before it is costed: `2*3` is the constant 6, so the store is
+// `LDA #$06` (2) and `STA $2007` (4), six cycles, and the nine of interrupt masking. No multiply
+// loop is emitted, which is what makes the region provable at all.
+main {
+    sync exact
+    cycles(?) c {
+        ppu.data = 2*3
+    }
+}

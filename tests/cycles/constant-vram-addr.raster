@@ -1,0 +1,8 @@
+// A `vram_addr` written as constant arithmetic is the same two $2006 stores as a literal one:
+// $2000 + 32*4 + 2 is $2082, so 2 x (LDA #imm 2 + STA abs 4) = 12, and the nine of masking.
+main {
+    sync exact
+    cycles(?) v {
+        vram_addr = $2000 + 32*4 + 2
+    }
+}

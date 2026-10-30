@@ -273,10 +273,12 @@ forms, and `.` for member access, `[]` for indexing.
 Division and general multiplication are expensive on 6502, and the compiler refuses
 them inside a `cycles` block. This is intentional — see §6.4.
 
-**rasterc today:** `*`, `/`, `%`, `<<` and `>>` are all refused inside a timed block
-whatever their operands, because each lowers to a loop and a loop is not straight-line
-code (§6.3). This is not caution: before the refusal existed, `v * 3` was predicted at
-38 cycles and spent 69.
+**rasterc today:** `*`, `/`, `%`, `<<` and `>>` are refused inside a timed block
+whenever an operand is not a constant, because each lowers to a loop and a loop is not
+straight-line code (§6.3). This is not caution: before the refusal existed, `v * 3` was
+predicted at 38 cycles and spent 69. An operation on two constants is folded into its
+value at compile time, wrapping to eight bits as the loop would, so `ppu.data = 2*3`
+costs exactly what `ppu.data = 6` costs and is accepted.
 
 ---
 

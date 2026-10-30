@@ -252,6 +252,32 @@ fn accepts_a_provable_timed_block() {
     analyze(&program).expect("a provable timed region is accepted");
 }
 
+/// An operator that compiles to a loop is refused for what it costs at run time; with constant
+/// operands it is folded first and costs nothing, so the operator alone is no reason to refuse.
+#[test]
+fn accepts_constant_arithmetic_with_loop_operators_in_a_timed_block() {
+    let program = parse(
+        r#"
+            const N: u8 = 3
+            var count: u8
+            main {
+                sync exact
+                cycles(?) c {
+                    ppu.data = 2*3
+                    count = N * 4 + 12 / 4 + 7 % 3 + (1 << 2) + ($80 >> N)
+                    vram_addr = $2000 + 32*4 + 2
+                    ppu.data = -1*2
+                    ppu.data = (1-2)*3
+                    ppu.data = 7/0*1
+                    ppu.data = ~1*2
+                }
+            }
+        "#,
+    )
+    .expect("fixture should parse");
+    analyze(&program).expect("constant arithmetic has a fixed cost");
+}
+
 #[test]
 fn requires_sync_exact_before_a_timed_region_that_writes_the_ppu() {
     let diagnostics = errors(
