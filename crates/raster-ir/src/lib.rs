@@ -2394,8 +2394,9 @@ impl Lowerer {
 
     /// Warn where a `cycles` block in `main`, or in anything `main` runs, can start with NMI on.
     ///
-    /// Frame handlers are never walked: an IRQ handler runs on visible scanlines and
-    /// re-synchronizes, and a `timed` frame is warned about as a whole.
+    /// Frame handlers are never walked: an IRQ handler runs on the picture or the line after
+    /// it, ending long before vblank, and re-synchronizes, and a `timed` frame is warned about
+    /// as a whole.
     fn check_block_nmi(&mut self) {
         if !self.errors.is_empty() || !self.recoverable_errors.is_empty() {
             return;

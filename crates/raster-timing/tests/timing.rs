@@ -532,12 +532,26 @@ fn mmc3_latch_for_delta_accounts_for_counter_offset() {
     }
 }
 
+/// A `using irq` frame may end on scanline 240, counted to line 239's rise. Its handler's reload
+/// lands on the pre-render line's rise, so the next frame's first event `F` is `F` rises on and
+/// needs a latch of `F`: 0 for an event on the first line, and 240 for a frame of that one event.
+#[test]
+fn a_chain_from_scanline_240_wraps_to_the_next_frame_by_the_pre_render_line() {
+    for (first, latch) in [(0u16, 0u8), (60, 60), (240, 240)] {
+        assert_eq!(
+            raster_timing::mmc3_latch_for_next_frame(240, first),
+            latch,
+            "from scanline 240 to the next frame's scanline {first} needs a latch of {latch}"
+        );
+    }
+}
+
 /// The first IRQ of a frame is armed in vblank, so its reload lands on the pre-render line's own
 /// A12 rise rather than one rise after an IRQ. That is one rise earlier than a chained link, and
 /// it is exactly the difference that makes the first latch the scanline itself.
 #[test]
 fn the_first_irq_of_a_frame_is_armed_from_the_pre_render_line() {
-    for (scanline, latch) in [(0u16, 0u8), (1, 1), (60, 60), (239, 239)] {
+    for (scanline, latch) in [(0u16, 0u8), (1, 1), (60, 60), (239, 239), (240, 240)] {
         assert_eq!(
             raster_timing::mmc3_latch_for_first_event(scanline),
             latch,

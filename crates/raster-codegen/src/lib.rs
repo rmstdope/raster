@@ -429,8 +429,9 @@ impl Generator<'_> {
         // The handlers, past the spin loop: control reaches them through `$FFFE` and never by
         // falling through.
         for (index, event) in frame.events.iter().enumerate() {
-            // Every scanline here is on the visible picture, which `raster-ir` bounded at 239, so
-            // the counter's own 16-bit arithmetic loses nothing.
+            // Every scanline here is on the visible picture or, under `using irq`, the line after
+            // it: `raster-ir` bounded them at 240, so the counter's own 16-bit arithmetic loses
+            // nothing.
             let next = &frame.events[(index + 1) % frame.events.len()];
             let latch = if index + 1 < frame.events.len() {
                 mmc3_latch_for_delta((next.scanline - event.scanline) as u16)
