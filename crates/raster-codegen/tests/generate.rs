@@ -1288,7 +1288,7 @@ fn a_call_on_the_left_still_runs_before_the_right_is_read() {
 fn a_handler_at_scanline_240_gets_the_undrawn_line_and_other_lines_keep_the_hblank() {
     let source = |at: u32, body: &str| {
         format!(
-            "main {{ ppu.ctrl = $10\n ppu.mask = $18 }}\n\
+            "main {{ ppu.ctrl = $08\n ppu.mask = $18 }}\n\
              frame bars using irq {{ at scanline {at} {{ {body} }} }}"
         )
     };
@@ -1330,7 +1330,7 @@ fn a_handler_at_scanline_240_gets_the_undrawn_line_and_other_lines_keep_the_hbla
 fn the_window_is_chosen_per_event_and_its_edge_is_exact() {
     let rows = |body_240: &str| {
         let source = format!(
-            "main {{ ppu.ctrl = $10\n ppu.mask = $18 }}\n\
+            "main {{ ppu.ctrl = $08\n ppu.mask = $18 }}\n\
              frame bars using irq {{ at scanline 120 {{ ppu.mask = $1e }}\n\
              at scanline 240 {{ {body_240} }} }}"
         );
