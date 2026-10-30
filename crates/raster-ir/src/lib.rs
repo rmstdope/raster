@@ -4718,6 +4718,8 @@ fn to_u8(value: u32) -> Option<u8> {
 
 /// An operation on two constants, as the code it would otherwise emit computes it: eight bits
 /// that wrap, a shift of eight or more that leaves nothing, and a division by zero that is zero.
+/// `raster-sema`'s `evaluate_folded_u8` repeats these rules for its constant index check; change
+/// both together.
 fn fold(left: u8, operator: BinaryOperator, right: u8) -> u8 {
     match operator {
         BinaryOperator::Add => left.wrapping_add(right),
