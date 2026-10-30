@@ -232,6 +232,15 @@ fn irq_frame_rejects_a_handler_that_leaves_the_background_at_1000_at_the_wrap() 
         "`using irq` needs the background pattern table at $0000 and the sprites at $1000 when \
          the frame wraps, and this handler's `ppu.ctrl = $10` leaves the background at $1000"
     );
+    // The handler that stored it, not the last event, where the wrap is judged.
+    let span = diagnostics[0]
+        .span
+        .expect("the diagnostic is source-spanned");
+    assert!(
+        source[span.start..span.end].starts_with("at scanline 120"),
+        "underlines {:?}",
+        &source[span.start..span.end]
+    );
     assert!(
         diagnostics[0].span.is_some(),
         "the diagnostic is source-spanned"
@@ -259,6 +268,23 @@ fn irq_frame_rejects_a_handler_that_puts_both_pattern_tables_in_one_half() {
             )
         );
     }
+}
+
+/// 8x16 sprites take their half from each tile index, so a handler that selects them is refused
+/// for the reason the opening configuration would be.
+#[test]
+fn irq_frame_rejects_a_handler_that_selects_8x16_sprites() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 120 { ppu.ctrl = $28 }\n    \
+                  at scanline 200 { ppu.ctrl = $08 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("8x16 sprites cannot be checked");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` cannot check the A12 pattern for 8x16 sprites, and this handler's \
+         `ppu.ctrl = $28` selects them"
+    );
 }
 
 /// The zombie example's shape: the background moves to $1000 mid-frame and is put back on the

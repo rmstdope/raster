@@ -2261,7 +2261,8 @@ impl Lowerer {
     /// Nothing is checked on a program that already failed: the configuration is read by walking
     /// calls, and a program whose recursion was just rejected has no walk that terminates.
     ///
-    /// What the handlers themselves store is judged too, by [`Self::check_irq_handler_masks`] - but
+    /// What the handlers themselves store is judged too, by [`Self::check_irq_handler_masks`] and
+    /// [`Self::check_irq_handler_ctrl`] - but
     /// only once the opening configuration is proven good, because a frame whose configuration is
     /// already refused has not yet established the thing its handlers would be judged against.
     fn check_mmc3_irq_frame(&mut self) {
@@ -2291,8 +2292,9 @@ impl Lowerer {
     /// schedule order, from the opening configuration, and the layout standing after each event is
     /// judged. Pattern tables in one half (or 8x16 sprites) are refused wherever they stand, since
     /// the counter stops there and no later event runs. The background at `$1000` is refused only
-    /// when it is still standing as the frame wraps: mid-frame it clocks once a line, which is what
-    /// `examples/zombie` relies on, and it is the pre-render line that it double-clocks.
+    /// when it is still standing as the frame wraps, since it is the pre-render line that it
+    /// double-clocks: `examples/zombie` moves it there at 120 and back at 240. Whether an event that
+    /// runs while it is at `$1000` keeps its line and its hblank is not judged here.
     ///
     /// The mask is held at its opening value, because handler masks are judged by
     /// [`Self::check_irq_handler_masks`]. A `ppu.ctrl` this cannot read ends the walk unjudged, as a
