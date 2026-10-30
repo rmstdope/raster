@@ -574,14 +574,34 @@ fn mmc3_irq_needs_opposite_pattern_halves() {
 
     // Background at $0000 and sprites at $1000, both halves of rendering on.
     assert_eq!(validate_mmc3_irq_frame(&configuration(0x08, 0x18)), Ok(()));
-    // The other way round is just as valid.
-    assert_eq!(validate_mmc3_irq_frame(&configuration(0x10, 0x1e)), Ok(()));
 
     for ctrl in [0x00, 0x18] {
         assert_eq!(
             validate_mmc3_irq_frame(&configuration(ctrl, 0x18)),
             Err(Mmc3IrqError::PatternTablesShareHalf { ctrl }),
             "${ctrl:02X} puts both pattern tables in one half"
+        );
+    }
+}
+
+/// The other way round, background at $1000 and sprites at $0000, moves A12 too, but a schedule
+/// counted for it does not keep its scanlines. Coming out of vblank the background fetches raise
+/// A12 early on the pre-render line as well as at dot 324, so the counter sees 242 rises a frame
+/// where the chain counts 241, and every event lands a scanline earlier each frame. Measured in
+/// this project's emulator before the refusal: events at 120 and 200 ran at 119/199, then 118/198,
+/// and on. The rise at dot 324 also leaves no hblank for a handler's store to land in.
+#[test]
+fn mmc3_irq_refuses_the_background_at_1000() {
+    use raster_timing::{validate_mmc3_irq_frame, Mmc3IrqError, PpuConfiguration, RegisterState};
+
+    for ctrl in [0x10, 0x11, 0x13, 0x90] {
+        assert_eq!(
+            validate_mmc3_irq_frame(&PpuConfiguration {
+                ctrl: RegisterState::Known(ctrl),
+                mask: RegisterState::Known(0x1e),
+            }),
+            Err(Mmc3IrqError::BackgroundInUpperHalf { ctrl }),
+            "${ctrl:02X} puts the background at $1000 and the sprites at $0000"
         );
     }
 }

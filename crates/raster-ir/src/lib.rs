@@ -5368,6 +5368,10 @@ fn mmc3_irq_message(error: Mmc3IrqError) -> String {
                  and `ppu.ctrl = ${ctrl:02X}` puts both at {half}"
             )
         }
+        Mmc3IrqError::BackgroundInUpperHalf { ctrl } => format!(
+            "`using irq` needs the background pattern table at $0000 and the sprites at $1000, \
+             and `ppu.ctrl = ${ctrl:02X}` puts the background at $1000"
+        ),
         Mmc3IrqError::UnprovenConfiguration { register } => format!(
             "`using irq` needs a constant `{register}` before the frame, and this program's last \
              write to it is not one"

@@ -505,7 +505,10 @@ enforces at compile time:
 automatic acknowledge are done for you under `using irq`, and so is the A12
 check, in part. **stricter** — the compiler refuses what it cannot read: both
 `ppu.ctrl` and `ppu.mask` must be constants before the frame, 8x16 sprites are
-refused because their pattern table cannot be checked, and a handler that stores
+refused because their pattern table cannot be checked, the frame must start with
+the background at `$0000` and the sprites at `$1000` (the other way round clocks the
+counter twice on the pre-render line, so the schedule drifts a scanline a frame, and
+raises the IRQ too late in hblank for a handler's store), and a handler that stores
 a constant mask with rendering off is refused (a computed mask only warns).
 The CHR layout is not read; the reset runtime fixes it.
 

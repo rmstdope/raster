@@ -808,6 +808,12 @@ pub enum Mmc3IrqError {
     /// Background and sprite patterns are in the same half of pattern memory, so a scanline's
     /// fetches never raise A12 and the counter never clocks.
     PatternTablesShareHalf { ctrl: u8 },
+    /// The background is at `$1000` and the sprites at `$0000`. A12 then rises early on the
+    /// pre-render line, coming out of vblank, as well as at dot 324 on every rendered line, so the
+    /// counter sees 242 rises a frame where the chain counts 241 and every event drifts a scanline
+    /// earlier each frame; and an interrupt raised at dot 324 leaves no hblank for a handler's
+    /// store to land in.
+    BackgroundInUpperHalf { ctrl: u8 },
     /// The program's last store to this register was not a constant, so the check cannot be made.
     UnprovenConfiguration { register: &'static str },
     /// The register is written under a branch, so the program has no one configuration to check.
@@ -842,6 +848,11 @@ fn known(state: RegisterState, register: &'static str) -> Result<u8, Mmc3IrqErro
 /// background-only split clocks the counter exactly as a full one does. What is fatal is rendering
 /// nothing at all, or configuring both tables into the same half.
 ///
+/// Of the two layouts that do move A12, only background at `$0000` and sprites at `$1000` keeps a
+/// schedule: that is the one whose rise lands at dot 260, once on each of the 241 lines the chain
+/// counts, with the hblank still ahead for the handler. The other is refused — see
+/// [`Mmc3IrqError::BackgroundInUpperHalf`].
+///
 /// 8x16 sprites are refused rather than judged: in that mode the hardware ignores the sprite-half
 /// bit and takes the half from bit 0 of each tile index, which is not in a register this can read.
 ///
@@ -864,6 +875,9 @@ pub fn validate_mmc3_irq_frame(ppu: &PpuConfiguration) -> Result<(), Mmc3IrqErro
     let sprite_half = ctrl & PPU_CTRL_SPRITE_PATTERN_HALF != 0;
     if background_half == sprite_half {
         return Err(Mmc3IrqError::PatternTablesShareHalf { ctrl });
+    }
+    if background_half {
+        return Err(Mmc3IrqError::BackgroundInUpperHalf { ctrl });
     }
     Ok(())
 }
