@@ -3,8 +3,13 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+/// Tests in one binary share a process id and may start within one tick of the
+/// clock, so the clock alone does not tell their directories apart.
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 /// A directory of one test's own, removed when the test ends. Tests run in
 /// parallel and write ROMs, so sharing a path would make them flaky, and leaving
@@ -14,14 +19,15 @@ pub struct Scratch(PathBuf);
 impl Scratch {
     pub fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "rasterc-{label}-{}-{}",
+            "rasterc-{label}-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("the clock is after the epoch")
                 .as_nanos()
         ));
-        fs::create_dir_all(&path).expect("the scratch directory is creatable");
+        fs::create_dir(&path).expect("the scratch directory is new and creatable");
         Self(path)
     }
 
