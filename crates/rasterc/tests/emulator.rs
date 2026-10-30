@@ -371,6 +371,40 @@ fn irq_handler_body_fits_the_hblank_it_lands_in() {
     }
 }
 
+/// The hblank window was measured with the background at `$0000`, where A12 rises in the sprite
+/// fetches at about dot 260. A `tiles: 512` picture's lower half runs with the background at
+/// `$1000` and the sprites at `$0000`, which moves the rise to the background prefetch at about
+/// dot 324 — late enough that a handler's store reaches the picture part-way along its row.
+///
+/// This is the shape `examples/zombie` has, plus one event inside the lower half: the switch at
+/// 120, a mask change at 180 and back at 200, the switch back at 240. Rows 180 and 200 must each
+/// read whole, or the program must not compile.
+#[test]
+fn an_irq_store_under_the_background_at_1000_never_lands_on_the_picture() {
+    let source = "var red: u8 = $3e\nvar plain: u8 = $1e\nmain {\n    ppu.addr = $3f\n    ppu.addr = $00\n    ppu.data = $0f\n    ppu.addr = $00\n    ppu.addr = $00\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\nframe halves using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    at scanline 180 { ppu.mask = red }\n    at scanline 200 { ppu.mask = plain }\n    at scanline 240 { ppu.ctrl = $08 }\n}\n";
+    let Ok(rom) = compile_source(source) else {
+        return;
+    };
+    for frames in 8..14 {
+        let entries = *render_after_frames(
+            "irq-background-1000.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs")
+        .as_indices();
+        for (scanline, entry) in [(180usize, 0x4fu16), (200, 0x0f)] {
+            let row = &entries[scanline * FRAME_WIDTH..(scanline + 1) * FRAME_WIDTH];
+            let torn = row.iter().position(|&pixel| pixel != entry);
+            assert_eq!(
+                torn, None,
+                "frame {frames}, scanline {scanline}: column {torn:?} does not carry the value the \
+                 handler stored, so the store reached the picture after dot 0"
+            );
+        }
+    }
+}
+
 /// `vram_addr` and the raw byte pair reach the same PPU address: the demo, with
 /// its two pairs written as one line each, shows the same screen.
 #[test]
