@@ -18,23 +18,16 @@ mod scratch;
 use demo::copper_bars_demo_path;
 use scratch::Scratch;
 
-/// The palette entries the example loads, darkest first, and the NES colour each holds.
-const SHADES: [(u8, u16); 6] = [
-    (0x00, 0x0f),
-    (0x01, 0x02),
-    (0x03, 0x12),
-    (0x07, 0x22),
-    (0x0f, 0x32),
-    (0x1f, 0x30),
+/// The colour of each line of each bar, counted from its top: red in front, orange behind it and
+/// yellow at the back, each fading to white in its middle.
+const BARS: [[u16; 9]; 3] = [
+    [0x06, 0x16, 0x26, 0x36, 0x30, 0x36, 0x26, 0x16, 0x06],
+    [0x07, 0x17, 0x27, 0x37, 0x30, 0x37, 0x27, 0x17, 0x07],
+    [0x08, 0x18, 0x28, 0x38, 0x30, 0x38, 0x28, 0x18, 0x08],
 ];
 
-/// How bright a palette entry is: its place in [`SHADES`].
-fn brightness(entry: u8) -> usize {
-    SHADES
-        .iter()
-        .position(|&(shade, _)| shade == entry)
-        .unwrap_or_else(|| panic!("the example loads no palette entry ${entry:02X}"))
-}
+/// The colour of everything that is not a bar.
+const BACKDROP: u16 = 0x0f;
 
 /// The numbers of the example's `const NAME: [256]u8 = [...]`, read from the source so this test
 /// describes the tables the ROM is built from.
@@ -69,20 +62,18 @@ fn tops(source: &str, step: u8) -> [u8; 3] {
     [0, 1, 2].map(|bar| swing[usize::from(step.wrapping_add(phase.wrapping_mul(bar)))])
 }
 
-/// What every line shows at `step` of the swing: the brightest shade of the bars it is in, or
-/// black. Said as the brightest, not as the OR the ROM works it out with, so the test holds the
-/// example to what it means.
+/// What every line shows at `step` of the swing: the colour of the front bar it is in, or black.
+/// Said as the bars' colours and their order, not as the tables the ROM adds and looks up, so the
+/// test holds the example to what it means.
 fn expected(source: &str, step: u8) -> Vec<u16> {
-    let bar = table(source, "BAR");
     let tops = tops(source, step);
     (0..FRAME_HEIGHT as u8)
         .map(|line| {
-            let brightest = tops
-                .iter()
-                .map(|&top| brightness(bar[usize::from(line.wrapping_sub(top))]))
-                .max()
-                .unwrap();
-            SHADES[brightest].1
+            tops.iter()
+                .zip(&BARS)
+                .find_map(|(&top, bar)| bar.get(usize::from(line.wrapping_sub(top))))
+                .copied()
+                .unwrap_or(BACKDROP)
         })
         .collect()
 }
@@ -171,7 +162,7 @@ fn every_frame_is_the_three_bars_at_the_step_its_frame_has_reached() {
         );
     }
 
-    // Where bars overlap, a line shows the brightest of them. The first frame they do is found
+    // Where bars overlap, a line shows the one in front. The first frame they do is found
     // from the tables, so it is checked whatever SPEED and PHASE are set to — if they overlap at
     // all in the first thousand frames.
     if let Some(moved) = (1..1000).find(|&moved| overlapping(&source, step_after(speed, moved))) {

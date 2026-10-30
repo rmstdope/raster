@@ -1,11 +1,11 @@
-// Three copper bars on one swing, each PHASE steps behind the last, all
-// moving SPEED sixteenths of a step a frame.
+// Three copper bars on one swing, red, orange and yellow, each PHASE
+// steps behind the last, all moving SPEED sixteenths of a step a frame.
 //
 // The same trick as examples/copper: rendering stays off, so the PPU
 // shows the palette entry its address register points at (see
 // .cerebro/traps.md), and every scanline points it at the shade that
 // line needs. With three bars a line can be in more than one, so each
-// line works out all three and keeps the brightest, without a branch.
+// line works out all three and shows the one in front, without a branch.
 //
 // Build it with
 //
@@ -16,26 +16,86 @@
 target nes { mapper: mmc3  region: ntsc }
 
 // Each line of a bar, counted from its top: nine shades, dark to white
-// and back. A shade is the palette entry that holds it, and the entries
-// are $01, $03, $07, $0F and $1F so that each brighter one has every bit
-// of the darker ones. OR-ing the shades of the bars a line is in then
-// gives the brightest of them. Every entry past the bar is $00, the
-// backdrop.
-const BAR: [256]u8 = [
-    $01, $03, $07, $0F, $1F, $0F, $07, $03, $01, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
-    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+// and back, as a level from 1 to 5, and 0 past the bar. The middle bar's
+// levels are counted in sixes and the back bar's in thirty-sixes, so
+// adding the three a line reads gives one number, under 216, that says
+// how bright each of the bars is there.
+const BAR1: [256]u8 = [
+      1,   2,   3,   4,   5,   4,   3,   2,   1,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+]
+
+const BAR2: [256]u8 = [
+      6,  12,  18,  24,  30,  24,  18,  12,   6,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+]
+
+const BAR3: [256]u8 = [
+     36,  72, 108, 144, 180, 144, 108,  72,  36,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+]
+
+// The palette entry a line shows for each of those numbers: the shade of
+// the front bar it is in, or of the middle one when it is not in the
+// front, or of the back one; $00, the backdrop, when it is in none. So
+// the bars pass in front of one another rather than blending.
+const COLOUR: [256]u8 = [
+    $00, $01, $02, $03, $05, $11, $06, $01, $02, $03, $05, $11, $07, $01, $02, $03,
+    $05, $11, $09, $01, $02, $03, $05, $11, $0A, $01, $02, $03, $05, $11, $11, $01,
+    $02, $03, $05, $11, $0B, $01, $02, $03, $05, $11, $06, $01, $02, $03, $05, $11,
+    $07, $01, $02, $03, $05, $11, $09, $01, $02, $03, $05, $11, $0A, $01, $02, $03,
+    $05, $11, $11, $01, $02, $03, $05, $11, $0D, $01, $02, $03, $05, $11, $06, $01,
+    $02, $03, $05, $11, $07, $01, $02, $03, $05, $11, $09, $01, $02, $03, $05, $11,
+    $0A, $01, $02, $03, $05, $11, $11, $01, $02, $03, $05, $11, $0E, $01, $02, $03,
+    $05, $11, $06, $01, $02, $03, $05, $11, $07, $01, $02, $03, $05, $11, $09, $01,
+    $02, $03, $05, $11, $0A, $01, $02, $03, $05, $11, $11, $01, $02, $03, $05, $11,
+    $0F, $01, $02, $03, $05, $11, $06, $01, $02, $03, $05, $11, $07, $01, $02, $03,
+    $05, $11, $09, $01, $02, $03, $05, $11, $0A, $01, $02, $03, $05, $11, $11, $01,
+    $02, $03, $05, $11, $11, $01, $02, $03, $05, $11, $06, $01, $02, $03, $05, $11,
+    $07, $01, $02, $03, $05, $11, $09, $01, $02, $03, $05, $11, $0A, $01, $02, $03,
+    $05, $11, $11, $01, $02, $03, $05, $11, $00, $00, $00, $00, $00, $00, $00, $00,
     $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
     $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
 ]
@@ -97,31 +157,35 @@ var sub: u8 = 0
 var top1: u8 = 0
 var top2: u8 = 0
 var top3: u8 = 0
-var line: u8 = 1
-var shade: u8 = 0
+var line: u8 = 0
 
 main {
     ppu.ctrl = $00              // NMI off: a timed frame cannot spare its 13 cycles
     ppu.mask = $00              // rendering off, so the address picks the colour
 
-    ppu.addr = $3f              // $3F00: black, everywhere but the bars
+    // The palette, from $3F00 up: each write moves the address on by one.
+    // $3F04, $3F08 and $3F0C are skipped, since $3F14, $3F18 and $3F1C
+    // share them, and $3F10 shares $3F00.
+    ppu.addr = $3f
     ppu.addr = $00
+    ppu.data = $0f              // $3F00: black, everywhere but the bars
+    ppu.data = $06              // $3F01-$3F05: the front bar, red,
+    ppu.data = $16              // darkest first
+    ppu.data = $26
     ppu.data = $0f
-    ppu.addr = $3f              // $3F01: the bars' edges, darkest
-    ppu.addr = $01
-    ppu.data = $02
-    ppu.addr = $3f
-    ppu.addr = $03
-    ppu.data = $12
-    ppu.addr = $3f
-    ppu.addr = $07
-    ppu.data = $22
-    ppu.addr = $3f
-    ppu.addr = $0f
-    ppu.data = $32
-    ppu.addr = $3f              // $3F1F: their middles, white
-    ppu.addr = $1f
-    ppu.data = $30
+    ppu.data = $36
+    ppu.data = $07              // $3F06-$3F0A: the middle bar, orange
+    ppu.data = $17
+    ppu.data = $0f
+    ppu.data = $27
+    ppu.data = $37
+    ppu.data = $08              // $3F0B-$3F0F: the back bar, yellow
+    ppu.data = $0f
+    ppu.data = $18
+    ppu.data = $28
+    ppu.data = $38
+    ppu.data = $0f              // $3F10: $3F00 again
+    ppu.data = $30              // $3F11: the middles of all three, white
 
     ppu.addr = $00              // leave palette space until the first
     ppu.addr = $00              // scanline points somewhere on purpose
@@ -138,18 +202,21 @@ frame bars using timed {
     // last write lands once the beam is past the right edge of the
     // picture, so the colour changes where nobody can see it. Unlike
     // examples/copper, nothing waits for the edge: the work before the
-    // write takes 80 cycles, a few dots past it. A compiler
+    // write takes 84 cycles, a few dots past it. A compiler
     // that does the work faster would land it inside the picture, and
     // crates/rasterc/tests/copper_bars_demo.rs would say so.
+    //
+    // The first write of an address only waits in the PPU for the second,
+    // so the screen keeps its colour until the second lands, and the
+    // looked-up entry goes straight into it.
     every 1 scanlines from 0 to 238 {
-        shade = BAR[line - top1] | BAR[line - top2] | BAR[line - top3]
-        line += 1
         ppu.addr = $3f
-        ppu.addr = shade
+        line += 1
+        ppu.addr = COLOUR[BAR1[line - top1] + BAR2[line - top2] + BAR3[line - top3]]
     }
     // The bars never reach the last line or the first, so they stay
     // black, and this handler moves the bars for the next frame. Line 0's
-    // handler colours line 1, so that is where the count starts.
+    // handler colours line 1, and counts before it looks.
     at scanline 239 {
         sub += SPEED
         step += WHOLE[sub]
@@ -157,6 +224,6 @@ frame bars using timed {
         top1 = SWING[step]
         top2 = SWING[step + PHASE]
         top3 = SWING[step + PHASE + PHASE]
-        line = 1
+        line = 0
     }
 }
