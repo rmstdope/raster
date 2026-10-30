@@ -324,11 +324,11 @@ rounding.
 
 In a padded block, a `cycles(<= N)` block and a `frame` handler, which are padded or
 bounded anyway, rasterc holds the two constants a run of plain stores repeats most in
-X and Y, loaded once at the start of the run and stored with `stx` and `sty`: four
-cycles a store instead of six, and the stores land closer together. An unpadded
-`cycles(N)` keeps the code its count was written for, since a cheaper body would be
-refused there, and an interruptible block keeps it too, since X and Y belong to the
-code it interrupts.
+X and Y, each loaded where it is first stored and stored with `stx` and `sty` after
+that: four cycles a store instead of six. No store lands later than it did, and the
+ones after a held store land sooner. An unpadded `cycles(N)`, and every block inside
+one, keeps the code its count was written for, since a cheaper body would be refused
+there; so does an interruptible block, since an IRQ handler saves only A.
 
 ### 6.3 Rules inside a timed block
 

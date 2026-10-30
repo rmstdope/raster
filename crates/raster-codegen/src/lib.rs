@@ -217,6 +217,7 @@ pub fn generate_with_isa(
         data_pieces: BTreeMap::new(),
         page_aligned: BTreeSet::new(),
         next_counter: usize::from(FIRST_ZERO_PAGE_ADDRESS) + program.places.len(),
+        keeps_code: false,
         islands: Vec::new(),
     };
     generator.split_data(program);
@@ -303,6 +304,10 @@ struct Generator<'a> {
     /// The handlers found over their windows, which are collected rather than raised so that every
     /// handler is measured.
     frame_overruns: Vec<(TimingError, Span)>,
+    /// Whether the code being emitted is inside a timed region whose code must stay as it was: an
+    /// unpadded exact one, whose count a cheaper body anywhere inside it would miss, or an
+    /// interruptible one, an IRQ handler's among them, which saves only A.
+    keeps_code: bool,
 }
 
 struct FrameRow {
@@ -857,9 +862,10 @@ impl Generator<'_> {
     }
 
     /// [`Self::statements`], holding in X and Y the two constants each run of plain stores repeats
-    /// most, loaded once at the start of the run and stored with `STX` and `STY`: four cycles a
-    /// store where loading the constant and storing it is six, and the stores land sooner after
-    /// one another. A run ends at any statement whose code might use X or Y.
+    /// most, each loaded once where it is first stored and stored with `STX` and `STY` after that:
+    /// four cycles a store where loading the constant and storing it is six. No store lands later
+    /// than it did, and the ones after a held store land sooner. A run ends at any statement whose
+    /// code might use X or Y.
     fn statements_holding_constants(
         &mut self,
         statements: &[Statement],
@@ -898,24 +904,29 @@ impl Generator<'_> {
             held.sort_by_key(|&(constant, count)| (std::cmp::Reverse(count), constant));
             let x = held.first().map(|&(constant, _)| constant);
             let y = held.get(1).map(|&(constant, _)| constant);
-            if let Some(x) = x {
-                self.emit(LDX_IMMEDIATE, Immediate, Some(u16::from(x)));
-            }
-            if let Some(y) = y {
-                self.emit(LDY_IMMEDIATE, Immediate, Some(u16::from(y)));
-            }
+            // Each register is loaded where its constant is first stored: `LDX #c; STX` is the six
+            // cycles `LDA #c; STA` was, so no store in the run lands later than it did.
+            let (mut x_loaded, mut y_loaded) = (false, false);
             for statement in run {
                 match statement {
                     Statement::Assign {
                         destination,
                         value: Value::Constant(constant),
                     } if Some(*constant) == x => {
+                        if !x_loaded {
+                            self.emit(LDX_IMMEDIATE, Immediate, Some(u16::from(*constant)));
+                            x_loaded = true;
+                        }
                         self.store_from(*destination, STX_ZERO_PAGE, STX_ABSOLUTE)?;
                     }
                     Statement::Assign {
                         destination,
                         value: Value::Constant(constant),
                     } if Some(*constant) == y => {
+                        if !y_loaded {
+                            self.emit(LDY_IMMEDIATE, Immediate, Some(u16::from(*constant)));
+                            y_loaded = true;
+                        }
                         self.store_from(*destination, STY_ZERO_PAGE, STY_ABSOLUTE)?;
                     }
                     _ => self.statement(statement, halt_label)?,
@@ -1027,14 +1038,21 @@ impl Generator<'_> {
             self.emit(PHP, Implied, None);
             self.emit(SEI, Implied, None);
         }
-        // Holding constants makes the body cheaper, so only where nothing can be refused for it:
-        // a padded or bounded block, never one whose exact count the author wrote for today's
-        // code. Never an interruptible one either, whose X and Y belong to the code it interrupts.
-        if (pad || matches!(constraint, CycleConstraint::AtMost(_))) && !interruptible {
-            self.statements_holding_constants(body, halt_label)?;
+        // Holding constants makes the body cheaper, so only where nothing can be refused for it: a
+        // padded or bounded block, and nothing inside an unpadded exact one, whose count the author
+        // wrote for today's code. Never in an interruptible one either: an IRQ handler saves only A,
+        // and its own table reads and delays use X and Y.
+        let keeps_code = self.keeps_code
+            || interruptible
+            || !(pad || matches!(constraint, CycleConstraint::AtMost(_)));
+        let enclosing = std::mem::replace(&mut self.keeps_code, keeps_code);
+        let emitted = if keeps_code {
+            self.statements(body, halt_label)
         } else {
-            self.statements(body, halt_label)?;
-        }
+            self.statements_holding_constants(body, halt_label)
+        };
+        self.keeps_code = enclosing;
+        emitted?;
 
         let mut instructions: Vec<_> = raster_link::instructions(&self.output.items[start..]);
         let page_aligned_reads = self.page_aligned_reads(start);

@@ -1,10 +1,10 @@
 // A run of plain stores, under a bound rather than an exact count, holds the two constants it
-// repeats most in X and Y, loaded once, and stores them with STX and STY:
+// repeats most in X and Y, each loaded where it is first stored, and stores them with STX and STY:
 //
-//   LDX #$00, LDY #$3F                          4
-//   ppu.mask = $00  ppu.addr = $3f  ppu.addr = $00   STX, STY, STX   12
-//   ppu.data = colour                           LDA, STA        7
-//   ppu.addr = $00  ppu.addr = $3f  ppu.mask = $00   STX, STY, STX   12
+//   ppu.mask = $00   LDX #$00, STX   6        ppu.data = colour   LDA, STA   7
+//   ppu.addr = $3f   LDY #$3F, STY   6        ppu.addr = $00      STX        4
+//   ppu.addr = $00   STX             4        ppu.addr = $3f      STY        4
+//                                             ppu.mask = $00      STX        4
 //
 // 35, and nine of interrupt masking: 44, where loading each constant would cost 52.
 var colour: u8 = $16

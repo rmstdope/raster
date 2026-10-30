@@ -453,6 +453,16 @@ fn an_unpadded_exact_block_keeps_the_code_its_count_was_written_for() {
     .expect("two six-cycle stores and nine of masking are still 21");
 }
 
+/// A bounded block inside an unpadded exact one is part of that count: made cheaper, the outer
+/// block would be refused as under budget.
+#[test]
+fn a_bounded_block_inside_an_unpadded_exact_one_keeps_its_code() {
+    rasterc::compile_source(
+        "var a: u8 = 0\nvar b: u8 = 0\nmain {\n    cycles(28) {\n        cycles(<= 40) {\n            a = 1\n            b = 1\n        }\n    }\n}\n",
+    )
+    .expect("the outer block's 28 cycles are still what its code costs");
+}
+
 #[test]
 fn a_delay_spends_exactly_its_planned_cycles_wherever_its_loop_lands() {
     // `value = 1` is four bytes and `ppu.mask = 0` five, so 0 to 63 of one and 0 to 3 of the other

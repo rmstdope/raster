@@ -276,8 +276,8 @@ const ABSOLUTE_STORES: [u8; 3] = [0x8c, 0x8d, 0x8e];
 ///
 /// A store to an absolute address is the only shape that can start one, and the address is the
 /// whole test: this charges whatever writes `$4014`, not whatever the register table happens to
-/// call it. `STX` and `STY` are listed beside `STA` because the 6502 has them even though codegen
-/// emits only `STA` today — the rule is about the hardware, not about this month's code generator.
+/// call it. `STX` and `STY` are listed beside `STA` because the 6502 has them, and codegen stores
+/// a constant held in X or Y with them — the rule is about the hardware, not the code generator.
 /// Indexed stores are not counted: their effective address is not in the instruction, so a flat
 /// sequence cannot tell whether one lands on `$4014`.
 pub fn oam_dma_stall_cycles(instructions: &[Instruction]) -> u32 {
