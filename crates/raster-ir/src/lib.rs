@@ -2280,6 +2280,84 @@ impl Lowerer {
             return;
         }
         self.check_irq_handler_masks();
+        self.check_irq_handler_ctrl();
+    }
+
+    /// Refuse a `using irq` frame whose handlers leave a `ppu.ctrl` standing that the chain cannot
+    /// run on.
+    ///
+    /// The opening configuration is only what the first frame starts from: every later frame
+    /// starts from what the last handler to store `ppu.ctrl` left there. So the frame is walked in
+    /// schedule order, from the opening configuration, and the layout standing after each event is
+    /// judged. Pattern tables in one half (or 8x16 sprites) are refused wherever they stand, since
+    /// the counter stops there and no later event runs. The background at `$1000` is refused only
+    /// when it is still standing as the frame wraps: mid-frame it clocks once a line, which is what
+    /// `examples/zombie` relies on, and it is the pre-render line that it double-clocks.
+    ///
+    /// The mask is held at its opening value, because handler masks are judged by
+    /// [`Self::check_irq_handler_masks`]. A `ppu.ctrl` this cannot read ends the walk unjudged, as a
+    /// computed mask is warned about rather than refused.
+    fn check_irq_handler_ctrl(&mut self) {
+        let Some(frame) = &self.program.frame else {
+            return;
+        };
+        let functions: BTreeMap<Label, &Function> = self
+            .program
+            .functions
+            .iter()
+            .map(|function| (function.label, function))
+            .collect();
+        let opening = self.ppu_configuration();
+        let mut configuration = opening;
+        let mut stored_by: Option<Span> = None;
+        let mut refusal = None;
+        let last = frame.events.len().saturating_sub(1);
+        for (index, event) in frame.events.iter().enumerate() {
+            let before = configuration.ctrl;
+            collect_ppu_stores(
+                &event.body,
+                &functions,
+                &mut Vec::new(),
+                &mut configuration,
+                false,
+            );
+            configuration.mask = opening.mask;
+            if configuration.ctrl != before {
+                stored_by = Some(event.span);
+            }
+            let RegisterState::Known(ctrl) = configuration.ctrl else {
+                break;
+            };
+            // Nothing stored yet: the opening configuration, already proven good.
+            let Some(span) = stored_by else {
+                continue;
+            };
+            let message = match validate_mmc3_irq_frame(&configuration) {
+                Err(Mmc3IrqError::BackgroundInUpperHalf { .. }) if index == last => format!(
+                    "`using irq` needs the background pattern table at $0000 and the sprites at \
+                     $1000 when the frame wraps, and this handler's `ppu.ctrl = ${ctrl:02X}` \
+                     leaves the background at $1000"
+                ),
+                Err(
+                    error @ (Mmc3IrqError::PatternTablesShareHalf { .. }
+                    | Mmc3IrqError::TallSpritesUncheckable { .. }),
+                ) => handler_ctrl_message(error),
+                _ => continue,
+            };
+            refusal = Some((span, message, ctrl));
+            break;
+        }
+        if let Some((span, message, ctrl)) = refusal {
+            // The handler is still costed, so its hblank overrun is reported in the same build.
+            self.recoverable_errors.push(LowerError {
+                message,
+                label: Some(format!("`ppu.ctrl = ${ctrl:02X}` is stored here")),
+                notes: Vec::new(),
+                help: None,
+                span,
+                refusal: Refusal::Rejected,
+            });
+        }
     }
 
     /// Refuse a `using irq` handler that turns rendering off, and warn about a frame whose handlers
@@ -5341,6 +5419,12 @@ fn handler_nmi_warning(write: &HandlerCtrlWrite) -> Option<LowerWarning> {
             secondary: None,
         }),
     }
+}
+
+/// The diagnostic a handler's `ppu.ctrl` store reads as when it stops the counter: the opening
+/// configuration's message, said of the handler rather than of the program.
+fn handler_ctrl_message(error: Mmc3IrqError) -> String {
+    mmc3_irq_message(error).replacen("and `ppu.ctrl", "and this handler's `ppu.ctrl", 1)
 }
 
 /// The diagnostic an MMC3 precondition failure reads as, naming the value that caused it.

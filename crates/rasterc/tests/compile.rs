@@ -215,6 +215,62 @@ fn irq_frame_rejects_the_background_at_1000() {
     );
 }
 
+/// The opening configuration is not the only one the pre-render line can meet: whatever the last
+/// handler leaves in `ppu.ctrl` is what the frame wraps with. Left at $1000, the counter clocks
+/// twice on the pre-render line and the chain drifts as if the frame had started that way.
+#[test]
+fn irq_frame_rejects_a_handler_that_leaves_the_background_at_1000_at_the_wrap() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    \
+                  at scanline 200 { ppu.data = $12 }\n}\n";
+    let diagnostics =
+        compile_source(source).expect_err("the frame wraps with the background at $1000");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` needs the background pattern table at $0000 and the sprites at $1000 when \
+         the frame wraps, and this handler's `ppu.ctrl = $10` leaves the background at $1000"
+    );
+    assert!(
+        diagnostics[0].span.is_some(),
+        "the diagnostic is source-spanned"
+    );
+}
+
+/// A handler that puts both pattern tables in one half stops A12 rising, so the counter stops and
+/// no later event runs - not even the one that would have put the halves back.
+#[test]
+fn irq_frame_rejects_a_handler_that_puts_both_pattern_tables_in_one_half() {
+    for (ctrl, half) in [("$18", "$1000"), ("$00", "$0000")] {
+        let source = format!(
+            "main {{\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}}\n\
+             \nframe bars using irq {{\n    at scanline 120 {{ ppu.ctrl = {ctrl} }}\n    \
+             at scanline 200 {{ ppu.ctrl = $08 }}\n}}\n"
+        );
+        let diagnostics = compile_source(&source).expect_err("the counter stops at line 120");
+
+        assert_eq!(diagnostics.len(), 1, "{ctrl}");
+        assert_eq!(
+            diagnostics[0].message,
+            format!(
+                "`using irq` needs the background and sprite pattern tables in opposite halves, \
+                 and this handler's `ppu.ctrl = {ctrl}` puts both at {half}"
+            )
+        );
+    }
+}
+
+/// The zombie example's shape: the background moves to $1000 mid-frame and is put back on the
+/// post-render line, so the frame wraps in the layout that keeps the schedule.
+#[test]
+fn irq_frame_accepts_a_background_at_1000_put_back_before_the_wrap() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe halves using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    \
+                  at scanline 240 { ppu.ctrl = $08 }\n}\n";
+    compile_source(source).expect("the frame wraps with the background at $0000");
+}
+
 #[test]
 fn irq_frame_rejects_a_schedule_the_ppu_would_never_clock() {
     let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $06\n}\n\
