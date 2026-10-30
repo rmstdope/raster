@@ -1,0 +1,41 @@
+// A picture that was never drawn for the NES: a 1072 by 992 illustration,
+// converted by the compiler into a background the console can show.
+//
+// `convert: true` scales it to fit the screen with its shape kept, fits
+// four palettes of three colours to it, and draws it in tiles. It needs
+// far more tiles than one pattern table holds, so `tiles: 512` splits it:
+// lines 0-119 are drawn from tiles 0-255 and lines 120-239 from tiles
+// 256-511, the two pattern tables of one 8 KiB bank.
+//
+// Build it with
+//
+//     rasterc examples/zombie/zombie.raster
+//
+// and open zombie.nes in an emulator.
+
+target nes { mapper: mmc3  region: ntsc }
+
+asset image zombie = png("../assets/zombie-nes.png") {
+    kind:    background
+    palette: auto(4)
+    convert: true
+    tiles:   512
+}
+chrrom bank 0 { zombie.tiles }
+
+main {
+    load_palette(zombie.palette)
+    load_nametable(zombie.nametable, zombie.attributes)
+    ppu.ctrl = $08   // background tiles 0-255, sprites 256-511
+    ppu.mask = $0a   // background on, including its leftmost 8 pixels
+}
+
+// The lower half of the picture is in the second pattern table, so the
+// background switches to it at line 120 and back after the last line,
+// ready for the next frame. The sprites take the other half each time:
+// the MMC3 counts scanlines by A12 rising once a line, which it does only
+// while the background and the sprites are fetched from opposite halves.
+frame halves using irq {
+    at scanline 120 { ppu.ctrl = $10 }   // background tiles 256-511, sprites 0-255
+    at scanline 240 { ppu.ctrl = $08 }   // background tiles 0-255, sprites 256-511
+}
