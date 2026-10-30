@@ -3937,3 +3937,48 @@ fn a_frame_counter_write_whose_value_was_refused_does_not_also_warn() {
     assert_eq!(failure.errors.len(), 1, "{:?}", failure.errors);
     assert!(failure.warnings.is_empty(), "{:?}", failure.warnings);
 }
+
+#[test]
+fn a_constant_array_is_one_page_aligned_data_block_read_by_index() {
+    let program = lower_source(
+        "const FADE: [3]u8 = [$01, $11, $21]\nvar i: u8 = 1\nmain { ppu.mask = FADE[i] }",
+    );
+
+    assert_eq!(program.data.len(), 1);
+    let block = &program.data[0];
+    assert_eq!(block.bytes, [0x01, 0x11, 0x21]);
+    assert!(block.page_aligned, "a table is placed so its reads never cross a page");
+
+    let main = program.main.expect("main");
+    let Some(Statement::Assign { value, .. }) = main.statements.last() else {
+        panic!("not an assignment: {:?}", main.statements);
+    };
+    let raster_ir::Value::Element { table, index } = value else {
+        panic!("not an element read: {value:?}");
+    };
+    assert_eq!(*table, block.label);
+    assert!(matches!(**index, raster_ir::Value::Place(_)));
+}
+
+#[test]
+fn a_constant_array_declared_after_the_code_that_reads_it_still_lowers() {
+    let program = lower_source("main { ppu.mask = T[0] }\nconst T: [1]u8 = [7]");
+    assert_eq!(program.data[0].bytes, [7]);
+}
+
+#[test]
+fn a_constant_array_nobody_reads_is_still_one_block() {
+    let program = lower_source("const T: [2]u8 = [1, 2]\nmain { }");
+    assert_eq!(program.data.len(), 1);
+}
+
+#[test]
+fn an_indexed_read_of_a_variable_array_is_still_refused() {
+    let errors = lower_errors("var buffer: [4]u8\nmain { ppu.mask = buffer[0] }");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message == "arrays are not supported yet"),
+        "{errors:?}"
+    );
+}
