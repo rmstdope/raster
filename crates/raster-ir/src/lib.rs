@@ -2293,8 +2293,11 @@ impl Lowerer {
     /// judged. Pattern tables in one half (or 8x16 sprites) are refused wherever they stand, since
     /// the counter stops there and no later event runs. The background at `$1000` is refused only
     /// when it is still standing as the frame wraps, since it is the pre-render line that it
-    /// double-clocks: `examples/zombie` moves it there at 120 and back at 240. Whether an event that
-    /// runs while it is at `$1000` keeps its line and its hblank is not judged here.
+    /// double-clocks: `examples/zombie` moves it there at 120 and back at 240. An event that runs
+    /// while it is at `$1000` keeps its line (the switch line does not clock twice), but not its
+    /// hblank: A12 rises at dot 324, and the emulator shows the handler's stores landing around
+    /// column 50 of the line it names. So such an event is refused before the post-render line,
+    /// where a late store is not seen; the first one is named, and the walk goes on to the wrap.
     ///
     /// The mask is held at its opening value, because handler masks are judged by
     /// [`Self::check_irq_handler_masks`]. A `ppu.ctrl` this cannot read ends the walk unjudged and
@@ -2312,11 +2315,45 @@ impl Lowerer {
             .collect();
         let opening = self.ppu_configuration();
         let mut configuration = opening;
-        let mut stored_by: Option<Span> = None;
+        let mut stored_by: Option<(Span, u32)> = None;
         let mut refusal = None;
+        let mut without_hblank = None;
         let last = frame.events.len().saturating_sub(1);
         for (index, event) in frame.events.iter().enumerate() {
             let before = configuration.ctrl;
+            if let (
+                None,
+                Some((_, moved_at)),
+                RegisterState::Known(ctrl),
+                Err(Mmc3IrqError::BackgroundInUpperHalf { .. }),
+            ) = (
+                &without_hblank,
+                stored_by,
+                before,
+                validate_mmc3_irq_frame(&configuration),
+            ) {
+                if event.scanline < POST_RENDER_SCANLINE {
+                    without_hblank = Some(LowerError {
+                        message: format!(
+                            "`using irq` has no hblank for a handler while the background pattern \
+                             table is at $1000, and this event runs after the one at scanline \
+                             {moved_at} stored `ppu.ctrl = ${ctrl:02X}`"
+                        ),
+                        label: Some(format!(
+                            "its stores land part-way along scanline {}",
+                            event.scanline
+                        )),
+                        notes: Vec::new(),
+                        help: Some(format!(
+                            "schedule it before scanline {moved_at}, or put the background back \
+                             at $0000 at scanline {POST_RENDER_SCANLINE}, where a late store is \
+                             not seen"
+                        )),
+                        span: event.span,
+                        refusal: Refusal::Rejected,
+                    });
+                }
+            }
             collect_ppu_stores(
                 &event.body,
                 &functions,
@@ -2326,13 +2363,13 @@ impl Lowerer {
             );
             configuration.mask = opening.mask;
             if configuration.ctrl != before {
-                stored_by = Some(event.span);
+                stored_by = Some((event.span, event.scanline));
             }
             let RegisterState::Known(ctrl) = configuration.ctrl else {
                 break;
             };
             // Nothing stored yet: the opening configuration, already proven good.
-            let Some(span) = stored_by else {
+            let Some((span, _)) = stored_by else {
                 continue;
             };
             let message = match validate_mmc3_irq_frame(&configuration) {
@@ -2350,8 +2387,9 @@ impl Lowerer {
             refusal = Some((span, message, ctrl));
             break;
         }
+        // The handler is still costed, so its hblank overrun is reported in the same build.
+        self.recoverable_errors.extend(without_hblank);
         if let Some((span, message, ctrl)) = refusal {
-            // The handler is still costed, so its hblank overrun is reported in the same build.
             self.recoverable_errors.push(LowerError {
                 message,
                 label: Some(format!("`ppu.ctrl = ${ctrl:02X}` is stored here")),

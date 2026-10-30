@@ -221,8 +221,8 @@ fn irq_frame_rejects_the_background_at_1000() {
 #[test]
 fn irq_frame_rejects_a_handler_that_leaves_the_background_at_1000_at_the_wrap() {
     let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
-                  \nframe bars using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    \
-                  at scanline 200 { ppu.data = $12 }\n}\n";
+                  \nframe bars using irq {\n    at scanline 60 { ppu.data = $12 }\n    \
+                  at scanline 120 { ppu.ctrl = $10 }\n}\n";
     let diagnostics =
         compile_source(source).expect_err("the frame wraps with the background at $1000");
 
@@ -295,6 +295,56 @@ fn irq_frame_accepts_a_background_at_1000_put_back_before_the_wrap() {
                   \nframe halves using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    \
                   at scanline 240 { ppu.ctrl = $08 }\n}\n";
     compile_source(source).expect("the frame wraps with the background at $0000");
+}
+
+/// With the background at $1000, A12 rises at dot 324 rather than 260, so the interrupt comes with
+/// no hblank left: measured in the emulator, a store from an event at 120 or 180 lands around
+/// column 50 of its own line, and the column moves from frame to frame. An event that runs there
+/// before the post-render line is refused rather than reported with a window it does not get.
+#[test]
+fn irq_frame_rejects_an_event_that_runs_while_the_background_is_at_1000() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    \
+                  at scanline 160 { ppu.data = $12 }\n    \
+                  at scanline 200 { ppu.ctrl = $08 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("the event at 160 gets no hblank");
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` has no hblank for a handler while the background pattern table is at $1000, \
+         and this event runs after the one at scanline 120 stored `ppu.ctrl = $10`"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "its stores land part-way along scanline 160"
+    );
+    assert_eq!(
+        diagnostics[0].help.as_deref(),
+        Some(
+            "schedule it before scanline 120, or put the background back at $0000 at scanline \
+             240, where a late store is not seen"
+        )
+    );
+    let span = diagnostics[0]
+        .span
+        .expect("the diagnostic is source-spanned");
+    assert!(
+        source[span.start..span.end].starts_with("at scanline 160"),
+        "underlines {:?}",
+        &source[span.start..span.end]
+    );
+}
+
+/// Events before the move to $1000 run with the rise at dot 260 and keep their hblank; only the
+/// post-render line runs while the background is at $1000, and a late store there is not seen.
+#[test]
+fn irq_frame_accepts_events_before_the_background_moves_to_1000() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = $3e }\n    \
+                  at scanline 120 { ppu.ctrl = $10 }\n    \
+                  at scanline 240 { ppu.ctrl = $08 }\n}\n";
+    compile_source(source).expect("nothing but the post-render line runs at $1000");
 }
 
 #[test]

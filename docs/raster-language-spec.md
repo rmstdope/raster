@@ -510,7 +510,9 @@ the background at `$0000` and the sprites at `$1000` (the other way round clocks
 counter twice on the pre-render line, so the schedule drifts a scanline a frame, and
 raises the IRQ too late in hblank for a handler's store) and wrap the same way, so a
 handler that moves the background to `$1000` is refused unless a later one puts it
-back (events that run while it is there are not yet judged), a
+back, and an event that runs while it is there is refused unless it is at the
+post-render line 240 (the interrupt comes at dot 324, so its stores land part-way
+along its line), a
 handler that stores a constant `ppu.ctrl` with both pattern tables in one half is
 refused (the counter stops there), and a handler that stores
 a constant mask with rendering off is refused (a computed mask only warns, and a
