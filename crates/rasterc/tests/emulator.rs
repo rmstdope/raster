@@ -382,9 +382,20 @@ fn irq_handler_body_fits_the_hblank_it_lands_in() {
 #[test]
 fn an_irq_store_under_the_background_at_1000_never_lands_on_the_picture() {
     let source = "var red: u8 = $3e\nvar plain: u8 = $1e\nmain {\n    ppu.addr = $3f\n    ppu.addr = $00\n    ppu.data = $0f\n    ppu.addr = $00\n    ppu.addr = $00\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\nframe halves using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    at scanline 180 { ppu.mask = red }\n    at scanline 200 { ppu.mask = plain }\n    at scanline 240 { ppu.ctrl = $08 }\n}\n";
-    let Ok(rom) = compile_source(source) else {
-        return;
-    };
+    let rom =
+        match compile_source(source) {
+            Ok(rom) => rom,
+            // Refused is one of the two answers, but only this refusal: any other error would be a
+            // fixture that stopped meaning what it says.
+            Err(diagnostics) => {
+                assert!(
+                    diagnostics.iter().any(|d| d.message
+                        == "an `irq` handler cannot run while the background is at $1000"),
+                    "{diagnostics:?}"
+                );
+                return;
+            }
+        };
     for frames in 8..14 {
         let entries = *render_after_frames(
             "irq-background-1000.nes",

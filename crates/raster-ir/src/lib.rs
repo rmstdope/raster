@@ -1451,6 +1451,39 @@ const BLANK_WITH_A_TIMED_FRAME: &str =
     "use `using timed` if the frame needs to blank the picture\n\
      part-way down";
 
+/// `ppu.ctrl` bit 4: the background's patterns at `$1000` rather than `$0000`.
+const PPU_CTRL_BACKGROUND_AT_1000: u8 = 0b0001_0000;
+
+/// Why a handler run with the background at `$1000` lands on the picture, said in the refusal.
+const BACKGROUND_AT_1000_COUNTS_LATE: &str =
+    "with the background at $1000 the MMC3 counts the scanline in the\n\
+     background's fetch at dot 324, not the sprites' at dot 260, and the\n\
+     hblank has closed before the handler runs";
+
+/// The configuration `IRQ_HANDLER_BODY_CYCLES` was measured in, and the only one it promises for.
+const HBLANK_WINDOW_HOLDS_FOR: &str =
+    "the hblank window holds with the background at $0000 and the\n\
+     sprites at $1000";
+
+/// The warning an `irq` frame earns when a handler stores a `ppu.ctrl` this cannot read: one per
+/// frame, on the `using irq` clause, for the reason [`unreadable_handler_mask`] gives.
+fn unreadable_handler_ctrl(span: Span) -> LowerWarning {
+    LowerWarning {
+        message: "this `irq` frame writes a `ppu.ctrl` the compiler cannot read".to_owned(),
+        label: "a handler stores a value that is not a constant".to_owned(),
+        notes: vec![
+            "if it puts the background at $1000, a handler's stores land\n\
+             part-way along a visible row"
+                .to_owned(),
+            HBLANK_WINDOW_HOLDS_FOR.to_owned(),
+        ],
+        span,
+        assumes_budget_met: false,
+        help: None,
+        secondary: None,
+    }
+}
+
 /// The same hazard, stated as a possibility rather than a fact, for the warning.
 const AN_UNREADABLE_MASK_MAY_STOP_THE_CHAIN: &str =
     "if it clears both rendering bits the MMC3 counter stops,\n\
@@ -2280,6 +2313,79 @@ impl Lowerer {
             return;
         }
         self.check_irq_handler_masks();
+        self.check_irq_background_half();
+    }
+
+    /// Refuse a `using irq` handler on the picture that runs while the background is at `$1000`,
+    /// and warn about a frame whose handlers store a `ppu.ctrl` this cannot read.
+    ///
+    /// [`IRQ_HANDLER_BODY_CYCLES`] was measured with the background at `$0000` and the sprites at
+    /// `$1000`, where A12 rises in the sprite fetches at about dot 260. The other way round, the
+    /// rise is the background's prefetch at about dot 324, and a handler's stores land 53 to 60
+    /// pixels into the row it names — measured by
+    /// `an_irq_store_under_the_background_at_1000_never_lands_on_the_picture` in
+    /// `crates/rasterc/tests/emulator.rs`. A handler at the post-render line is exempt: what it
+    /// stores lands after the picture whichever half the background is in.
+    ///
+    /// The half a handler runs under is whatever the schedule left before its interrupt fired: the
+    /// opening configuration on the first frame, and on every frame after it what the last handler
+    /// left. The schedule is walked once from each, so both are judged. Only reached once the
+    /// opening configuration is proven, so it starts from a known value.
+    fn check_irq_background_half(&mut self) {
+        let RegisterState::Known(opening) = self.ppu_configuration().ctrl else {
+            return;
+        };
+        let Some(frame) = &self.program.frame else {
+            return;
+        };
+        let strategy_span = frame.strategy_span;
+        let mut refused: Vec<(Span, u32)> = Vec::new();
+        let mut unreadable = false;
+        // `None` is a half this cannot read, once a handler stored a value that is not a constant.
+        let mut ctrl = Some(opening);
+        for _ in 0..2 {
+            for event in &frame.events {
+                if event.scanline < POST_RENDER_SCANLINE {
+                    match ctrl {
+                        Some(bits) if bits & PPU_CTRL_BACKGROUND_AT_1000 != 0 => {
+                            if !refused.iter().any(|(span, _)| *span == event.span) {
+                                refused.push((event.span, event.scanline));
+                            }
+                        }
+                        Some(_) => {}
+                        None => unreadable = true,
+                    }
+                }
+                if let Some(stored) = last_ctrl_store(&event.body) {
+                    ctrl = stored;
+                }
+            }
+        }
+        if unreadable {
+            self.warnings.push(unreadable_handler_ctrl(strategy_span));
+        }
+        refused.sort_by_key(|(_, scanline)| *scanline);
+        for (span, scanline) in refused {
+            // Recoverable, like a blanking handler: the handler is still costed, so an hblank
+            // overrun is reported in the same build.
+            self.recoverable_errors.push(LowerError {
+                message: "an `irq` handler cannot run while the background is at $1000".into(),
+                label: Some(format!(
+                    "its stores would land about 55 pixels into scanline {scanline}"
+                )),
+                notes: vec![
+                    BACKGROUND_AT_1000_COUNTS_LATE.to_owned(),
+                    HBLANK_WINDOW_HOLDS_FOR.to_owned(),
+                ],
+                help: Some(
+                    "put the background back at $0000 before this event, or move the\n\
+                     event to scanline 240, after the picture"
+                        .to_owned(),
+                ),
+                span,
+                refusal: Refusal::Rejected,
+            });
+        }
     }
 
     /// Refuse a `using irq` handler that turns rendering off, and warn about a frame whose handlers
@@ -4831,6 +4937,25 @@ fn first_blanking_mask(statements: &[Statement]) -> Option<u8> {
         }
     }
     None
+}
+
+/// What the last `ppu.ctrl` store in `statements` leaves: `Some(Some(bits))` for a constant,
+/// `Some(None)` for a value this cannot read, `None` where nothing stores it.
+fn last_ctrl_store(statements: &[Statement]) -> Option<Option<u8>> {
+    statements
+        .iter()
+        .rev()
+        .find_map(|statement| match statement {
+            Statement::Assign {
+                destination: Destination::Register(Register::PpuCtrl),
+                value,
+            } => Some(match value {
+                Value::Constant(bits) => Some(*bits),
+                _ => None,
+            }),
+            Statement::Timed { body, .. } => last_ctrl_store(body),
+            _ => None,
+        })
 }
 
 /// Whether any `ppu.mask` store in `statements` writes a value this cannot read.

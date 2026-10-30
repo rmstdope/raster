@@ -344,6 +344,13 @@ pub const SCANLINE_BODY_CYCLES: u32 = 114;
 /// `crates/rasterc/tests/emulator.rs` is the executable half of the evidence, and the bead's notes
 /// carry the rest.
 ///
+/// **It holds with the background at `$0000` and the sprites at `$1000`, and only then.** That is
+/// what puts the rise in the sprite fetches. The other way round, the rise is the background's
+/// prefetch at about dot 324, so the interrupt arrives once the hblank has closed and a store lands
+/// 53 to 60 pixels into the row — measured by
+/// `an_irq_store_under_the_background_at_1000_never_lands_on_the_picture`. `raster-ir` refuses a
+/// handler on the picture that runs in that configuration rather than promise it this window.
+///
 /// Nine cycles is one statement: one register store is six cycles and one variable assignment is
 /// five, and two of anything tears the row. That is the rule this compiler enforces, agreed with
 /// the navigator once the measurement was in.

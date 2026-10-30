@@ -1070,6 +1070,126 @@ fn the_hblank_admits_a_body_up_to_its_window_and_no_wider() {
         "handler costs 10 cycles, the hblank leaves 9"
     );
 }
+/// The hblank window holds with the background at `$0000`, where A12 rises in the sprite fetches.
+/// With the background at `$1000` the rise is the background prefetch at about dot 324, and a
+/// handler's stores land part-way along the row it names — measured at columns 53 to 60 by
+/// `an_irq_store_under_the_background_at_1000_never_lands_on_the_picture`. Such a handler is
+/// refused, at its own event, naming the scanline it would tear.
+#[test]
+fn an_irq_handler_run_with_the_background_at_1000_is_refused() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe halves using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n\
+                  \n    at scanline 180 { ppu.mask = $3e }\n\
+                  \n    at scanline 240 { ppu.ctrl = $08 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("the store at 180 would tear its row");
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler cannot run while the background is at $1000"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "its stores would land about 55 pixels into scanline 180"
+    );
+    assert_eq!(
+        diagnostics[0].notes,
+        [
+            "with the background at $1000 the MMC3 counts the scanline in the\n\
+             background's fetch at dot 324, not the sprites' at dot 260, and the\n\
+             hblank has closed before the handler runs",
+            "the hblank window holds with the background at $0000 and the\n\
+             sprites at $1000",
+        ]
+    );
+    assert_eq!(
+        diagnostics[0].help.as_deref(),
+        Some(
+            "put the background back at $0000 before this event, or move the\n\
+             event to scanline 240, after the picture"
+        )
+    );
+    let span = diagnostics[0]
+        .span
+        .expect("the diagnostic is source-spanned");
+    assert!(
+        source[span.start..span.end].starts_with("at scanline 180"),
+        "the caret is on the event that tears: {:?}",
+        &source[span.start..span.end]
+    );
+}
+
+/// The background half a handler runs under is what the schedule leaves when its interrupt fires:
+/// `main`'s for the first frame, and what the last handler left for every frame after it. Both are
+/// judged, so a frame that opens at `$0000` and never switches back is refused at the event the
+/// second frame runs at `$1000`.
+#[test]
+fn the_background_half_a_handler_runs_under_wraps_from_the_frame_before() {
+    let opening = "main {\n    ppu.ctrl = $10\n    ppu.mask = $1e\n}\n\
+                   \nframe bars using irq {\n    at scanline 60 { ppu.mask = $3e }\n}\n";
+    let diagnostics = compile_source(opening).expect_err("main leaves the background at $1000");
+    assert_eq!(
+        diagnostics[0].label,
+        "its stores would land about 55 pixels into scanline 60"
+    );
+
+    let wrapped = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                   \nframe halves using irq {\n    at scanline 60 { ppu.mask = $3e }\n\
+                   \n    at scanline 120 { ppu.ctrl = $10 }\n}\n";
+    let diagnostics =
+        compile_source(wrapped).expect_err("from the second frame on, 60 runs at $1000");
+    // Both events, in schedule order: the switch at 120 runs at $1000 from the second frame on too,
+    // because nothing puts the background back.
+    let labels: Vec<&str> = diagnostics.iter().map(|d| d.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "its stores would land about 55 pixels into scanline 60",
+            "its stores would land about 55 pixels into scanline 120",
+        ]
+    );
+}
+
+/// A handler at scanline 240 runs after the picture whatever the background half, which is how a
+/// `tiles: 512` frame puts the background back: nothing it stores can land on a visible row.
+#[test]
+fn an_irq_handler_after_the_picture_may_run_with_the_background_at_1000() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe halves using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n\
+                  \n    at scanline 240 { ppu.ctrl = $08 }\n}\n";
+    let rom = compile_source(source).expect("the switch back at 240 is after the picture");
+    assert!(rom.warnings.is_empty(), "{:?}", rom.warnings);
+}
+
+/// A handler `ppu.ctrl` the compiler cannot read leaves the background half unknown from there on,
+/// so the window cannot be promised: one warning for the frame, on its `using irq` clause.
+#[test]
+fn an_unreadable_handler_ctrl_leaves_the_hblank_window_unproven() {
+    let source = "var ctrl: u8 = $10\n\nmain {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe halves using irq {\n    at scanline 120 { ppu.ctrl = ctrl }\n\
+                  \n    at scanline 180 { ppu.mask = $3e }\n}\n";
+    let rom = compile_source(source).expect("an unknown half is warned about, not refused");
+
+    assert_eq!(rom.warnings.len(), 1, "{:?}", rom.warnings);
+    assert_eq!(
+        rom.warnings[0].message,
+        "this `irq` frame writes a `ppu.ctrl` the compiler cannot read"
+    );
+    assert_eq!(
+        rom.warnings[0].label,
+        "a handler stores a value that is not a constant"
+    );
+    assert_eq!(
+        rom.warnings[0].notes,
+        [
+            "if it puts the background at $1000, a handler's stores land\n\
+             part-way along a visible row",
+            "the hblank window holds with the background at $0000 and the\n\
+             sprites at $1000",
+        ]
+    );
+}
+
 #[test]
 fn an_oam_dma_write_compiles_to_a_store_to_4014() {
     let rom = compile_source("main {\n    ppu.oam_addr = 0\n    ppu.oam_dma = $02\n}\n")
