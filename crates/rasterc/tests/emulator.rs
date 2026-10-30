@@ -339,3 +339,16 @@ fn a_subtraction_takes_its_operands_in_source_order() {
         0x0e
     );
 }
+
+#[test]
+fn a_constant_u8_index_wraps_to_eight_bits_as_the_running_program_would() {
+    // `PHASE + PHASE` is 400 on paper and 144 in eight bits; only entry 144 is blue.
+    let table = (0..256)
+        .map(|entry| if entry == 144 { "$12" } else { "$0F" })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "const SWING: [256]u8 = [{table}]\nconst PHASE: u8 = 200\nmain {{\n    ppu.addr = $3f\n    ppu.addr = $00\n    ppu.data = SWING[PHASE + PHASE]\n    ppu.addr = $00\n    ppu.addr = $00\n}}\n"
+    );
+    assert_eq!(backdrop_entry("wrapped.nes", &source), 0x12);
+}

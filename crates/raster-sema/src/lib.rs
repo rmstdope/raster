@@ -1164,7 +1164,7 @@ impl Analyzer {
                 let index_type = self.expression_type(index);
                 self.require_integer(index.span, &index_type, "array index must be an integer");
                 if let (Some((name, ValueType::Array(_, length))), Some(position)) =
-                    (&table, self.evaluate_constant(index))
+                    (&table, self.evaluate_folded_u8(index))
                     && position >= *length
                 {
                     self.error(
@@ -1776,6 +1776,53 @@ impl Analyzer {
                     && self.folds_to_constant(right)
             }
             _ => false,
+        }
+    }
+
+    /// The value `raster-ir` folds this expression to: an operation on constants wraps to eight
+    /// bits as the running program would (§4.1), so `P + P` with `P = 200` is 144, not 400. A
+    /// literal or named constant stands as written, so `T[300]` is still 300; anything that does
+    /// not fold falls back to [`Self::evaluate_constant`].
+    fn evaluate_folded_u8(&self, expression: &Spanned<Expression>) -> Option<u32> {
+        if !self.folds_to_constant(expression) {
+            return self.evaluate_constant(expression);
+        }
+        let byte = |operand| {
+            self.evaluate_folded_u8(operand)
+                .and_then(|value| u8::try_from(value).ok())
+        };
+        match &expression.value {
+            Expression::Prefix { operator, operand } => {
+                let value = byte(operand)?;
+                match operator.value {
+                    Operator::Minus => Some(value.wrapping_neg()),
+                    Operator::Tilde => Some(!value),
+                    _ => Some(value),
+                }
+                .map(u32::from)
+            }
+            Expression::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                let (left, right) = (byte(left)?, byte(right)?);
+                let value = match operator.value {
+                    Operator::Plus => left.wrapping_add(right),
+                    Operator::Minus => left.wrapping_sub(right),
+                    Operator::Star => left.wrapping_mul(right),
+                    Operator::Slash => left.checked_div(right).unwrap_or(0),
+                    Operator::Percent => left.checked_rem(right).unwrap_or(0),
+                    Operator::Ampersand => left & right,
+                    Operator::Pipe => left | right,
+                    Operator::Caret => left ^ right,
+                    Operator::ShiftLeft => left.checked_shl(u32::from(right)).unwrap_or(0),
+                    Operator::ShiftRight => left.checked_shr(u32::from(right)).unwrap_or(0),
+                    _ => return None,
+                };
+                Some(u32::from(value))
+            }
+            _ => self.evaluate_constant(expression),
         }
     }
 
