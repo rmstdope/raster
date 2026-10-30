@@ -27,7 +27,7 @@ impl Scratch {
                 .expect("the clock is after the epoch")
                 .as_nanos()
         ));
-        fs::create_dir_all(&path).expect("the scratch directory is creatable");
+        fs::create_dir(&path).expect("the scratch directory is new and creatable");
         Self(path)
     }
 
