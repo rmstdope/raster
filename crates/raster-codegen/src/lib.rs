@@ -13,7 +13,7 @@ use raster_link::{FixedBankItem, Label, RelocatableProgram, Relocation, Relocati
 use raster_syntax::Span;
 use raster_timing::{
     analyze, mmc3_latch_for_delta, mmc3_latch_for_first_event, mmc3_latch_for_next_frame,
-    plan_delay, plan_timed_frame, DelayStep, TimedRegion, TimingError, FRAMES_PER_PASS,
+    plan_delay, plan_timed_frame, DelayStep, ScheduledHandler, TimedRegion, TimingError,
     IRQ_HANDLER_BODY_CYCLES,
 };
 
@@ -141,6 +141,23 @@ const LDA_IMMEDIATE: u8 = 0xa9;
 const STA_ABSOLUTE: u8 = 0x8d;
 const STA_ZERO_PAGE: u8 = 0x85;
 const JMP_INDIRECT: u8 = 0x6c;
+const DEC_ZERO_PAGE: u8 = 0xc6;
+/// Scanlines one turn of a timed frame's loop runs: three are exactly 341 cycles, so the 114- and
+/// 113-cycle scanline budgets repeat with that period and three handlers make a turn that is the
+/// same every time round.
+const SCANLINES_PER_TURN: usize = 3;
+/// What the end of a turn spends, out of its last handler's budget, whether the loop goes round
+/// again or leaves. Both ways start `JMP island` 3 and `DEC counter` 5. Going round is `BEQ exit`
+/// not taken 2, three `NOP`s 6 and `JMP top` 3; leaving is the `BEQ` taken 3 (the island sits on
+/// one page, so it never pays for crossing one), `LDA #turns` 2 and `STA counter` 3 to re-arm the
+/// counter for the next frame, and `JMP after` 3. The `NOP`s are what make the two equal, so the
+/// handler after the loop starts on its scanline like every handler in it.
+const LOOP_TURN_CYCLES: u32 = 3 + 5 + 2 + 6 + 3;
+const _: () = assert!(LOOP_TURN_CYCLES == 3 + 5 + 3 + 2 + 3 + 3);
+const NOP: u8 = 0xea;
+/// The bytes of one loop island: `DEC` 2, `BEQ` 2, three `NOP`s 3, `JMP` 3, `LDA #` 2, `STA` 2,
+/// `JMP` 3.
+const ISLAND_BYTES: usize = 17;
 /// The two RAM bytes an IRQ chain dispatches through: each handler leaves the address of its
 /// successor here, and the `$FFFE` entry is a `JMP` through it.
 ///
@@ -192,6 +209,7 @@ pub fn generate_with_isa(
         frame_overruns: Vec::new(),
         data_pieces: BTreeMap::new(),
         page_aligned: BTreeSet::new(),
+        next_counter: usize::from(FIRST_ZERO_PAGE_ADDRESS) + program.places.len(),
     };
     generator.split_data(program);
 
@@ -259,6 +277,8 @@ struct Generator<'a> {
     data_pieces: BTreeMap<IrLabel, Vec<(IrLabel, usize)>>,
     /// The constant arrays, each laid out from the start of a page.
     page_aligned: BTreeSet<Label>,
+    /// The zero-page byte the next timed-frame loop counts its turns in, past every place.
+    next_counter: usize,
     zero_page: &'a BTreeMap<Place, u8>,
     function_parameters: BTreeMap<IrLabel, Vec<Place>>,
     next_internal_label: u32,
@@ -277,6 +297,26 @@ struct Generator<'a> {
 struct FrameRow {
     span: Span,
     budget: EventBudget,
+}
+
+/// How one frame of a timed pass emits its handlers: one at a time, or a run of them as a loop.
+enum Segment {
+    Handler(usize),
+    /// `turns` turns of [`SCANLINES_PER_TURN`] handlers from `start`.
+    Loop {
+        start: usize,
+        turns: usize,
+    },
+}
+
+/// The code a loop jumps to at the end of every turn, laid out after the frame where nothing falls
+/// into it.
+struct Island {
+    label: IrLabel,
+    counter: u8,
+    turns: usize,
+    top: IrLabel,
+    after: IrLabel,
 }
 
 impl Generator<'_> {
@@ -478,33 +518,211 @@ impl Generator<'_> {
     /// DMC DMA is neither refused nor detected, so a program that declares a timed frame must
     /// still leave NMI off and start no DMC transfer.
     fn timed_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
+        let scanlines: Vec<_> = frame.events.iter().map(|event| event.scanline).collect();
+        let pass = plan_timed_frame(&scanlines, JMP_ABSOLUTE_CYCLES);
+        let mut frames = Vec::new();
+        for handlers in pass.handlers.chunks(frame.events.len()) {
+            frames.push(self.segments(&frame.events, handlers, halt_label));
+        }
+        // One counter for each run, shared by its loop in every frame of the pass: the copies
+        // never run at once, and each leaves it re-armed. Every counter starts armed.
+        let mut counters = BTreeMap::new();
+        for segment in frames.iter().flatten() {
+            if let Segment::Loop { start, turns } = *segment {
+                if counters.contains_key(&start) {
+                    continue;
+                }
+                let counter = self.allocate_counter(frame.span)?;
+                counters.insert(start, counter);
+                self.emit(LDA_IMMEDIATE, Immediate, Some(turns as u16));
+                self.emit(STA_ZERO_PAGE, ZeroPage, Some(u16::from(counter)));
+            }
+        }
+
         self.statement(&Statement::SyncExact, Some(halt_label))?;
         let pass_top = self.internal_label();
         self.emit_label(pass_top);
 
-        let scanlines: Vec<_> = frame.events.iter().map(|event| event.scanline).collect();
-        let pass = plan_timed_frame(&scanlines, JMP_ABSOLUTE_CYCLES);
-        // A handler's body is emitted once per frame of the pass, and an `every` handler's once
-        // per occupied scanline as well. That is only safe because a handler carries no label to
-        // define twice: `analyze` refuses `if`, `while` and `for` inside a timed region, and a
-        // handler is one. A body that did carry one would reach the linker as a duplicate
-        // definition, and the author would see an internal compiler error for a correct program.
-        let events = (0..FRAMES_PER_PASS).flat_map(|_| frame.events.iter());
-        for (handler, event) in pass.handlers.iter().zip(events) {
-            self.delay(handler.delay_cycles, event.span)?;
-            let region = self.timed_region(
-                &CycleConstraint::Exact(handler.budget_cycles),
-                true,
+        // A handler's body is emitted once per frame of the pass, an unrolled `every` handler's
+        // once per occupied scanline as well, and a looped one once per scanline of a turn. That is
+        // only safe because a handler carries no label to define twice: `analyze` refuses `if`,
+        // `while` and `for` inside a timed region, and a handler is one. A body that did carry one
+        // would reach the linker as a duplicate definition, and the author would see an internal
+        // compiler error for a correct program.
+        let mut islands = Vec::new();
+        for (handlers, segments) in pass.handlers.chunks(frame.events.len()).zip(&frames) {
+            for segment in segments {
+                match *segment {
+                    Segment::Handler(index) => {
+                        self.delay(handlers[index].delay_cycles, frame.events[index].span)?;
+                        self.handler(
+                            &frame.events[index],
+                            handlers[index].budget_cycles,
+                            halt_label,
+                        )?;
+                    }
+                    Segment::Loop { start, turns } => {
+                        let counter = counters[&start];
+                        self.delay(handlers[start].delay_cycles, frame.events[start].span)?;
+                        let top = self.internal_label();
+                        let after = self.internal_label();
+                        let label = self.internal_label();
+                        self.emit_label(top);
+                        let turn = start..start + SCANLINES_PER_TURN;
+                        for (offset, (event, scheduled)) in frame.events[turn.clone()]
+                            .iter()
+                            .zip(&handlers[turn])
+                            .enumerate()
+                        {
+                            let turn_end = if offset == SCANLINES_PER_TURN - 1 {
+                                LOOP_TURN_CYCLES
+                            } else {
+                                0
+                            };
+                            self.handler(event, scheduled.budget_cycles - turn_end, halt_label)?;
+                        }
+                        self.jump(label);
+                        self.emit_label(after);
+                        islands.push(Island {
+                            label,
+                            counter,
+                            turns,
+                            top,
+                            after,
+                        });
+                    }
+                }
+            }
+        }
+        self.delay(pass.trailing_delay_cycles, frame.span)?;
+        self.jump(pass_top);
+        self.islands(&islands);
+        Ok(())
+    }
+
+    /// One handler of a timed frame, padded to exactly `budget` cycles and measured into the table.
+    fn handler(
+        &mut self,
+        event: &FrameEvent,
+        budget: u32,
+        halt_label: IrLabel,
+    ) -> Result<(), CodegenError> {
+        let region = self.timed_region(
+            &CycleConstraint::Exact(budget),
+            true,
+            false,
+            &event.body,
+            event.span,
+            Some(halt_label),
+        );
+        self.measured_handler(region, event, budget)
+    }
+
+    /// How one frame of the pass emits its handlers.
+    ///
+    /// A run of one event's handlers on consecutive scanlines — an `every 1` — becomes a loop when
+    /// it is long enough for at least two turns: its handlers have no delay between them, and their
+    /// budgets repeat every [`SCANLINES_PER_TURN`]. The run's last handler is always left out of
+    /// the loop, because its budget reaches whatever follows the run rather than the next scanline,
+    /// and so are the ones a whole turn does not cover.
+    ///
+    /// A loop is how the compiler saves space, never a reason to refuse a program: a run whose
+    /// handler cannot also spare the [`LOOP_TURN_CYCLES`] the end of a turn takes, or would be left
+    /// exactly one cycle to pad, is unrolled, and judged against its whole scanline as it always
+    /// was.
+    fn segments(
+        &mut self,
+        events: &[FrameEvent],
+        handlers: &[ScheduledHandler],
+        halt_label: IrLabel,
+    ) -> Vec<Segment> {
+        let mut segments = Vec::new();
+        let mut start = 0;
+        while start < events.len() {
+            let run = (start + 1..events.len())
+                .take_while(|&index| {
+                    events[index].span == events[start].span && handlers[index].delay_cycles == 0
+                })
+                .count()
+                + 1;
+            let turns = (run - 1) / SCANLINES_PER_TURN;
+            let periodic = (start..start + turns * SCANLINES_PER_TURN).all(|index| {
+                let first = start + (index - start) % SCANLINES_PER_TURN;
+                handlers[index].budget_cycles == handlers[first].budget_cycles
+            });
+            let last_of_turn = start + SCANLINES_PER_TURN - 1;
+            let looped = turns >= 2
+                && periodic
+                && self
+                    .handler_cycles(&events[start], halt_label)
+                    .and_then(|cycles| {
+                        handlers[last_of_turn]
+                            .budget_cycles
+                            .checked_sub(cycles + LOOP_TURN_CYCLES)
+                    })
+                    // A single spare cycle has no filler to spend it.
+                    .is_some_and(|spare| spare != 1);
+            let unrolled_from = if looped {
+                segments.push(Segment::Loop { start, turns });
+                start + turns * SCANLINES_PER_TURN
+            } else {
+                start
+            };
+            segments.extend((unrolled_from..start + run).map(Segment::Handler));
+            start += run;
+        }
+        segments
+    }
+
+    /// What a handler's body costs with its interrupt masking, measured by emitting it and taking
+    /// it back out. `None` when it cannot be measured, which the handler's own emission will say.
+    fn handler_cycles(&mut self, event: &FrameEvent, halt_label: IrLabel) -> Option<u32> {
+        let (items, reports) = (self.output.items.len(), self.reports.len());
+        let cycles = self
+            .timed_region(
+                &CycleConstraint::AtMost(u32::MAX),
+                false,
                 false,
                 &event.body,
                 event.span,
                 Some(halt_label),
-            );
-            self.measured_handler(region, event, handler.budget_cycles)?;
+            )
+            .ok();
+        self.output.items.truncate(items);
+        self.reports.truncate(reports);
+        cycles
+    }
+
+    /// A zero-page byte of the compiler's own, past every place the program declared.
+    fn allocate_counter(&mut self, span: Span) -> Result<u8, CodegenError> {
+        let counter = u8::try_from(self.next_counter)
+            .map_err(|_| CodegenError::ZeroPageExhausted { span })?;
+        self.next_counter += 1;
+        Ok(counter)
+    }
+
+    /// Every loop's island, after the frame's closing jump so nothing falls into one.
+    ///
+    /// Each island is kept on one page, which is what holds its `BEQ` to exactly three cycles when
+    /// taken: a page alignment before the first island, and again whenever the next would cross.
+    fn islands(&mut self, islands: &[Island]) {
+        for (index, island) in islands.iter().enumerate() {
+            if index % (256 / ISLAND_BYTES) == 0 {
+                self.output.items.push(FixedBankItem::PageAlign);
+            }
+            let exit = self.internal_label();
+            self.emit_label(island.label);
+            self.emit(DEC_ZERO_PAGE, ZeroPage, Some(u16::from(island.counter)));
+            self.branch(BEQ, exit);
+            for _ in 0..3 {
+                self.emit(NOP, Implied, None);
+            }
+            self.jump(island.top);
+            self.emit_label(exit);
+            self.emit(LDA_IMMEDIATE, Immediate, Some(island.turns as u16));
+            self.emit(STA_ZERO_PAGE, ZeroPage, Some(u16::from(island.counter)));
+            self.jump(island.after);
         }
-        self.delay(pass.trailing_delay_cycles, frame.span)?;
-        self.jump(pass_top);
-        Ok(())
     }
 
     /// The rows in the order the frame block writes its events, which is not scanline order: the

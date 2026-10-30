@@ -861,6 +861,23 @@ fn a_timed_frame_charges_the_handler_its_save_mask_and_restore_against_a_scanlin
 
 #[test]
 fn consecutive_scanlines_give_a_timed_handler_the_tighter_window() {
+    // Five scanlines are too few for two turns of a loop, so each handler is unrolled.
+    let output = generate_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 1 scanlines from 10 to 14 { ppu.mask = $1e }
+            }
+        "#,
+    );
+
+    let rows = budget_rows(&output);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].2, 113);
+}
+
+#[test]
+fn a_looped_run_charges_the_end_of_each_turn_to_its_last_handler() {
     let output = generate_source(
         r#"
             main { ppu.mask = 0 }
@@ -870,9 +887,10 @@ fn consecutive_scanlines_give_a_timed_handler_the_tighter_window() {
         "#,
     );
 
+    // A 113-cycle scanline less the 19 cycles a turn spends going round, or leaving.
     let rows = budget_rows(&output);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].2, 113);
+    assert_eq!(rows[0].2, 113 - 19);
 }
 
 #[test]
@@ -1132,4 +1150,42 @@ fn a_table_read_inside_a_timed_region_costs_exactly_four_cycles() {
     );
     // PHP 3, SEI 2, LDA zp 3, TAX 2, LDA abs,X 4 (no page can be crossed), STA zp 3, PLP 4.
     assert_eq!(output.reports, [("read".to_owned(), 21)]);
+}
+
+#[test]
+fn a_run_whose_handler_cannot_spare_a_turn_s_end_is_unrolled_rather_than_refused() {
+    // 109 cycles fit a scanline but not the 19 a loop takes from the end of each turn, so the run
+    // stays unrolled: looping is how the compiler saves space, never a reason to refuse a program.
+    let output = generate_source(
+        r#"
+            var a: u8
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 1 scanlines from 10 to 16 {
+                    cycles(100) pad { a = a ^ 1 }
+                }
+            }
+        "#,
+    );
+
+    let rows = budget_rows(&output);
+    assert_eq!(rows, [("scanline 10-16 every 1".to_owned(), 109, 113)]);
+}
+
+#[test]
+fn a_run_that_would_leave_a_looped_handler_one_cycle_short_is_unrolled() {
+    // 93 cycles leave a 113-cycle turn end one cycle over the 19 a turn takes, and nothing spends
+    // a single cycle, so that frame's copy of the run stays unrolled rather than being refused.
+    let output = generate_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 1 scanlines from 10 to 30 {
+                    cycles(84) pad { }
+                }
+            }
+        "#,
+    );
+
+    assert_eq!(budget_rows(&output)[0].1, 93);
 }

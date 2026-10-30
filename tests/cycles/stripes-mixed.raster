@@ -1,0 +1,23 @@
+// `stripes.raster` on lines 40 to 100, with a handler heavy enough that the loop's 19 cycles fit
+// the end of a turn on a 114-cycle scanline and not on a 113-cycle one. Which one ends a turn
+// depends on the frame of the pass, so this run is looped in some frames and unrolled in others,
+// and every row must land where the row three above it did either way.
+var flip: u8 = 0
+
+main {
+    ppu.addr = $3f
+    ppu.addr = $00
+    ppu.data = $0f              // $3F00: black
+    ppu.data = $30              // $3F01: white
+    ppu.addr = $00
+    ppu.addr = $00
+}
+
+frame stripes using timed {
+    every 1 scanlines from 40 to 100 {
+        flip = flip ^ 1
+        ppu.addr = $3f
+        ppu.addr = flip
+        cycles(53) pad { }      // 95 cycles in all
+    }
+}

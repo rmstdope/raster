@@ -1,0 +1,66 @@
+// A copper bar that swings up and down the screen on a sine, drawn once
+// and scrolled. examples/copper does the same bar a scanline at a time.
+//
+// The bar is drawn once, in art/bar.png: 48 lines of red, brightest in
+// the middle and darker towards both edges, on a transparent background
+// that shows as the black backdrop. Each frame, one handler moves the
+// whole picture by setting the vertical scroll from SWING, a sine table.
+//
+// Build it with
+//
+//     rasterc examples/copper/copper.raster
+//
+// and open copper.nes in an emulator.
+
+target nes { mapper: mmc3  region: ntsc }
+
+asset image bar = png("art/bar.png") { kind: background  palette: auto(4) }
+chrrom bank 0 { bar.tiles }
+
+// The vertical scroll for each step of the swing. The bar sits at lines
+// 96-143 of the picture, and a scroll of s draws it s lines higher,
+// wrapping at 240, so these keep its top between lines 16 and 176. No
+// value reaches 240: scrolls of 240-255 show attribute bytes as tiles.
+// The table holds two whole swings, so stepping through it one entry a
+// frame swings the bar every 128 frames, about two seconds.
+const SWING: [256]u8 = [
+      0, 236, 232, 228, 224, 221, 217, 213, 209, 206, 202, 199, 196, 192, 189, 186,
+    183, 181, 178, 176, 173, 171, 169, 168, 166, 165, 163, 162, 162, 161, 160, 160,
+    160, 160, 160, 161, 162, 162, 163, 165, 166, 168, 169, 171, 173, 176, 178, 181,
+    183, 186, 189, 192, 196, 199, 202, 206, 209, 213, 217, 221, 224, 228, 232, 236,
+      0,   4,   8,  12,  16,  19,  23,  27,  31,  34,  38,  41,  44,  48,  51,  54,
+     57,  59,  62,  64,  67,  69,  71,  72,  74,  75,  77,  78,  78,  79,  80,  80,
+     80,  80,  80,  79,  78,  78,  77,  75,  74,  72,  71,  69,  67,  64,  62,  59,
+     57,  54,  51,  48,  44,  41,  38,  34,  31,  27,  23,  19,  16,  12,   8,   4,
+      0, 236, 232, 228, 224, 221, 217, 213, 209, 206, 202, 199, 196, 192, 189, 186,
+    183, 181, 178, 176, 173, 171, 169, 168, 166, 165, 163, 162, 162, 161, 160, 160,
+    160, 160, 160, 161, 162, 162, 163, 165, 166, 168, 169, 171, 173, 176, 178, 181,
+    183, 186, 189, 192, 196, 199, 202, 206, 209, 213, 217, 221, 224, 228, 232, 236,
+      0,   4,   8,  12,  16,  19,  23,  27,  31,  34,  38,  41,  44,  48,  51,  54,
+     57,  59,  62,  64,  67,  69,  71,  72,  74,  75,  77,  78,  78,  79,  80,  80,
+     80,  80,  80,  79,  78,  78,  77,  75,  74,  72,  71,  69,  67,  64,  62,  59,
+     57,  54,  51,  48,  44,  41,  38,  34,  31,  27,  23,  19,  16,  12,   8,   4,
+]
+
+var step: u8 = 0
+
+main {
+    load_palette(bar.palette)
+    load_nametable(bar.nametable, bar.attributes)
+    ppu.ctrl = $00   // NMI off: a timed frame cannot spare its 13 cycles
+    ppu.mask = $0a   // background on, including its leftmost 8 pixels
+}
+
+// The PPU copies the vertical scroll at the start of each frame, so a
+// handler on the last visible line moves the whole of the next picture.
+// A timed pass is three frames of a picture with rendering off. This
+// one renders, which makes frames a dot shorter every other time, so the
+// handler slides slowly along the frame: harmless here, because the two
+// scroll writes take effect at the next frame wherever they land.
+frame copper using timed {
+    at scanline 239 {
+        step += 1
+        ppu.scroll = 0
+        ppu.scroll = SWING[step]
+    }
+}

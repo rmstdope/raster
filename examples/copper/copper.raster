@@ -1,9 +1,12 @@
-// A copper bar that swings up and down the screen on a sine.
+// A copper bar: one colour per scanline, set as the beam reaches it,
+// swinging up and down the screen on a sine.
 //
-// The bar is drawn once, in art/bar.png: 48 lines of red, brightest in
-// the middle and darker towards both edges, on a transparent background
-// that shows as the black backdrop. Each frame, one handler moves the
-// whole picture by setting the vertical scroll from SWING, a sine table.
+// Rendering stays off, and with it off the PPU shows the palette entry
+// its address register points at (see .cerebro/traps.md). So the bar is
+// five palette entries, dark to white, and every scanline points the
+// address at the one its line of the bar needs, or at the black
+// backdrop. A `frame ... using timed` schedule runs that handler on 239
+// scanlines as a loop.
 //
 // Build it with
 //
@@ -13,49 +16,88 @@
 
 target nes { mapper: mmc3  region: ntsc }
 
-asset image bar = png("art/bar.png") { kind: background  palette: auto(4) }
-chrrom bank 0 { bar.tiles }
+// Which palette entry each line of the bar shows, counted from its top:
+// 28 lines, brightest in the middle. Every entry past the bar is $00,
+// the backdrop, so a line above or below the bar reads black.
+const BAR: [256]u8 = [
+    $01, $01, $01, $02, $02, $02, $03, $03, $03, $04, $04, $04, $05, $05, $05, $05,
+    $04, $04, $04, $03, $03, $03, $02, $02, $02, $01, $01, $01, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+]
 
-// The vertical scroll for each step of the swing. The bar sits at lines
-// 96-143 of the picture, and a scroll of s draws it s lines higher,
-// wrapping at 240, so these keep its top between lines 16 and 176. No
-// value reaches 240: scrolls of 240-255 show attribute bytes as tiles.
-// The table holds two whole swings, so stepping through it one entry a
-// frame swings the bar every 128 frames, about two seconds.
+// The bar's top line for each step of the swing: two whole swings,
+// between lines 16 and 196.
 const SWING: [256]u8 = [
-      0, 236, 232, 228, 224, 221, 217, 213, 209, 206, 202, 199, 196, 192, 189, 186,
-    183, 181, 178, 176, 173, 171, 169, 168, 166, 165, 163, 162, 162, 161, 160, 160,
-    160, 160, 160, 161, 162, 162, 163, 165, 166, 168, 169, 171, 173, 176, 178, 181,
-    183, 186, 189, 192, 196, 199, 202, 206, 209, 213, 217, 221, 224, 228, 232, 236,
-      0,   4,   8,  12,  16,  19,  23,  27,  31,  34,  38,  41,  44,  48,  51,  54,
-     57,  59,  62,  64,  67,  69,  71,  72,  74,  75,  77,  78,  78,  79,  80,  80,
-     80,  80,  80,  79,  78,  78,  77,  75,  74,  72,  71,  69,  67,  64,  62,  59,
-     57,  54,  51,  48,  44,  41,  38,  34,  31,  27,  23,  19,  16,  12,   8,   4,
-      0, 236, 232, 228, 224, 221, 217, 213, 209, 206, 202, 199, 196, 192, 189, 186,
-    183, 181, 178, 176, 173, 171, 169, 168, 166, 165, 163, 162, 162, 161, 160, 160,
-    160, 160, 160, 161, 162, 162, 163, 165, 166, 168, 169, 171, 173, 176, 178, 181,
-    183, 186, 189, 192, 196, 199, 202, 206, 209, 213, 217, 221, 224, 228, 232, 236,
-      0,   4,   8,  12,  16,  19,  23,  27,  31,  34,  38,  41,  44,  48,  51,  54,
-     57,  59,  62,  64,  67,  69,  71,  72,  74,  75,  77,  78,  78,  79,  80,  80,
-     80,  80,  80,  79,  78,  78,  77,  75,  74,  72,  71,  69,  67,  64,  62,  59,
-     57,  54,  51,  48,  44,  41,  38,  34,  31,  27,  23,  19,  16,  12,   8,   4,
+    106, 110, 115, 119, 124, 128, 132, 136, 140, 144, 148, 152, 156, 160, 163, 166,
+    170, 173, 176, 178, 181, 183, 185, 187, 189, 191, 192, 193, 194, 195, 196, 196,
+    196, 196, 196, 195, 194, 193, 192, 191, 189, 187, 185, 183, 181, 178, 176, 173,
+    170, 166, 163, 160, 156, 152, 148, 144, 140, 136, 132, 128, 124, 119, 115, 110,
+    106, 102,  97,  93,  88,  84,  80,  76,  72,  68,  64,  60,  56,  52,  49,  46,
+     42,  39,  36,  34,  31,  29,  27,  25,  23,  21,  20,  19,  18,  17,  16,  16,
+     16,  16,  16,  17,  18,  19,  20,  21,  23,  25,  27,  29,  31,  34,  36,  39,
+     42,  46,  49,  52,  56,  60,  64,  68,  72,  76,  80,  84,  88,  93,  97, 102,
+    106, 110, 115, 119, 124, 128, 132, 136, 140, 144, 148, 152, 156, 160, 163, 166,
+    170, 173, 176, 178, 181, 183, 185, 187, 189, 191, 192, 193, 194, 195, 196, 196,
+    196, 196, 196, 195, 194, 193, 192, 191, 189, 187, 185, 183, 181, 178, 176, 173,
+    170, 166, 163, 160, 156, 152, 148, 144, 140, 136, 132, 128, 124, 119, 115, 110,
+    106, 102,  97,  93,  88,  84,  80,  76,  72,  68,  64,  60,  56,  52,  49,  46,
+     42,  39,  36,  34,  31,  29,  27,  25,  23,  21,  20,  19,  18,  17,  16,  16,
+     16,  16,  16,  17,  18,  19,  20,  21,  23,  25,  27,  29,  31,  34,  36,  39,
+     42,  46,  49,  52,  56,  60,  64,  68,  72,  76,  80,  84,  88,  93,  97, 102,
 ]
 
 var step: u8 = 0
+var top: u8 = 106
+var line: u8 = 1
+var shade: u8 = 0
 
 main {
-    load_palette(bar.palette)
-    load_nametable(bar.nametable, bar.attributes)
-    ppu.ctrl = $00   // NMI off: a timed frame cannot spare its 13 cycles
-    ppu.mask = $0a   // background on, including its leftmost 8 pixels
+    ppu.ctrl = $00              // NMI off: a timed frame cannot spare its 13 cycles
+    ppu.mask = $00              // rendering off, so the address picks the colour
+
+    ppu.addr = $3f
+    ppu.addr = $00
+    ppu.data = $0f              // $3F00: black, everywhere but the bar
+    ppu.data = $02              // $3F01: the bar's edges, darkest
+    ppu.data = $12
+    ppu.data = $22
+    ppu.data = $32
+    ppu.data = $30              // $3F05: its middle, white
+
+    ppu.addr = $00              // leave palette space until the first
+    ppu.addr = $00              // scanline points somewhere on purpose
 }
 
-// The PPU copies the vertical scroll at the start of each frame, so a
-// handler on the last visible line moves the whole of the next picture.
 frame copper using timed {
+    // Each handler sets the colour of the line after its own: it waits
+    // until the beam is past the right edge of the picture, so the colour
+    // changes where nobody can see it, and the next line starts in it.
+    every 1 scanlines from 0 to 238 {
+        shade = BAR[line - top]
+        line += 1
+        cycles(18) pad { }
+        ppu.addr = $3f
+        ppu.addr = shade
+    }
+    // The bar never reaches the last line or the first, so they stay
+    // black, and this handler moves the bar for the next frame. Line 0's
+    // handler colours line 1, so that is where the count starts.
     at scanline 239 {
         step += 1
-        ppu.scroll = 0
-        ppu.scroll = SWING[step]
+        top = SWING[step]
+        line = 1
     }
 }

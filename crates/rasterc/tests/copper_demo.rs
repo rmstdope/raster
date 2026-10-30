@@ -1,5 +1,6 @@
 //! The copper bar example end to end: `examples/copper/copper.raster` built the way an author builds
-//! it and run, so the bar is judged where the PPU drew it on two different frames.
+//! it and run, so the bar is judged line by line as the PPU drew it, on frames from every phase of
+//! the timed pass and one long after.
 
 use std::{
     fs,
@@ -19,10 +20,16 @@ use demo::copper_demo_path;
 use scratch::Scratch;
 
 const BACKDROP: u16 = 0x0f;
-const DARKEST: u16 = 0x06;
-const BRIGHTEST: u16 = 0x30;
-/// Lines of bar in `art/bar.png`.
-const BAR_HEIGHT: usize = 48;
+
+/// The bar from its top line down, in the NES colours the example loads: three lines of each
+/// shade, four of white in the middle.
+fn bar() -> Vec<u16> {
+    let shades = [0x02, 0x12, 0x22, 0x32, 0x30, 0x32, 0x22, 0x12, 0x02];
+    shades
+        .iter()
+        .flat_map(|&shade| vec![shade; if shade == 0x30 { 4 } else { 3 }])
+        .collect()
+}
 
 /// Builds the example into a scratch directory; the summary, the diagnostics and the ROM.
 fn build() -> (String, String, Vec<u8>) {
@@ -51,8 +58,9 @@ fn build() -> (String, String, Vec<u8>) {
     )
 }
 
-/// The palette entry of each line down the middle column, after `frames` frames.
-fn column(rom: &[u8], frames: u32) -> Vec<u16> {
+/// Each line's colour after `frames` frames, having asserted every line is one colour from edge
+/// to edge: a change that landed inside the picture would split its row.
+fn lines(rom: &[u8], frames: u32) -> Vec<u16> {
     let frame = render_after_frames(
         "copper.nes",
         rom,
@@ -61,27 +69,27 @@ fn column(rom: &[u8], frames: u32) -> Vec<u16> {
     .expect("the ROM runs");
     let entries = frame.as_indices();
     (0..FRAME_HEIGHT)
-        .map(|y| entries[y * FRAME_WIDTH + FRAME_WIDTH / 2])
+        .map(|y| {
+            let row = &entries[y * FRAME_WIDTH..(y + 1) * FRAME_WIDTH];
+            assert!(
+                row.iter().all(|&entry| entry == row[0]),
+                "frame {frames}: line {y} changes colour inside the picture: {row:02x?}"
+            );
+            row[0]
+        })
         .collect()
 }
 
-/// The first line of the bar, having asserted the bar is whole: 48 lines, darkest at both edges,
-/// brightest in the middle, and backdrop everywhere else.
+/// The bar's top line, having asserted the bar is whole and alone on a black screen.
 fn bar_top(lines: &[u16]) -> usize {
     let top = lines
         .iter()
         .position(|&entry| entry != BACKDROP)
         .expect("the bar is on screen");
-    let bar = &lines[top..top + BAR_HEIGHT];
-    assert_eq!(bar[0], DARKEST, "{lines:02x?}");
-    assert_eq!(bar[BAR_HEIGHT - 1], DARKEST, "{lines:02x?}");
-    assert_eq!(bar[BAR_HEIGHT / 2], BRIGHTEST, "{lines:02x?}");
+    let bar = bar();
+    assert_eq!(lines[top..top + bar.len()], bar[..], "{lines:02x?}");
     assert!(
-        bar.iter().all(|&entry| entry != BACKDROP),
-        "the bar has no gap: {lines:02x?}"
-    );
-    assert!(
-        lines[top + BAR_HEIGHT..]
+        lines[top + bar.len()..]
             .iter()
             .all(|&entry| entry == BACKDROP),
         "nothing below the bar: {lines:02x?}"
@@ -90,7 +98,7 @@ fn bar_top(lines: &[u16]) -> usize {
 }
 
 #[test]
-fn the_example_builds_with_one_handler_on_the_last_line() {
+fn the_example_builds_with_a_handler_on_every_line() {
     let (stdout, stderr, _) = build();
 
     assert_eq!(stderr, "", "no warnings");
@@ -100,19 +108,34 @@ fn the_example_builds_with_one_handler_on_the_last_line() {
         .expect("a budget table follows the summary");
     let lines: Vec<&str> = table.lines().collect();
     assert_eq!(lines[0], "frame copper (using timed, mmc3)");
-    assert_eq!(lines.len(), 2, "{table}");
-    assert!(lines[1].starts_with("  scanline  239 handler"), "{table}");
+    assert_eq!(lines.len(), 3, "{table}");
+    assert!(
+        lines[1].starts_with("  scanline  0-238 every 1 handler"),
+        "{table}"
+    );
+    assert!(
+        lines[2].starts_with("  scanline  239           handler"),
+        "{table}"
+    );
 }
 
 #[test]
-fn the_bar_swings_and_stays_on_screen() {
+fn the_bar_is_set_line_by_line_and_swings() {
     let (_, _, rom) = build();
 
-    let early = bar_top(&column(&rom, 10));
-    let later = bar_top(&column(&rom, 30));
+    // Three consecutive frames are the three phases of the timed pass, each with its own loop,
+    // and they sit where the swing is moving. Later frames may land where it turns and pauses, so
+    // they are only judged whole and on screen.
+    let tops: Vec<usize> = [10, 11, 12, 40, 300]
+        .into_iter()
+        .map(|frames| bar_top(&lines(&rom, frames)))
+        .collect();
 
-    assert_ne!(early, later, "the bar moved between frames 10 and 30");
-    for top in [early, later] {
-        assert!((16..=176).contains(&top), "the bar's top is line {top}");
+    assert!(
+        tops[0] != tops[1] && tops[1] != tops[2],
+        "the bar moves every frame: {tops:?}"
+    );
+    for top in tops {
+        assert!((16..=196).contains(&top), "the bar's top is line {top}");
     }
 }
