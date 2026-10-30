@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
 use raster_assets::{
-    convert_background, convert_background_split, NesBackground, NAMETABLE_WIDTH_TILES,
-    SPLIT_SHARED_TILES, SPLIT_TILE_ROW,
+    convert_background, convert_background_split, convert_background_with, Conversion,
+    NesBackground, NAMETABLE_WIDTH_TILES, SPLIT_SHARED_TILES, SPLIT_TILE_ROW,
 };
 
 /// The FCEUX colour of the NES entries these pictures are drawn in.
@@ -546,5 +546,68 @@ fn the_first_tiles_of_the_lower_half_are_the_same_in_both_pattern_tables() {
             background.chr()[(256 + index) * 16..(256 + index) * 16 + 16],
             "column {column}, tile {index}"
         );
+    }
+}
+
+#[test]
+fn a_picture_given_a_width_fits_the_left_of_the_screen_and_keeps_its_shape() {
+    // A square, in the left 144 pixels: 144 by 144, centred down the screen, and backdrop beside
+    // and around it.
+    let red = vec![[0xf8, 0x38, 0x00, 0xff]; 480 * 480];
+    let conversion = Conversion {
+        width: 144,
+        ..Conversion::default()
+    };
+
+    let background = convert_background_with(Cursor::new(png(480, 480, &red)), conversion).unwrap();
+
+    for (index, &entry) in shown_picture(&background).iter().enumerate() {
+        let (x, y) = (index % 256, index / 256);
+        let expected = if x < 144 && (48..192).contains(&y) {
+            0x16
+        } else {
+            0x0f
+        };
+        assert_eq!(entry, expected, "({x}, {y})");
+    }
+}
+
+#[test]
+fn a_wide_picture_given_a_width_is_as_wide_as_it_and_centred_down_the_screen() {
+    let red = vec![[0xf8, 0x38, 0x00, 0xff]; 768 * 240];
+    let conversion = Conversion {
+        width: 128,
+        ..Conversion::default()
+    };
+
+    let background = convert_background_with(Cursor::new(png(768, 240, &red)), conversion).unwrap();
+
+    // 768 by 240 in 128 wide is 128 by 40, from line 100.
+    for (index, &entry) in shown_picture(&background).iter().enumerate() {
+        let (x, y) = (index % 256, index / 256);
+        let expected = if x < 128 && (100..140).contains(&y) {
+            0x16
+        } else {
+            0x0f
+        };
+        assert_eq!(entry, expected, "({x}, {y})");
+    }
+}
+
+#[test]
+fn a_tall_picture_given_a_width_is_centred_across_it() {
+    // 100 by 480 in the left 144 pixels is 50 by 240, from x 47.
+    let red = vec![[0xf8, 0x38, 0x00, 0xff]; 100 * 480];
+    let conversion = Conversion {
+        width: 144,
+        ..Conversion::default()
+    };
+
+    let background = convert_background_with(Cursor::new(png(100, 480, &red)), conversion).unwrap();
+
+    for (index, &entry) in shown_picture(&background).iter().enumerate() {
+        let (x, y) = (index % 256, index / 256);
+        let expected = if (47..97).contains(&x) { 0x16 } else { 0x0f };
+        assert_eq!(entry, expected, "({x}, {y})");
     }
 }
