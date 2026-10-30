@@ -2292,7 +2292,8 @@ impl Lowerer {
     /// Nothing is checked on a program that already failed: the configuration is read by walking
     /// calls, and a program whose recursion was just rejected has no walk that terminates.
     ///
-    /// What the handlers themselves store is judged too, by [`Self::check_irq_handler_masks`] - but
+    /// What the handlers themselves store is judged too, by [`Self::check_irq_handler_masks`] and
+    /// [`Self::check_irq_handler_ctrl`] - but
     /// only once the opening configuration is proven good, because a frame whose configuration is
     /// already refused has not yet established the thing its handlers would be judged against.
     fn check_mmc3_irq_frame(&mut self) {
@@ -2311,7 +2312,10 @@ impl Lowerer {
             return;
         }
         self.check_irq_handler_masks();
+        let before = self.recoverable_errors.len();
         self.check_irq_background_half();
+        let background_refused = self.recoverable_errors.len() > before;
+        self.check_irq_handler_ctrl(background_refused);
     }
 
     /// Refuse a `using irq` handler on the picture that runs while the background is at `$1000`,
@@ -2382,6 +2386,91 @@ impl Lowerer {
                      event to scanline 240, after the picture"
                         .to_owned(),
                 ),
+                span,
+                refusal: Refusal::Rejected,
+            });
+        }
+    }
+
+    /// Refuse a `using irq` frame whose handlers leave a `ppu.ctrl` standing that the chain cannot
+    /// run on.
+    ///
+    /// The opening configuration is only what the first frame starts from: every later frame
+    /// starts from what the last handler to store `ppu.ctrl` left there. So the frame is walked in
+    /// schedule order, from the opening configuration, and the layout standing after each event is
+    /// judged. Pattern tables in one half (or 8x16 sprites) are refused wherever they stand, since
+    /// the counter stops there and no later event runs. The background at `$1000` is refused only
+    /// when it is still standing as the frame wraps, since it is the pre-render line that it
+    /// double-clocks: `examples/zombie` moves it there at 120 and back at 240. A handler that runs
+    /// while it is at `$1000` is [`Self::check_irq_background_half`]'s; once that has refused one
+    /// (`background_refused`), the wrap is not refused again, since every frame that wraps at
+    /// `$1000` and has a handler on the picture already earned that refusal. What is left for this
+    /// is a frame whose only handler is at scanline 240.
+    ///
+    /// The mask is held at its opening value, because handler masks are judged by
+    /// [`Self::check_irq_handler_masks`]. A `ppu.ctrl` this cannot read ends the walk unjudged here;
+    /// `check_irq_background_half` warns about it.
+    fn check_irq_handler_ctrl(&mut self, background_refused: bool) {
+        let Some(frame) = &self.program.frame else {
+            return;
+        };
+        let functions: BTreeMap<Label, &Function> = self
+            .program
+            .functions
+            .iter()
+            .map(|function| (function.label, function))
+            .collect();
+        let opening = self.ppu_configuration();
+        let mut configuration = opening;
+        let mut stored_by: Option<Span> = None;
+        let mut refusal = None;
+        let last = frame.events.len().saturating_sub(1);
+        for (index, event) in frame.events.iter().enumerate() {
+            let before = configuration.ctrl;
+            collect_ppu_stores(
+                &event.body,
+                &functions,
+                &mut Vec::new(),
+                &mut configuration,
+                false,
+            );
+            configuration.mask = opening.mask;
+            if configuration.ctrl != before {
+                stored_by = Some(event.span);
+            }
+            let RegisterState::Known(ctrl) = configuration.ctrl else {
+                break;
+            };
+            // Nothing stored yet: the opening configuration, already proven good.
+            let Some(span) = stored_by else {
+                continue;
+            };
+            let message = match validate_mmc3_irq_frame(&configuration) {
+                Err(Mmc3IrqError::BackgroundInUpperHalf { .. })
+                    if index == last && !background_refused =>
+                {
+                    format!(
+                    "`using irq` needs the background pattern table at $0000 and the sprites at \
+                     $1000 when the frame wraps, and this handler's `ppu.ctrl = ${ctrl:02X}` \
+                     leaves the background at $1000"
+                    )
+                }
+                Err(
+                    error @ (Mmc3IrqError::PatternTablesShareHalf { .. }
+                    | Mmc3IrqError::TallSpritesUncheckable { .. }),
+                ) => handler_ctrl_message(error),
+                _ => continue,
+            };
+            refusal = Some((span, message, ctrl));
+            break;
+        }
+        if let Some((span, message, ctrl)) = refusal {
+            // The handler is still costed, so its hblank overrun is reported in the same build.
+            self.recoverable_errors.push(LowerError {
+                message,
+                label: Some(format!("`ppu.ctrl = ${ctrl:02X}` is stored here")),
+                notes: Vec::new(),
+                help: None,
                 span,
                 refusal: Refusal::Rejected,
             });
@@ -5466,6 +5555,12 @@ fn handler_nmi_warning(write: &HandlerCtrlWrite) -> Option<LowerWarning> {
             secondary: None,
         }),
     }
+}
+
+/// The diagnostic a handler's `ppu.ctrl` store reads as when it stops the counter: the opening
+/// configuration's message, said of the handler rather than of the program.
+fn handler_ctrl_message(error: Mmc3IrqError) -> String {
+    mmc3_irq_message(error).replacen("and `ppu.ctrl", "and this handler's `ppu.ctrl", 1)
 }
 
 /// The diagnostic an MMC3 precondition failure reads as, naming the value that caused it.

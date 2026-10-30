@@ -215,6 +215,109 @@ fn irq_frame_rejects_the_background_at_1000() {
     );
 }
 
+/// The opening configuration is not the only one the pre-render line can meet: whatever the last
+/// handler leaves in `ppu.ctrl` is what the frame wraps with. Left at $1000, the counter clocks
+/// twice on the pre-render line and the chain drifts as if the frame had started that way. A
+/// handler at scanline 240 is exempt from the refusal of a handler run under $1000, so with no
+/// handler on the picture this is the only thing that refuses it.
+#[test]
+fn irq_frame_rejects_a_handler_that_leaves_the_background_at_1000_at_the_wrap() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 240 { ppu.ctrl = $10 }\n}\n";
+    let diagnostics =
+        compile_source(source).expect_err("the frame wraps with the background at $1000");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` needs the background pattern table at $0000 and the sprites at $1000 when \
+         the frame wraps, and this handler's `ppu.ctrl = $10` leaves the background at $1000"
+    );
+    let span = diagnostics[0]
+        .span
+        .expect("the diagnostic is source-spanned");
+    assert!(
+        source[span.start..span.end].starts_with("at scanline 240"),
+        "underlines {:?}",
+        &source[span.start..span.end]
+    );
+}
+
+/// With a handler on the picture, a frame that wraps at $1000 runs that handler under $1000 on
+/// every frame after the first, which is refused on its own; the wrap is not said a second time.
+#[test]
+fn irq_frame_reports_a_wrap_at_1000_once_through_the_handler_it_runs() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    \
+                  at scanline 200 { ppu.data = $12 }\n}\n";
+    let diagnostics =
+        compile_source(source).expect_err("the frame wraps with the background at $1000");
+
+    assert!(!diagnostics.is_empty());
+    assert!(
+        diagnostics.iter().all(|diagnostic| diagnostic.message
+            == "an `irq` handler cannot run while the background is at $1000"),
+        "{:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// A handler that puts both pattern tables in one half stops A12 rising, so the counter stops and
+/// no later event runs - not even the one that would have put the halves back.
+#[test]
+fn irq_frame_rejects_a_handler_that_puts_both_pattern_tables_in_one_half() {
+    for (ctrl, half) in [("$18", "$1000"), ("$00", "$0000")] {
+        let source = format!(
+            "main {{\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}}\n\
+             \nframe bars using irq {{\n    at scanline 120 {{ ppu.ctrl = {ctrl} }}\n    \
+             at scanline 200 {{ ppu.ctrl = $08 }}\n}}\n"
+        );
+        let diagnostics = compile_source(&source).expect_err("the counter stops at line 120");
+
+        // $18 also puts the background at $1000, under which the next handler is refused too.
+        let expected = format!(
+            "`using irq` needs the background and sprite pattern tables in opposite halves, \
+             and this handler's `ppu.ctrl = {ctrl}` puts both at {half}"
+        );
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.message == expected)
+                .count(),
+            1,
+            "{ctrl}: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// 8x16 sprites take their half from each tile index, so a handler that selects them is refused
+/// for the reason the opening configuration would be.
+#[test]
+fn irq_frame_rejects_a_handler_that_selects_8x16_sprites() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 120 { ppu.ctrl = $28 }\n    \
+                  at scanline 200 { ppu.ctrl = $08 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("8x16 sprites cannot be checked");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` cannot check the A12 pattern for 8x16 sprites, and this handler's \
+         `ppu.ctrl = $28` selects them"
+    );
+}
+
+/// The zombie example's shape: the background moves to $1000 mid-frame and is put back on the
+/// post-render line, so the frame wraps in the layout that keeps the schedule.
+#[test]
+fn irq_frame_accepts_a_background_at_1000_put_back_before_the_wrap() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe halves using irq {\n    at scanline 120 { ppu.ctrl = $10 }\n    \
+                  at scanline 240 { ppu.ctrl = $08 }\n}\n";
+    compile_source(source).expect("the frame wraps with the background at $0000");
+}
+
 #[test]
 fn irq_frame_rejects_a_schedule_the_ppu_would_never_clock() {
     let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $06\n}\n\
