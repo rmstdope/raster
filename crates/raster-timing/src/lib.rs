@@ -349,7 +349,9 @@ pub const SCANLINE_BODY_CYCLES: u32 = 114;
 /// prefetch at about dot 324, so the interrupt arrives once the hblank has closed and a store lands
 /// 53 to 60 pixels into the row — measured by
 /// `an_irq_store_under_the_background_at_1000_never_lands_on_the_picture`. `raster-ir` refuses a
-/// handler on the picture that runs in that configuration rather than promise it this window.
+/// handler on the picture that runs in that configuration rather than promise it this window. It
+/// judges bit 4 only: a handler that stores both tables into one half, or 8x16 sprites, is not
+/// checked yet.
 ///
 /// Nine cycles is one statement: one register store is six cycles and one variable assignment is
 /// five, and two of anything tears the row. That is the rule this compiler enforces, agreed with
@@ -709,7 +711,7 @@ pub fn mmc3_latch_for_first_event(scanline: u16) -> u8 {
 /// `ppu.ctrl` bit 3: the half of pattern memory sprites are fetched from.
 const PPU_CTRL_SPRITE_PATTERN_HALF: u8 = 0b0000_1000;
 /// `ppu.ctrl` bit 4: the half of pattern memory the background is fetched from.
-const PPU_CTRL_BACKGROUND_PATTERN_HALF: u8 = 0b0001_0000;
+pub const PPU_CTRL_BACKGROUND_PATTERN_HALF: u8 = 0b0001_0000;
 /// `ppu.ctrl` bit 5: 8x16 sprites, which take their half from the tile index instead.
 const PPU_CTRL_TALL_SPRITES: u8 = 0b0010_0000;
 /// `ppu.mask` bits 3 and 4: show the background, and show the sprites. Either one is rendering.

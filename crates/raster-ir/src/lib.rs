@@ -11,7 +11,8 @@ use raster_syntax::{
 pub use raster_timing::CycleConstraint;
 use raster_timing::{
     mask_enables_rendering, timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError, NmiAtEntry,
-    PpuConfiguration, RegisterState, TimedFrameNmi, NMI_CYCLES, PPU_CTRL_NMI,
+    PpuConfiguration, RegisterState, TimedFrameNmi, NMI_CYCLES, PPU_CTRL_BACKGROUND_PATTERN_HALF,
+    PPU_CTRL_NMI,
 };
 
 /// The one ROM shape this release builds, in the words a `target` block spells it.
@@ -1451,9 +1452,6 @@ const BLANK_WITH_A_TIMED_FRAME: &str =
     "use `using timed` if the frame needs to blank the picture\n\
      part-way down";
 
-/// `ppu.ctrl` bit 4: the background's patterns at `$1000` rather than `$0000`.
-const PPU_CTRL_BACKGROUND_AT_1000: u8 = 0b0001_0000;
-
 /// Why a handler run with the background at `$1000` lands on the picture, said in the refusal.
 const BACKGROUND_AT_1000_COUNTS_LATE: &str =
     "with the background at $1000 the MMC3 counts the scanline in the\n\
@@ -2347,7 +2345,7 @@ impl Lowerer {
             for event in &frame.events {
                 if event.scanline < POST_RENDER_SCANLINE {
                     match ctrl {
-                        Some(bits) if bits & PPU_CTRL_BACKGROUND_AT_1000 != 0 => {
+                        Some(bits) if bits & PPU_CTRL_BACKGROUND_PATTERN_HALF != 0 => {
                             if !refused.iter().any(|(span, _)| *span == event.span) {
                                 refused.push((event.span, event.scanline));
                             }

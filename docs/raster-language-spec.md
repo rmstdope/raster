@@ -500,6 +500,15 @@ enforces at compile time:
   on that line's pixels. A `using irq` frame may therefore name **scanline 240**, the
   post-render line: the IRQ is counted to the last visible line and the handler runs
   after its last pixel. A `using timed` frame keeps to 0–239.
+- A handler's 9-cycle hblank window holds with **the background at `$0000` and the
+  sprites at `$1000`**. That way round, A12 rises in the sprite fetches at about dot
+  260. The other way round, it rises in the background's prefetch at about dot 324,
+  and a handler's stores land about 55 pixels into the row it names. A handler on the
+  picture (scanlines 0–239) that runs with the background at `$1000` is therefore
+  refused. That covers the background the handler *starts* under, the one the previous
+  handler left (or `main`, on the first frame). A handler may switch to `$1000`,
+  because its own stores land before the switch takes effect, and a handler at
+  scanline 240 runs after the picture whichever half the background is in.
 
 **rasterc today:** built. The rendering check, the latch computation and the
 automatic acknowledge are done for you under `using irq`, and so is the A12
@@ -508,8 +517,11 @@ check, in part. **stricter** — the compiler refuses what it cannot read: both
 refused because their pattern table cannot be checked, the frame must start with
 the background at `$0000` and the sprites at `$1000` (the other way round clocks the
 counter twice on the pre-render line, so the schedule drifts a scanline a frame, and
-raises the IRQ too late in hblank for a handler's store), and a handler that stores
-a constant mask with rendering off is refused (a computed mask only warns).
+raises the IRQ too late in hblank for a handler's store), a handler that stores
+a constant mask with rendering off is refused (a computed mask only warns), and
+a handler on the picture that runs with the background at `$1000` is refused (a
+computed handler `ppu.ctrl` only warns). Other `ppu.ctrl` values a handler stores,
+both tables in one half or 8x16 sprites, are not judged yet.
 The CHR layout is not read; the reset runtime fixes it.
 
 ---
@@ -573,6 +585,9 @@ frame halves using irq {
     at scanline 240 { ppu.ctrl = $08 }   // background tiles 0–255, sprites 256–511
 }
 ```
+
+Between those two events the background is at `$1000`, so the frame can carry no
+other event on lines 121–239: its stores would land part-way along the row (§7.3).
 
 An explicit palette can be supplied instead of `auto`:
 

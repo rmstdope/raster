@@ -1188,6 +1188,29 @@ fn an_unreadable_handler_ctrl_leaves_the_hblank_window_unproven() {
              sprites at $1000",
         ]
     );
+    let span = rom.warnings[0].span.expect("the warning is source-spanned");
+    assert_eq!(
+        &source[span.start..span.end],
+        "irq",
+        "carets on `using irq`"
+    );
+}
+
+/// An `every` event is one handler body run at many scanlines, so under the background at `$1000`
+/// it is one mistake: one refusal, naming the first scanline it would tear.
+#[test]
+fn an_every_event_under_the_background_at_1000_is_refused_once() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe halves using irq {\n    at scanline 60 { ppu.ctrl = $10 }\n\
+                  \n    every 8 scanlines from 96 to 200 { ppu.mask = $1e }\n\
+                  \n    at scanline 240 { ppu.ctrl = $08 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("every occurrence would tear its row");
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].label,
+        "its stores would land about 55 pixels into scanline 96"
+    );
 }
 
 #[test]
