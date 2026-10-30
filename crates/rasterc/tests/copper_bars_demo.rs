@@ -156,39 +156,20 @@ fn every_frame_is_the_three_bars_at_the_step_its_frame_has_reached() {
     let frames = [10, 11, 12, 70, 200, 600];
     let shown: Vec<Vec<u16>> = frames.iter().map(|&frames| lines(&rom, frames)).collect();
 
-    // Frame `n` shows the bars after `n - offset` frames of moving, for the frames the ROM spent
-    // starting up. One picture can be more than one step, because the swing mirrors itself, but
-    // only one sequence of steps explains every frame.
-    let steps = |offset: u32| -> Vec<u8> {
-        frames
-            .iter()
-            .map(|&frames| step_after(speed, frames - offset))
-            .collect()
-    };
-    let offsets: Vec<u32> = (0..=frames[0])
-        .filter(|&offset| {
-            steps(offset)
-                .iter()
-                .zip(&shown)
-                .all(|(&step, shown)| expected(&source, step) == *shown)
-        })
-        .collect();
-    let mut explanations: Vec<Vec<u8>> = offsets.iter().map(|&offset| steps(offset)).collect();
-    explanations.sort();
-    explanations.dedup();
-    assert_eq!(
-        explanations.len(),
-        1,
-        "step sequences explaining every frame: {explanations:?}"
-    );
-    let offset = offsets[0];
-
-    // The first frame with bars on it is where they start, before they have moved at all.
-    assert_eq!(
-        lines(&rom, offset),
-        expected(&source, 0),
-        "frame {offset}, the first with bars"
-    );
+    // The ROM spends its first frames starting up, so the first frame showing the bars where they
+    // start is where the count of frames they have moved begins. Every frame after it shows the
+    // bars `SPEED` sixteenths of a step further on.
+    let offset = (1..frames[0])
+        .find(|&frames| lines(&rom, frames) == expected(&source, 0))
+        .expect("the bars appear where they start");
+    for (&frames, shown) in frames.iter().zip(&shown) {
+        assert_eq!(
+            *shown,
+            expected(&source, step_after(speed, frames - offset)),
+            "frame {frames}, {} frames after the bars appeared",
+            frames - offset
+        );
+    }
 
     // Where bars overlap, a line shows the brightest of them. The first frame they do is found
     // from the tables, so it is checked whatever SPEED and PHASE are set to — if they overlap at

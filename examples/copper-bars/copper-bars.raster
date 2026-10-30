@@ -126,9 +126,11 @@ main {
     ppu.addr = $00              // leave palette space until the first
     ppu.addr = $00              // scanline points somewhere on purpose
 
-    top1 = SWING[0]             // where the bars start
-    top2 = SWING[PHASE]
-    top3 = SWING[PHASE + PHASE]
+    // Where the bars start, worked out as the frame's handler does, so
+    // that a PHASE past half a swing wraps the same way.
+    top1 = SWING[step]
+    top2 = SWING[step + PHASE]
+    top3 = SWING[step + PHASE + PHASE]
 }
 
 frame bars using timed {
