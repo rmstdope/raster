@@ -1,4 +1,4 @@
-//! The copper bar example end to end: `examples/copper/copper.raster` built the way an author builds
+//! The scrolled copper bar example end to end: `examples/copper-scroll/copper.raster` built the way an author builds
 //! it and run, so the bar is judged where the PPU drew it on two different frames.
 
 use std::{
@@ -15,7 +15,7 @@ use rasterc::run;
 mod demo;
 #[path = "common/scratch.rs"]
 mod scratch;
-use demo::copper_demo_path;
+use demo::copper_scroll_demo_path;
 use scratch::Scratch;
 
 const BACKDROP: u16 = 0x0f;
@@ -28,14 +28,14 @@ const BAR_HEIGHT: usize = 48;
 fn build() -> (String, String, Vec<u8>) {
     static BUILDS: AtomicUsize = AtomicUsize::new(0);
     let directory = Scratch::new(&format!(
-        "copper-demo-{}",
+        "copper-scroll-demo-{}",
         BUILDS.fetch_add(1, Ordering::Relaxed)
     ));
     let output = directory.path().join("out.nes");
     let (mut stdout, mut stderr) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()));
     let result = run(
         vec![
-            copper_demo_path().display().to_string(),
+            copper_scroll_demo_path().display().to_string(),
             "-o".into(),
             output.display().to_string(),
         ],

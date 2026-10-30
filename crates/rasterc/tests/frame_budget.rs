@@ -219,7 +219,7 @@ fn the_table_follows_the_warnings_row() {
 
 #[test]
 fn consecutive_scanlines_show_the_tighter_timed_window() {
-    let source = "main {\n    ppu.mask = $18\n}\nframe bars using timed {\n    every 1 scanlines from 10 to 40 {\n        ppu.mask = $1e\n    }\n}\n";
+    let source = "main {\n    ppu.mask = $18\n}\nframe bars using timed {\n    every 1 scanlines from 10 to 14 {\n        ppu.mask = $1e\n    }\n}\n";
     let (_, stdout, _) = build(source);
 
     assert!(stdout.contains("window 113   98 spare"), "{stdout}");
