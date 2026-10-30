@@ -322,3 +322,20 @@ fn a_constant_array_element_reaches_the_screen() {
     assert_eq!(backdrop_entry("first.nes", &source(0)), 0x0f);
     assert_eq!(backdrop_entry("last.nes", &source(2)), 0x21);
 }
+
+#[test]
+fn a_subtraction_takes_its_operands_in_source_order() {
+    // $22 - $10 is $12, a blue; the operands the wrong way round give $EE, which the palette keeps
+    // as $2E. One subtraction with a variable on the right, one with a table read there.
+    let source = |expression: &str| {
+        format!(
+            "const T: [2]u8 = [$00, $10]\nvar a: u8 = $22\nvar b: u8 = $10\nvar j: u8 = 1\nmain {{\n    ppu.addr = $3f\n    ppu.addr = $00\n    ppu.data = {expression}\n    ppu.addr = $00\n    ppu.addr = $00\n}}\n"
+        )
+    };
+    assert_eq!(backdrop_entry("direct.nes", &source("a - b")), 0x12);
+    assert_eq!(backdrop_entry("pure.nes", &source("a - T[j]")), 0x12);
+    assert_eq!(
+        backdrop_entry("both.nes", &source("T[j] - (a - $20)")),
+        0x0e
+    );
+}

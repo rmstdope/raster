@@ -1189,3 +1189,79 @@ fn a_run_that_would_leave_a_looped_handler_one_cycle_short_is_unrolled() {
 
     assert_eq!(budget_rows(&output)[0].1, 93);
 }
+
+/// The opcodes inside the source's one `cycles` region, between its `SEI` and its `PLP`.
+fn region_opcodes(source: &str) -> Vec<u8> {
+    let opcodes: Vec<u8> = generate_source(source)
+        .program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            FixedBankItem::Instruction { instruction, .. } => Some(instruction.opcode),
+            _ => None,
+        })
+        .collect();
+    let start = opcodes
+        .iter()
+        .position(|&opcode| opcode == 0x78)
+        .expect("SEI");
+    let end = opcodes
+        .iter()
+        .rposition(|&opcode| opcode == 0x28)
+        .expect("PLP");
+    opcodes[start + 1..end].to_vec()
+}
+
+#[test]
+fn a_variable_or_constant_on_the_right_is_the_operand_itself() {
+    let program = |expression: &str| {
+        format!(
+            "var a: u8\nvar b: u8\nvar v: u8\nmain {{\n    cycles(?) r {{\n        v = {expression}\n    }}\n}}"
+        )
+    };
+    // LDA a, then the operation straight on `b` or the literal, then STA v.
+    assert_eq!(region_opcodes(&program("a - b")), [0xa5, 0x38, 0xe5, 0x85]);
+    assert_eq!(region_opcodes(&program("a + 1")), [0xa5, 0x18, 0x69, 0x85]);
+    assert_eq!(region_opcodes(&program("a & b")), [0xa5, 0x25, 0x85]);
+    assert_eq!(region_opcodes(&program("a | $10")), [0xa5, 0x09, 0x85]);
+    assert_eq!(region_opcodes(&program("a ^ b")), [0xa5, 0x45, 0x85]);
+}
+
+#[test]
+fn a_pure_right_operand_is_worked_out_first_into_one_temporary() {
+    // `T[j]` is a table read: the right is evaluated and kept, then the left, then one `ORA`.
+    let opcodes = region_opcodes(
+        "const T: [2]u8 = [1, 2]\nvar i: u8\nvar j: u8\nvar v: u8\nmain {\n    cycles(?) r {\n        v = T[i] | T[j]\n    }\n}",
+    );
+    assert_eq!(
+        opcodes,
+        [0xa5, 0xaa, 0xbd, 0x85, 0xa5, 0xaa, 0xbd, 0x05, 0x85]
+    );
+}
+
+#[test]
+fn a_call_on_the_left_still_runs_before_the_right_is_read() {
+    // `f` may change `x`, so `x` is read after the call however simple it is, and a pure right is
+    // not hoisted above a left that calls.
+    let opcodes: Vec<u8> = instructions(
+        "var x: u8\nvar v: u8\nfn f() -> u8 {\n    x = 1\n    return 2\n}\nmain {\n    v = f() + x\n    v = f() + (x + 1)\n}",
+    )
+    .iter()
+    .map(|instruction| instruction.opcode)
+    .collect();
+    let calls: Vec<usize> = opcodes
+        .iter()
+        .enumerate()
+        .filter(|(_, &opcode)| opcode == 0x20)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(calls.len(), 2);
+    // Straight after the first call: CLC, ADC x — the read of `x` follows the call.
+    assert_eq!(&opcodes[calls[0] + 1..calls[0] + 3], [0x18, 0x65]);
+    // After the second call the right is worked out then, not before it.
+    assert_eq!(
+        opcodes[calls[1] + 1],
+        0x85,
+        "the call's result is kept first"
+    );
+}

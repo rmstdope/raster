@@ -115,6 +115,8 @@ const PPU_STATUS: u16 = 0x2002;
 const LDX_IMMEDIATE: u8 = 0xa2;
 const LDA_ABSOLUTE_X: u8 = 0xbd;
 const TAX: u8 = 0xaa;
+const CLC: u8 = 0x18;
+const SEC: u8 = 0x38;
 const INX: u8 = 0xe8;
 const CPX_IMMEDIATE: u8 = 0xe0;
 const BNE: u8 = 0xd0;
@@ -1013,6 +1015,38 @@ impl Generator<'_> {
                 left_temporary,
                 right_temporary,
             } => {
+                if let Some((prepare, immediate, zero_page)) = direct_opcodes(*operator) {
+                    match simple_operand(right) {
+                        // The right is read where the operation reads it, after the left, exactly
+                        // as when it went through a temporary.
+                        Some(operand) => {
+                            self.value(left)?;
+                            if let Some(prepare) = prepare {
+                                self.emit(prepare, Implied, None);
+                            }
+                            match operand {
+                                SimpleOperand::Constant(value) => {
+                                    self.emit(immediate, Immediate, Some(u16::from(value)))
+                                }
+                                SimpleOperand::Place(place) => self.operand(zero_page, place)?,
+                            }
+                            return Ok(());
+                        }
+                        // Nothing on the left can change what a pure right reads, so the right is
+                        // worked out first and kept, and the left goes straight into the operation.
+                        None if is_pure(right) && !calls(left) => {
+                            self.value(right)?;
+                            self.store_place(*right_temporary)?;
+                            self.value(left)?;
+                            if let Some(prepare) = prepare {
+                                self.emit(prepare, Implied, None);
+                            }
+                            self.operand(zero_page, *right_temporary)?;
+                            return Ok(());
+                        }
+                        None => {}
+                    }
+                }
                 self.value(left)?;
                 self.store_place(*left_temporary)?;
                 self.value(right)?;
@@ -1354,6 +1388,62 @@ impl Generator<'_> {
         let label = IrLabel(self.next_internal_label);
         self.next_internal_label += 1;
         label
+    }
+}
+
+/// A right operand an instruction can take as it stands: an immediate byte or a zero-page place.
+#[derive(Clone, Copy)]
+enum SimpleOperand {
+    Constant(u8),
+    Place(Place),
+}
+
+fn simple_operand(value: &Value) -> Option<SimpleOperand> {
+    match value {
+        Value::Constant(value) => Some(SimpleOperand::Constant(*value)),
+        Value::Place(place) => Some(SimpleOperand::Place(*place)),
+        _ => None,
+    }
+}
+
+/// For an operation that is one instruction on the accumulator: the flag it needs set first, and
+/// its immediate and zero-page opcodes. The loops — multiply, divide, remainder and the shifts —
+/// have none.
+fn direct_opcodes(operator: BinaryOperator) -> Option<(Option<u8>, u8, u8)> {
+    match operator {
+        BinaryOperator::Add => Some((Some(CLC), 0x69, 0x65)),
+        BinaryOperator::Subtract => Some((Some(SEC), 0xe9, 0xe5)),
+        BinaryOperator::And => Some((None, 0x29, 0x25)),
+        BinaryOperator::Or => Some((None, 0x09, 0x05)),
+        BinaryOperator::Xor => Some((None, 0x49, 0x45)),
+        BinaryOperator::Multiply
+        | BinaryOperator::Divide
+        | BinaryOperator::Remainder
+        | BinaryOperator::ShiftLeft
+        | BinaryOperator::ShiftRight => None,
+    }
+}
+
+/// Whether working a value out reads nothing but memory: no register, whose read can change the
+/// hardware, and no call, which can change memory.
+fn is_pure(value: &Value) -> bool {
+    match value {
+        Value::Constant(_) | Value::Place(_) => true,
+        Value::Register(_) | Value::Call { .. } => false,
+        Value::Unary { operand, .. } => is_pure(operand),
+        Value::Binary { left, right, .. } => is_pure(left) && is_pure(right),
+        Value::Element { index, .. } => is_pure(index),
+    }
+}
+
+/// Whether working a value out calls a function, which may change any place.
+fn calls(value: &Value) -> bool {
+    match value {
+        Value::Constant(_) | Value::Place(_) | Value::Register(_) => false,
+        Value::Call { .. } => true,
+        Value::Unary { operand, .. } => calls(operand),
+        Value::Binary { left, right, .. } => calls(left) || calls(right),
+        Value::Element { index, .. } => calls(index),
     }
 }
 
