@@ -466,7 +466,8 @@ fn an_over_budget_block_counts_the_oam_dmas_it_holds() {
     assert_eq!(result, Err(1));
     assert!(
         stderr.contains(
-            "  = note: 1028 of this block's 1049 cycles are 2 OAM DMAs, charged the\n          worst of the 513 or 514 each may stall\n"
+            // The two stores of $02 are one constant held in X: 4 + 4 + 2, not 6 + 6.
+            "  = note: 1028 of this block's 1047 cycles are 2 OAM DMAs, charged the\n          worst of the 513 or 514 each may stall\n"
         ),
         "{stderr}"
     );

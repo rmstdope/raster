@@ -433,6 +433,27 @@ fn adding_or_taking_one_is_a_single_increment_or_decrement() {
 }
 
 #[test]
+fn a_bounded_block_holds_the_constants_it_repeats_in_x_and_y() {
+    assert_prediction_is_spent("held-constants.raster");
+    let source = fixture("held-constants.raster");
+    compare(
+        "held-constants.raster",
+        44,
+        measured("held-constants.raster", &source),
+    );
+}
+
+/// An unpadded `cycles(N)` costs exactly N or is refused, so its code is the code it always was:
+/// two stores of one constant there would be cheaper held in X, and refused as under budget.
+#[test]
+fn an_unpadded_exact_block_keeps_the_code_its_count_was_written_for() {
+    rasterc::compile_source(
+        "main {\n    sync exact\n    cycles(21) {\n        ppu.mask = 1\n        ppu.mask = 1\n    }\n}\n",
+    )
+    .expect("two six-cycle stores and nine of masking are still 21");
+}
+
+#[test]
 fn a_delay_spends_exactly_its_planned_cycles_wherever_its_loop_lands() {
     // `value = 1` is four bytes and `ppu.mask = 0` five, so 0 to 63 of one and 0 to 3 of the other
     // ahead of the delay move its loop through every position on a page, among them the ones where

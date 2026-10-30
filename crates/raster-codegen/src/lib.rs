@@ -140,6 +140,11 @@ const RTI: u8 = 0x40;
 /// `CLI`, which unmasks IRQs once a frame's chain is armed.
 const CLI: u8 = 0x58;
 const LDA_IMMEDIATE: u8 = 0xa9;
+/// `STX` and `STY` to zero page and to an absolute address, by the register they store.
+const STX_ZERO_PAGE: u8 = 0x86;
+const STX_ABSOLUTE: u8 = 0x8e;
+const STY_ZERO_PAGE: u8 = 0x84;
+const STY_ABSOLUTE: u8 = 0x8c;
 const STA_ABSOLUTE: u8 = 0x8d;
 const STA_ZERO_PAGE: u8 = 0x85;
 const JMP_INDIRECT: u8 = 0x6c;
@@ -851,6 +856,93 @@ impl Generator<'_> {
         Ok(())
     }
 
+    /// [`Self::statements`], holding in X and Y the two constants each run of plain stores repeats
+    /// most, loaded once at the start of the run and stored with `STX` and `STY`: four cycles a
+    /// store where loading the constant and storing it is six, and the stores land sooner after
+    /// one another. A run ends at any statement whose code might use X or Y.
+    fn statements_holding_constants(
+        &mut self,
+        statements: &[Statement],
+        halt_label: Option<IrLabel>,
+    ) -> Result<(), CodegenError> {
+        let mut index = 0;
+        while index < statements.len() {
+            let run = statements[index..]
+                .iter()
+                .take_while(|statement| plain_store(statement))
+                .count();
+            if run == 0 {
+                self.statement(&statements[index], halt_label)?;
+                index += 1;
+                continue;
+            }
+            let run = &statements[index..index + run];
+            index += run.len();
+
+            let mut repeats: BTreeMap<u8, usize> = BTreeMap::new();
+            for statement in run {
+                if let Statement::Assign {
+                    value: Value::Constant(constant),
+                    ..
+                } = statement
+                {
+                    *repeats.entry(*constant).or_default() += 1;
+                }
+            }
+            // A constant stored once costs the same held as loaded, plus the load; twice or more,
+            // holding it saves two cycles a store less the two of loading it.
+            let mut held: Vec<(u8, usize)> = repeats
+                .into_iter()
+                .filter(|(_, count)| *count >= 2)
+                .collect();
+            held.sort_by_key(|&(constant, count)| (std::cmp::Reverse(count), constant));
+            let x = held.first().map(|&(constant, _)| constant);
+            let y = held.get(1).map(|&(constant, _)| constant);
+            if let Some(x) = x {
+                self.emit(LDX_IMMEDIATE, Immediate, Some(u16::from(x)));
+            }
+            if let Some(y) = y {
+                self.emit(LDY_IMMEDIATE, Immediate, Some(u16::from(y)));
+            }
+            for statement in run {
+                match statement {
+                    Statement::Assign {
+                        destination,
+                        value: Value::Constant(constant),
+                    } if Some(*constant) == x => {
+                        self.store_from(*destination, STX_ZERO_PAGE, STX_ABSOLUTE)?;
+                    }
+                    Statement::Assign {
+                        destination,
+                        value: Value::Constant(constant),
+                    } if Some(*constant) == y => {
+                        self.store_from(*destination, STY_ZERO_PAGE, STY_ABSOLUTE)?;
+                    }
+                    _ => self.statement(statement, halt_label)?,
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A store of X or Y, `zero_page` or `absolute` by where `destination` lives.
+    fn store_from(
+        &mut self,
+        destination: Destination,
+        zero_page: u8,
+        absolute: u8,
+    ) -> Result<(), CodegenError> {
+        match destination {
+            Destination::Place(place) => {
+                self.emit(zero_page, ZeroPage, Some(u16::from(self.address(place)?)));
+            }
+            Destination::Register(register) => {
+                self.emit(absolute, Absolute, Some(register.address()));
+            }
+        }
+        Ok(())
+    }
+
     fn statement(
         &mut self,
         statement: &Statement,
@@ -935,7 +1027,14 @@ impl Generator<'_> {
             self.emit(PHP, Implied, None);
             self.emit(SEI, Implied, None);
         }
-        self.statements(body, halt_label)?;
+        // Holding constants makes the body cheaper, so only where nothing can be refused for it:
+        // a padded or bounded block, never one whose exact count the author wrote for today's
+        // code. Never an interruptible one either, whose X and Y belong to the code it interrupts.
+        if (pad || matches!(constraint, CycleConstraint::AtMost(_))) && !interruptible {
+            self.statements_holding_constants(body, halt_label)?;
+        } else {
+            self.statements(body, halt_label)?;
+        }
 
         let mut instructions: Vec<_> = raster_link::instructions(&self.output.items[start..]);
         let page_aligned_reads = self.page_aligned_reads(start);
@@ -1498,6 +1597,18 @@ fn step_by_one(destination: Destination, value: &Value) -> Option<(u8, Place)> {
         BinaryOperator::Subtract => Some((DEC_ZERO_PAGE, place)),
         _ => None,
     }
+}
+
+/// A statement whose code is a load of A and a store of it, and nothing else: a constant, a
+/// variable or a register copied to a variable or a register. Nothing in it touches X or Y.
+fn plain_store(statement: &Statement) -> bool {
+    matches!(
+        statement,
+        Statement::Assign {
+            value: Value::Constant(_) | Value::Place(_) | Value::Register(_),
+            ..
+        }
+    )
 }
 
 fn simple_operand(value: &Value) -> Option<SimpleOperand> {
