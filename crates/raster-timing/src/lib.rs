@@ -479,8 +479,8 @@ pub enum DelayStep {
     /// The `JMP` back is what makes this exact. A `DEX`/`BNE` loop takes its branch on every pass
     /// but the last, and a taken branch costs an extra cycle when it crosses a page — so a
     /// thousand-cycle delay could spend twelve hundred depending on where the linker put it.
-    /// Here exactly one branch is ever taken, so at worst one cycle is unaccounted for, and
-    /// removing even that needs an alignment the linker cannot yet express.
+    /// Here exactly one branch is ever taken, and `raster-codegen` keeps each loop on a page of its
+    /// own, so that branch never crosses one and the delay is exact.
     Loop { outer: Option<u32>, inner: u32 },
 }
 
@@ -507,6 +507,55 @@ pub fn delay_cycles(steps: &[DelayStep]) -> u32 {
             DelayStep::Loop { outer: None, inner } => inner_loop_cycles(*inner),
         })
         .sum()
+}
+
+/// A delay of exactly `cycles` whose every loop the caller runs out of line, spending `hop_cycles`
+/// more on the way there and back: the plan is made for what the hops leave.
+///
+/// How many loops a plan needs is not steady in its length: paying hops for one loop can leave a
+/// length planned with one fewer, and putting those cycles back brings it again. So the hops paid
+/// for only ever grow, which ends the search, and any paid for a loop the plan did not use are
+/// spent as filler; a whole number of hops is never the single cycle filler cannot reach.
+///
+/// A delay too short to keep a loop once its hops are paid is filler alone, which has no branch.
+/// `hop_cycles` must be a count filler can spend, so not 1.
+pub fn plan_delay_in_islands(
+    cycles: u32,
+    legal_isa: bool,
+    hop_cycles: u32,
+) -> Result<Vec<DelayStep>, TimingError> {
+    let inline = plan_delay(cycles, legal_isa)?;
+    let mut paid = delay_loops(&inline);
+    loop {
+        if paid == 0 {
+            return Ok(inline);
+        }
+        let Some(mut plan) = cycles
+            .checked_sub(hop_cycles * paid)
+            .and_then(|left| plan_delay(left, legal_isa).ok())
+            .filter(|plan| delay_loops(plan) > 0)
+        else {
+            return Ok(vec![DelayStep::Filler(synthesize_padding(
+                cycles, legal_isa,
+            )?)]);
+        };
+        let used = delay_loops(&plan);
+        if used <= paid {
+            let unused = hop_cycles * (paid - used);
+            if unused > 0 {
+                plan.push(DelayStep::Filler(synthesize_padding(unused, legal_isa)?));
+            }
+            return Ok(plan);
+        }
+        paid = used;
+    }
+}
+
+/// How many loops a delay plan holds.
+pub fn delay_loops(plan: &[DelayStep]) -> u32 {
+    plan.iter()
+        .filter(|step| matches!(step, DelayStep::Loop { .. }))
+        .count() as u32
 }
 
 /// A plan that spends exactly `requested_cycles` cycles doing nothing.
