@@ -1111,11 +1111,46 @@ impl<'a> Parser<'a> {
                 expression.span = start.join(end);
                 Some(expression)
             }
+            TokenKind::Punctuation(Punctuation::LeftBracket) => Some(self.array_literal()),
             _ => {
                 self.error_here("expected expression");
                 None
             }
         }
+    }
+
+    /// `[a, b, c]`, which may run over several lines and end in a comma.
+    ///
+    /// A missing comma on the same line skips to the closing `]`, so `[1 2]` is one error and
+    /// not a second one about the statement that seems to follow it.
+    fn array_literal(&mut self) -> Spanned<Expression> {
+        let start = self.advance().span;
+        let mut elements = Vec::new();
+        while !self.at_end() && !self.check_punctuation(Punctuation::RightBracket) {
+            elements.push(self.required_expression());
+            if !self.match_punctuation(Punctuation::Comma)
+                && !self.check_punctuation(Punctuation::RightBracket)
+            {
+                self.error_here("expected `,` or `]` after an array element");
+                while !self.at_end()
+                    && !self.at_statement_end()
+                    && !self.check_punctuation(Punctuation::RightBrace)
+                {
+                    if self.match_punctuation(Punctuation::RightBracket) {
+                        break;
+                    }
+                    self.advance();
+                }
+                let span = start.join(self.previous().span);
+                return Spanned::new(Expression::Array(elements), span);
+            }
+        }
+        let end = self.peek().span;
+        self.expect_punctuation(
+            Punctuation::RightBracket,
+            "expected `]` to close the array",
+        );
+        Spanned::new(Expression::Array(elements), start.join(end))
     }
 
     fn call_expression(&mut self, callee: Spanned<Expression>) -> Spanned<Expression> {
