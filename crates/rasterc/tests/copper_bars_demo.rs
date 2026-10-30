@@ -1,5 +1,6 @@
 //! The three-bar copper example end to end: `examples/copper-bars/copper-bars.raster` built and
-//! run, and each frame compared line by line with the picture its own tables describe.
+//! run, and each frame compared line by line with the bars its swing puts where, in the colours
+//! and the order they are meant to have.
 
 use std::{
     fs,
@@ -129,11 +130,10 @@ fn step_after(speed: u8, frames: u32) -> u8 {
     (u32::from(speed) * frames / 16) as u8
 }
 
-/// Whether any two bars overlap at `step`.
-fn overlapping(source: &str, step: u8) -> bool {
-    let mut tops = tops(source, step);
-    tops.sort_unstable();
-    tops.windows(2).any(|pair| pair[1] - pair[0] < 9)
+/// Whether bars `front` and `back` overlap at `step`.
+fn overlapping(source: &str, step: u8, front: usize, back: usize) -> bool {
+    let tops = tops(source, step);
+    tops[front].abs_diff(tops[back]) < 9
 }
 
 #[test]
@@ -162,15 +162,21 @@ fn every_frame_is_the_three_bars_at_the_step_its_frame_has_reached() {
         );
     }
 
-    // Where bars overlap, a line shows the one in front. The first frame they do is found
-    // from the tables, so it is checked whatever SPEED and PHASE are set to — if they overlap at
-    // all in the first thousand frames.
-    if let Some(moved) = (1..1000).find(|&moved| overlapping(&source, step_after(speed, moved))) {
-        assert_eq!(
-            lines(&rom, offset + moved),
-            expected(&source, step_after(speed, moved)),
-            "frame {}, the first where bars overlap",
-            offset + moved
-        );
+    // Where bars overlap, a line shows the one in front. The first frame each pair does is found
+    // from the tables, so the whole order is checked whatever SPEED and PHASE are set to — for each
+    // pair that overlaps at all in the first thousand frames.
+    for (front, back) in [(0, 1), (0, 2), (1, 2)] {
+        if let Some(moved) =
+            (1..1000).find(|&moved| overlapping(&source, step_after(speed, moved), front, back))
+        {
+            assert_eq!(
+                lines(&rom, offset + moved),
+                expected(&source, step_after(speed, moved)),
+                "frame {}, the first where bar {} overlaps bar {}",
+                offset + moved,
+                front + 1,
+                back + 1
+            );
+        }
     }
 }

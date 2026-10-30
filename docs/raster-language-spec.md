@@ -841,7 +841,8 @@ reads it out of this document and builds it, so it stays buildable. It keeps to 
 does not use is still ahead of the compiler, including arrays in RAM, a call inside a
 handler and `using irq` with a loop in `main`. A near-identical demo, with its picture, is
 `examples/mvp/demo.raster`; the copper bar `examples/copper/copper.raster` is set one
-scanline at a time, three such bars are in `examples/copper-bars/copper-bars.raster`, the
+scanline at a time, three bars in red, orange and yellow, passing in front of one another,
+are in `examples/copper-bars/copper-bars.raster`, the
 same bar drawn once and scrolled is in `examples/copper-scroll/copper.raster` (and the
 one-colour `examples/backdrop/backdrop.raster`).
 
