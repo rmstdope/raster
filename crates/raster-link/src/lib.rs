@@ -359,7 +359,7 @@ fn incompatible_relocation(
 /// `Label` occupies none, a `PageAlign` whatever reaches the next page; everything
 /// else is sized by its addressing mode or its own length, exactly as
 /// `measure_labels` and `emit_fixed_bank` size it.
-pub(crate) fn items_len(items: &[FixedBankItem]) -> usize {
+pub fn items_len(items: &[FixedBankItem]) -> usize {
     items.iter().fold(0, |offset, item| {
         offset
             + match item {

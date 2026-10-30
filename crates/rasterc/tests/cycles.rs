@@ -42,7 +42,17 @@ fn emitted(source: &str) -> Vec<Instruction> {
     // The same ISA policy `compile_source` builds a ROM under, so this measures what ships.
     let output = generate_with_isa(&lower(&typed).expect("the fixture lowers"), true)
         .expect("the fixture generates");
-    raster_link::instructions(&output.program.items)
+    // Instructions only, in layout order: the islands a loop is kept on are laid out after all the
+    // code, behind a page alignment.
+    output
+        .program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            raster_link::FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The instructions between the region's `SEI` and `PLP` — exactly what was analysed.
@@ -301,18 +311,10 @@ fn a_delay_spends_its_planned_cycles_across_the_branch_its_loop_takes() {
     )
     .expect("the fixture is measurable");
 
-    // `DelayStep::Loop` closes on a `JMP` so that only one branch is ever taken, and the compiler
-    // reserves exactly one cycle for that branch crossing a page. Asserting the whole range is
-    // asserting the guarantee; asserting a single number would assert a linker layout instead.
-    //
-    // Which also means the upper end is unexercised: this loop happens to sit within one page, so
-    // the reserved cycle is charged by `worst_case_cycles` and measured by nothing. Forcing the
-    // branch across a page needs alignment control the linker cannot yet express.
-    assert!(
-        (predicted..=predicted + 1).contains(&actual),
-        "delay-bracketed.raster: the compiler predicted {predicted} cycles and the delay spent \
-         {actual}, more than the one cycle a page-crossing branch is allowed"
-    );
+    // `DelayStep::Loop` closes on a `JMP` so that only one branch is ever taken, and the loop runs
+    // in an island kept on one page, so that branch never pays for crossing one: the delay spends
+    // exactly what was planned, wherever the linker puts it.
+    compare("delay-bracketed.raster", predicted, actual);
 }
 
 #[test]
@@ -417,4 +419,93 @@ fn direct_operands_spend_exactly_the_budget_their_region_was_held_to() {
         57,
         measured("direct-operands.raster", &source),
     );
+}
+
+#[test]
+fn a_delay_spends_exactly_its_planned_cycles_wherever_its_loop_lands() {
+    // `value = 1` is four bytes and `ppu.mask = 0` five, so 0 to 63 of one and 0 to 3 of the other
+    // ahead of the delay move its loop through every position on a page, among them the ones where
+    // the branch closing the loop crosses into the next. A timed frame never re-synchronizes, so
+    // one cycle more there is a cycle more every pass.
+    let planned = delay_cycles(&plan_delay(1000, true).expect("a thousand cycles are reachable"));
+    let predicted = planned + cost(&[bare(PLP), bare(PHP)]);
+    let mut wrong = Vec::new();
+    for shift in (0..64).flat_map(|fours| (0..4).map(move |fives| (fours, fives))) {
+        let source = format!(
+            "main {{\n    var value: u8 = 0\n{}{}    cycles(?) before {{\n        value = 1\n    }}\n    wait cycles(1000)\n    cycles(?) after {{\n        value = 2\n    }}\n}}\n",
+            "    value = 1\n".repeat(shift.0),
+            "    ppu.mask = 0\n".repeat(shift.1)
+        );
+        let actual = cycles_between(
+            "shifted-delay.raster",
+            &compile_source(&source).expect("the fixture compiles").image,
+            Window::new(PLP, PHP),
+        )
+        .expect("the fixture is measurable");
+        if actual != predicted {
+            wrong.push((shift, actual));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the delay was planned at {predicted} cycles and spent otherwise \
+         ((four-byte, five-byte statements), cycles): {wrong:?}"
+    );
+}
+
+/// What `wait cycles(cycles)` spends between the regions bracketing it, measured.
+fn bracketed_delay(cycles: u32) -> u32 {
+    let source = format!(
+        "main {{\n    var value: u8 = 0\n    cycles(?) before {{\n        value = 1\n    }}\n    wait cycles({cycles})\n    cycles(?) after {{\n        value = 2\n    }}\n}}\n"
+    );
+    cycles_between(
+        "bracketed-delay.raster",
+        &compile_source(&source).expect("the fixture compiles").image,
+        Window::new(PLP, PHP),
+    )
+    .expect("the fixture is measurable")
+}
+
+#[test]
+fn a_delay_too_short_to_loop_on_its_own_page_is_spent_exactly() {
+    // Seven cycles plan as a loop, and the jumps to an island and back would leave it one.
+    for cycles in [7, 8, 12, 14] {
+        compare(
+            &format!("wait cycles({cycles})"),
+            cycles + cost(&[bare(PLP), bare(PHP)]),
+            bracketed_delay(cycles),
+        );
+    }
+}
+
+#[test]
+fn a_delay_too_long_for_one_page_still_compiles() {
+    // Nine million cycles, about five seconds, are more loops than one page holds, so each loop
+    // has an island of its own. Too long to measure here, since the emulator stops at two million
+    // instructions; how exactly each island spends its loop is measured by the delays above.
+    compile_source("main {\n    wait cycles(9000000)\n}\n")
+        .map(|_| ())
+        .expect("a long delay compiles");
+
+    // A million and a half is still several loops, each in its own island, and short enough to
+    // measure: the jumps between them are paid for exactly.
+    let cycles = 1_500_000;
+    compare(
+        "wait cycles(1500000)",
+        cycles + cost(&[bare(PLP), bare(PHP)]),
+        bracketed_delay(cycles),
+    );
+}
+
+#[test]
+fn a_delay_whose_loop_count_turns_on_its_jumps_is_spent_exactly() {
+    // Paying six cycles of jumps for each of these lengths' loops leaves a length planned with one
+    // loop fewer, and the compiler once searched back and forth between the two for ever.
+    for cycles in [1812, 3613] {
+        compare(
+            &format!("wait cycles({cycles})"),
+            cycles + cost(&[bare(PLP), bare(PHP)]),
+            bracketed_delay(cycles),
+        );
+    }
 }
