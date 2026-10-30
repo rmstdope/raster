@@ -64,6 +64,12 @@ pub enum FixedBankItem {
     /// execute it, so the caller places data where control does not fall
     /// through — after a halt loop, an `RTS` or a `JMP`.
     Data(Vec<u8>),
+    /// Zero bytes up to the next 256-byte page boundary, or none when already on one.
+    ///
+    /// A `Label` straight after it addresses the first byte of a page, which is what an
+    /// indexed read needs to be sure it never pays the page-crossing cycle: a page-aligned base
+    /// plus any 8-bit index stays on its page. Like `Data`, the padding is never meant to run.
+    PageAlign,
 }
 
 impl FixedBankItem {
@@ -106,7 +112,8 @@ impl FixedBankItem {
 ///
 /// # Panics
 ///
-/// Panics if `items` holds a [`FixedBankItem::Data`] block.
+/// Panics if `items` holds a [`FixedBankItem::Data`] block or a [`FixedBankItem::PageAlign`],
+/// whose padding would be executed bytes the measurement never saw.
 pub fn instructions(items: &[FixedBankItem]) -> Vec<Instruction> {
     items
         .iter()
@@ -114,6 +121,7 @@ pub fn instructions(items: &[FixedBankItem]) -> Vec<Instruction> {
             FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
             FixedBankItem::Label(_) => None,
             FixedBankItem::Data(_) => unreachable!("a data block has no instructions"),
+            FixedBankItem::PageAlign => unreachable!("a page alignment has no instructions"),
         })
         .collect()
 }
@@ -232,6 +240,7 @@ fn measure_labels(program: &RelocatableProgram) -> Result<BTreeMap<Label, u16>, 
                 offset += instruction_bytes(instruction.mode);
             }
             FixedBankItem::Data(data) => offset += data.len(),
+            FixedBankItem::PageAlign => offset += page_padding(offset),
         }
     }
 
@@ -259,6 +268,11 @@ fn emit_fixed_bank(
             FixedBankItem::Data(data) => {
                 offset += data.len();
                 bytes.extend_from_slice(data);
+            }
+            FixedBankItem::PageAlign => {
+                let padding = page_padding(offset);
+                offset += padding;
+                bytes.resize(bytes.len() + padding, 0);
             }
             FixedBankItem::Instruction {
                 instruction,
@@ -341,19 +355,32 @@ fn incompatible_relocation(
     })
 }
 
-/// How many bytes an item list lays down. A `Label` occupies none; everything
+/// How many bytes an item list lays down from the start of the fixed bank. A
+/// `Label` occupies none, a `PageAlign` whatever reaches the next page; everything
 /// else is sized by its addressing mode or its own length, exactly as
 /// `measure_labels` and `emit_fixed_bank` size it.
 pub(crate) fn items_len(items: &[FixedBankItem]) -> usize {
-    items
-        .iter()
-        .map(|item| match item {
-            FixedBankItem::Label(_) => 0,
-            FixedBankItem::Instruction { instruction, .. } => instruction_bytes(instruction.mode),
-            FixedBankItem::Data(data) => data.len(),
-        })
-        .sum()
+    items.iter().fold(0, |offset, item| {
+        offset
+            + match item {
+                FixedBankItem::Label(_) => 0,
+                FixedBankItem::Instruction { instruction, .. } => {
+                    instruction_bytes(instruction.mode)
+                }
+                FixedBankItem::Data(data) => data.len(),
+                FixedBankItem::PageAlign => page_padding(offset),
+            }
+    })
 }
+
+/// The zero bytes that take `offset` to the next page. The fixed bank starts on a page
+/// (`$E000`), so an offset into it is on a page exactly when its address is.
+const fn page_padding(offset: usize) -> usize {
+    offset.next_multiple_of(PAGE_SIZE) - offset
+}
+
+const PAGE_SIZE: usize = 0x100;
+const _: () = assert!((MMC3_FIXED_BANK_START as usize).is_multiple_of(PAGE_SIZE));
 
 const fn instruction_bytes(mode: AddressingMode) -> usize {
     match mode {

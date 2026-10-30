@@ -24,6 +24,8 @@ pub struct SemanticError {
 pub struct TypedProgram {
     pub program: Program,
     pub constants: BTreeMap<String, u32>,
+    /// Every top-level constant array's bytes, by name.
+    pub tables: BTreeMap<String, Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +64,7 @@ struct Analyzer {
     scopes: Vec<HashMap<String, Symbol>>,
     errors: Vec<SemanticError>,
     constants: BTreeMap<String, u32>,
+    tables: BTreeMap<String, Vec<u8>>,
     return_type: ValueType,
     /// Each enclosing timed region, innermost last.
     timed_regions: Vec<TimedBlock>,
@@ -100,6 +103,7 @@ pub fn analyze(program: &Program) -> Result<TypedProgram, Vec<SemanticError>> {
         Ok(TypedProgram {
             program: program.clone(),
             constants: analyzer.constants,
+            tables: analyzer.tables,
         })
     } else {
         Err(analyzer.errors)
@@ -133,6 +137,7 @@ impl Analyzer {
             scopes: vec![root],
             errors: Vec::new(),
             constants: BTreeMap::new(),
+            tables: BTreeMap::new(),
             return_type: ValueType::Void,
             timed_regions: Vec::new(),
             synchronized: false,
@@ -513,7 +518,7 @@ impl Analyzer {
 
     fn check_item(&mut self, item: &Item) {
         match item {
-            Item::Declaration(declaration) => self.check_declaration(declaration),
+            Item::Declaration(declaration) => self.check_declaration(declaration, true),
             Item::Function(function) => self.check_function(function),
             Item::Frame(frame) => {
                 self.enter_scope();
@@ -686,7 +691,7 @@ impl Analyzer {
         match statement {
             Statement::Declaration(declaration) => {
                 self.declare_declaration(declaration);
-                self.check_declaration(declaration);
+                self.check_declaration(declaration, false);
             }
             Statement::Block(block) => self.check_block(block),
             Statement::Loop(block) => {
@@ -876,11 +881,15 @@ impl Analyzer {
         }
     }
 
-    fn check_declaration(&mut self, declaration: &Declaration) {
+    fn check_declaration(&mut self, declaration: &Declaration, top_level: bool) {
         if declaration.kind == Keyword::Group {
             if let Some(body) = &declaration.body {
                 self.check_block(body);
             }
+            return;
+        }
+        if top_level && declaration.kind == Keyword::Const && is_constant_array(declaration) {
+            self.check_constant_array(declaration);
             return;
         }
         let declared_type = declaration
@@ -918,12 +927,102 @@ impl Analyzer {
                 {
                     symbol.kind = SymbolKind::Constant(Some(value));
                 }
-            } else {
+            } else if !matches!(initializer.value, Expression::Array(_)) {
+                // An array literal here has already been refused as one.
                 self.error(
                     initializer.span,
                     "constant initializer must be a compile-time constant",
                 );
             }
+        }
+    }
+
+    /// A top-level `const NAME: [N]u8 = [...]`: every element a byte known at compile time, and as
+    /// many of them as the type says. An 8-bit index reaches 256 elements, so that is the most a
+    /// table may hold.
+    fn check_constant_array(&mut self, declaration: &Declaration) {
+        let Some(name) = &declaration.name else {
+            return;
+        };
+        let Some(annotation) = &declaration.type_annotation else {
+            self.error(
+                name.span,
+                format!(
+                    "a constant array needs its type written, as in `const {}: [{}]u8 = [...]`",
+                    name.value,
+                    array_literal_length(declaration).unwrap_or(1)
+                ),
+            );
+            return;
+        };
+        let declared_type = self.resolve_type(annotation);
+        let ValueType::Array(element, length) = declared_type else {
+            if let Some(initializer) = &declaration.initializer {
+                self.error(
+                    initializer.span,
+                    "a constant array needs an array type, as in `[N]u8`",
+                );
+            }
+            return;
+        };
+        if *element != ValueType::U8 {
+            self.error(
+                annotation.span,
+                format!("a constant array holds `u8` elements; declare it `[{length}]u8`"),
+            );
+            return;
+        }
+        if length > MAX_TABLE_LENGTH {
+            if let Type::Array { length, .. } = &annotation.value {
+                self.error(
+                    length.span,
+                    "a constant array holds at most 256 elements, as many as a u8 index reaches",
+                );
+            }
+            return;
+        }
+        let Some(initializer) = &declaration.initializer else {
+            self.error(name.span, "constant declarations require an initializer");
+            return;
+        };
+        let Expression::Array(elements) = &initializer.value else {
+            self.error(
+                initializer.span,
+                "a constant array is initialized with an array literal, `[...]`",
+            );
+            return;
+        };
+        let mut bytes = Vec::with_capacity(elements.len());
+        for element in elements {
+            let element_type = self.expression_type(element);
+            self.require_integer(
+                element.span,
+                &element_type,
+                "array element must be an integer",
+            );
+            match self.evaluate_constant(element) {
+                None => self.error(
+                    element.span,
+                    "array element must be a compile-time constant",
+                ),
+                Some(value) => match u8::try_from(value) {
+                    Ok(byte) => bytes.push(byte),
+                    Err(_) => self.error(element.span, "array element overflows u8"),
+                },
+            }
+        }
+        if elements.len() as u32 != length {
+            self.error(
+                initializer.span,
+                format!(
+                    "the array literal has {} elements and `[{length}]u8` needs {length}",
+                    elements.len()
+                ),
+            );
+            return;
+        }
+        if bytes.len() == elements.len() {
+            self.tables.insert(name.value.clone(), bytes);
         }
     }
 
@@ -971,6 +1070,16 @@ impl Analyzer {
     fn expression_type(&mut self, expression: &Spanned<Expression>) -> ValueType {
         match &expression.value {
             Expression::Name(name) => match self.lookup(&name.value) {
+                Some(symbol) if is_constant_array_symbol(symbol) => {
+                    self.error(
+                        name.span,
+                        format!(
+                            "`{0}` is a constant array; read one element with `{0}[i]`",
+                            name.value
+                        ),
+                    );
+                    ValueType::Unknown
+                }
                 Some(symbol) => symbol.value_type.clone(),
                 None => {
                     self.error(name.span, format!("unknown name `{}`", name.value));
@@ -1018,9 +1127,33 @@ impl Analyzer {
             } => self.infix_type(left, operator, right),
             Expression::Call { callee, arguments } => self.call_type(callee, arguments),
             Expression::Index { base, index } => {
-                let base_type = self.expression_type(base);
+                // A constant array is a table to index, so naming it here is not the bare use
+                // `expression_type` refuses.
+                let table = match &base.value {
+                    Expression::Name(name) => self
+                        .lookup(&name.value)
+                        .filter(|symbol| is_constant_array_symbol(symbol))
+                        .map(|symbol| (name.value.clone(), symbol.value_type.clone())),
+                    _ => None,
+                };
+                let base_type = match &table {
+                    Some((_, value_type)) => value_type.clone(),
+                    None => self.expression_type(base),
+                };
                 let index_type = self.expression_type(index);
                 self.require_integer(index.span, &index_type, "array index must be an integer");
+                if let (Some((name, ValueType::Array(_, length))), Some(position)) =
+                    (&table, self.evaluate_constant(index))
+                    && position >= *length
+                {
+                    self.error(
+                        index.span,
+                        format!(
+                            "index {position} is past the end of `{name}`, which holds {length} \
+                             elements"
+                        ),
+                    );
+                }
                 match base_type {
                     ValueType::Array(element, _) => *element,
                     ValueType::Unknown => ValueType::Unknown,
@@ -1064,6 +1197,13 @@ impl Analyzer {
                 // type that holds once that refusal is lifted, and so
                 // retires that second message, belongs to the bead that
                 // gives them a consumer.
+                ValueType::Unknown
+            }
+            Expression::Array(_) => {
+                self.error(
+                    expression.span,
+                    "an array literal is only supported as a top-level `const` initializer",
+                );
                 ValueType::Unknown
             }
             Expression::Range { start, end } => {
@@ -1125,6 +1265,15 @@ impl Analyzer {
                 | Operator::StarEqual
                 | Operator::SlashEqual
         ) {
+            if let Expression::Name(name) = &left.value
+                && self
+                    .lookup(&name.value)
+                    .is_some_and(is_constant_array_symbol)
+            {
+                self.expression_type(right);
+                self.error(name.span, "constants are not assignable");
+                return ValueType::Unknown;
+            }
             let left_type = self.expression_type(left);
             let right_type = self.expression_type(right);
             self.ensure_assignable(left);
@@ -1440,7 +1589,16 @@ impl Analyzer {
                     _ => self.error(name.span, "assignment target is not mutable"),
                 }
             }
-            Expression::Index { .. } => {}
+            Expression::Index { base, .. } => {
+                if let Expression::Name(name) = &base.value
+                    && matches!(
+                        self.lookup(&name.value).map(|symbol| &symbol.kind),
+                        Some(SymbolKind::Constant(_))
+                    )
+                {
+                    self.error(name.span, "constants are not assignable");
+                }
+            }
             // A member expression has already been judged: `expression_type` is
             // called on an assignment's left side before this, and it either
             // returned a register or raised its one error. Re-evaluating the base
@@ -1614,6 +1772,35 @@ impl Analyzer {
         if maximum.is_some_and(|maximum| value > maximum) {
             self.error(span, "constant value overflows its declared type");
         }
+    }
+}
+
+/// The most elements a constant array holds: as many as an 8-bit index reaches.
+const MAX_TABLE_LENGTH: u32 = 256;
+
+/// Whether a symbol names a constant array, which is only ever read one element at a time.
+fn is_constant_array_symbol(symbol: &Symbol) -> bool {
+    matches!(symbol.kind, SymbolKind::Constant(_))
+        && matches!(symbol.value_type, ValueType::Array(_, _))
+}
+
+/// Whether a declaration is a constant array: one typed as an array, or initialized with an array
+/// literal.
+fn is_constant_array(declaration: &Declaration) -> bool {
+    matches!(
+        declaration
+            .type_annotation
+            .as_ref()
+            .map(|annotation| &annotation.value),
+        Some(Type::Array { .. })
+    ) || array_literal_length(declaration).is_some()
+}
+
+/// How many elements a declaration's array literal initializer holds, if it has one.
+fn array_literal_length(declaration: &Declaration) -> Option<usize> {
+    match &declaration.initializer.as_ref()?.value {
+        Expression::Array(elements) => Some(elements.len()),
+        _ => None,
     }
 }
 

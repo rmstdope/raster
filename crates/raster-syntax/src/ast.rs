@@ -171,6 +171,8 @@ pub enum Expression {
         start: Box<Spanned<Expression>>,
         end: Box<Spanned<Expression>>,
     },
+    /// `[a, b, c]`: the elements of an array, in order.
+    Array(Vec<Spanned<Expression>>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

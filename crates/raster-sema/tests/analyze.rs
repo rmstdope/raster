@@ -1577,3 +1577,120 @@ fn music_asset_field_set_twice_and_no_fields() {
     let found = errors_with_spans("asset music s = fam(\"m\")\nmain { }");
     assert_eq!(found.len(), 2, "{found:?}");
 }
+
+#[test]
+fn a_constant_array_keeps_its_bytes_for_lowering() {
+    let program = parse(
+        "const BASE: u8 = $10\nconst FADE: [4]u8 = [$01, BASE + 1, $21, 255]\nmain { ppu.mask = FADE[2] }",
+    )
+    .expect("fixture should parse");
+    let typed = analyze(&program).expect("a constant array analyzes");
+    assert_eq!(typed.tables["FADE"], [0x01, 0x11, 0x21, 0xff]);
+}
+
+#[test]
+fn a_constant_array_may_hold_256_elements_and_no_more() {
+    let elements = vec!["0"; 256].join(", ");
+    let program = parse(&format!("const T: [256]u8 = [{elements}]\nmain {{ }}")).unwrap();
+    assert_eq!(
+        analyze(&program).expect("256 elements").tables["T"].len(),
+        256
+    );
+
+    let elements = vec!["0"; 257].join(", ");
+    let diagnostics = errors(&format!("const T: [257]u8 = [{elements}]\nmain {{ }}"));
+    assert_eq!(
+        diagnostics,
+        ["a constant array holds at most 256 elements, as many as a u8 index reaches"]
+    );
+}
+
+#[test]
+fn a_constant_array_literal_must_match_its_declared_length() {
+    assert_eq!(
+        errors("const T: [3]u8 = [1, 2]"),
+        ["the array literal has 2 elements and `[3]u8` needs 3"]
+    );
+}
+
+#[test]
+fn a_constant_array_element_must_be_a_u8_constant() {
+    assert_eq!(
+        errors("var v: u8\nconst T: [2]u8 = [v, 256]"),
+        [
+            "array element must be a compile-time constant",
+            "array element overflows u8",
+        ]
+    );
+}
+
+#[test]
+fn a_constant_array_holds_u8_elements_only() {
+    assert_eq!(
+        errors("const T: [2]u16 = [1, 2]"),
+        ["a constant array holds `u8` elements; declare it `[2]u8`"]
+    );
+}
+
+#[test]
+fn a_constant_array_needs_an_array_type_and_an_array_literal() {
+    assert_eq!(
+        errors("const T = [1, 2]"),
+        ["a constant array needs its type written, as in `const T: [2]u8 = [...]`"]
+    );
+    assert_eq!(
+        errors("const T: [2]u8 = 3"),
+        ["a constant array is initialized with an array literal, `[...]`"]
+    );
+}
+
+#[test]
+fn an_array_literal_is_only_a_constant_s_initializer() {
+    assert_eq!(
+        errors("main { ppu.mask = [1, 2] }"),
+        ["an array literal is only supported as a top-level `const` initializer"]
+    );
+    assert_eq!(
+        errors("main {\n    const T: [2]u8 = [1, 2]\n}"),
+        ["an array literal is only supported as a top-level `const` initializer"]
+    );
+}
+
+#[test]
+fn a_constant_array_element_cannot_be_assigned() {
+    assert_eq!(
+        errors("const T: [2]u8 = [1, 2]\nmain { T[0] = 3 }"),
+        ["constants are not assignable"]
+    );
+}
+
+#[test]
+fn a_constant_array_named_without_an_index_says_how_to_read_it() {
+    let message = "`T` is a constant array; read one element with `T[i]`";
+    for source in [
+        "const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T }",
+        "const T: [2]u8 = [1, 2]\nmain { ppu.data = T }",
+        "const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T + 1 }",
+        "const T: [2]u8 = [1, 2]\nfn f(x: u8) {}\nmain { f(T) }",
+    ] {
+        assert_eq!(errors(source), [message], "{source}");
+    }
+}
+
+#[test]
+fn assigning_a_whole_constant_array_is_one_error() {
+    assert_eq!(
+        errors("const T: [2]u8 = [1, 2]\nmain { T = 1 }"),
+        ["constants are not assignable"]
+    );
+}
+
+#[test]
+fn a_constant_index_past_the_end_of_a_constant_array_is_refused() {
+    assert_eq!(
+        errors("const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T[2] }"),
+        ["index 2 is past the end of `T`, which holds 2 elements"]
+    );
+    let program = parse("const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T[1] }").unwrap();
+    assert!(analyze(&program).is_ok(), "the last element is in range");
+}

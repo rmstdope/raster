@@ -435,3 +435,65 @@ fn instructions_flattens_instructions_and_skips_labels() {
 fn instructions_refuses_a_data_block() {
     raster_link::instructions(&[FixedBankItem::Data(vec![0x01])]);
 }
+
+#[test]
+fn a_page_alignment_pads_to_the_next_page_and_moves_the_label_after_it() {
+    let table = Label(1);
+    let program = RelocatableProgram {
+        items: vec![
+            FixedBankItem::Data(vec![0x11, 0x22, 0x33]),
+            FixedBankItem::PageAlign,
+            FixedBankItem::Label(table),
+            FixedBankItem::Data(vec![0xaa]),
+        ],
+    };
+
+    let (bytes, labels) = link_fixed_bank(&program, true).expect("the program links");
+
+    assert_eq!(labels[&table], 0xe100);
+    assert_eq!(bytes.len(), 0x101);
+    assert_eq!(&bytes[..3], [0x11, 0x22, 0x33]);
+    assert!(bytes[3..0x100].iter().all(|&byte| byte == 0));
+    assert_eq!(bytes[0x100], 0xaa);
+}
+
+#[test]
+fn a_page_alignment_already_on_a_page_adds_nothing() {
+    let table = Label(1);
+    let program = RelocatableProgram {
+        items: vec![
+            FixedBankItem::PageAlign,
+            FixedBankItem::Label(table),
+            FixedBankItem::Data(vec![0xaa]),
+        ],
+    };
+
+    let (bytes, labels) = link_fixed_bank(&program, true).expect("the program links");
+
+    assert_eq!(labels[&table], 0xe000);
+    assert_eq!(bytes, [0xaa]);
+}
+
+#[test]
+fn page_alignment_padding_counts_against_the_fixed_bank_budget() {
+    let program = RelocatableProgram {
+        items: vec![
+            FixedBankItem::Data(vec![0x00; MMC3_FIXED_BANK_CODE_SIZE - 1]),
+            FixedBankItem::PageAlign,
+        ],
+    };
+
+    assert_eq!(
+        link_fixed_bank(&program, true),
+        Err(LinkError::FixedBankTooLarge {
+            actual: MMC3_FIXED_BANK_CODE_SIZE.next_multiple_of(0x100),
+            maximum: MMC3_FIXED_BANK_CODE_SIZE,
+        })
+    );
+}
+
+#[test]
+#[should_panic(expected = "page alignment")]
+fn instructions_refuses_a_page_alignment() {
+    raster_link::instructions(&[FixedBankItem::PageAlign]);
+}

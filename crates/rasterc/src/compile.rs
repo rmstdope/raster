@@ -18,9 +18,9 @@ use raster_timing::TimingError;
 /// What this release of the compiler can build, listed once per run beside the
 /// first construct it had to refuse for not being in it.
 const SUPPORTED_SUBSET: &str = "this release compiles `main`, `fn`, `if`, `while`, `for`, u8\n\
-                                arithmetic, and `ppu.*` / `mmc3.*` / `apu.*` register writes; timed\n\
-                                blocks with `cycles`, `pad`, `sync exact` and `wait cycles`; and\n\
-                                one `frame` of `every ... scanlines` events";
+                                arithmetic, `const` arrays of u8, and `ppu.*` / `mmc3.*` / `apu.*`\n\
+                                register writes; timed blocks with `cycles`, `pad`, `sync exact` and\n\
+                                `wait cycles`; and one `frame` of `every ... scanlines` events";
 
 /// What this release reads for assets, listed once per run beside the first asset
 /// construct it had to refuse. The general note says nothing about assets.

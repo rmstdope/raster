@@ -34,6 +34,7 @@ fn region(constraint: CycleConstraint, instructions: Vec<Instruction>) -> TimedR
         pad: false,
         interruptible: false,
         instructions,
+        page_aligned_reads: Vec::new(),
     }
 }
 
@@ -158,6 +159,7 @@ fn padded(constraint: CycleConstraint, instructions: Vec<Instruction>) -> TimedR
         pad: true,
         interruptible: false,
         instructions,
+        page_aligned_reads: Vec::new(),
     }
 }
 
@@ -796,4 +798,37 @@ fn paths_meeting_join_their_nmi_facts() {
     assert_eq!(Unproven.join(Clear), Unproven);
     assert_eq!(Clear.join(Unproven), Unproven);
     assert_eq!(Conditional.join(Unproven), Unproven);
+}
+
+#[test]
+fn an_indexed_read_from_a_page_aligned_base_costs_exactly_its_base_cycles() {
+    // `LDA $E100,X`: a page-aligned base plus an 8-bit index never leaves its page, so the read
+    // costs four cycles whatever X holds, and a region that says so can be held to exactly that.
+    let indexed = Instruction {
+        opcode: 0xbd,
+        mode: AddressingMode::AbsoluteX,
+        operand: Some(0xe100),
+    };
+    let mut aligned = region(CycleConstraint::Exact(6), vec![load_immediate(), indexed]);
+    aligned.page_aligned_reads = vec![1];
+
+    assert_eq!(
+        analyze(&aligned, true),
+        Ok(raster_timing::TimingReport {
+            label: None,
+            measured_cycles: 6,
+            padding: Vec::new(),
+        })
+    );
+
+    // Unlisted, the same read is charged its worst case.
+    aligned.page_aligned_reads.clear();
+    assert_eq!(
+        analyze(&aligned, true),
+        Err(TimingError::OverBudget {
+            measured_cycles: 7,
+            budget: 6,
+            oam_dma_cycles: 0,
+        })
+    );
 }

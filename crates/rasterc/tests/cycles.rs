@@ -395,3 +395,15 @@ fn an_unsynchronized_ppu_write_is_refused_outside_a_frame() {
         diagnostics[0].message
     );
 }
+
+#[test]
+fn a_table_read_spends_exactly_the_budget_its_region_was_held_to() {
+    // Not `assert_prediction_is_spent`: `cost` charges every indexed read a page crossing, and
+    // this one is proven not to make one. The budget is what the compiler accepted the region at.
+    let source = fixture("table-read.raster");
+    compare(
+        "table-read.raster",
+        21,
+        measured("table-read.raster", &source),
+    );
+}

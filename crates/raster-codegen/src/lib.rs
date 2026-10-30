@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use raster_6502::{
     AddressingMode::{Absolute, AbsoluteX, Immediate, Implied, Indirect, Relative, ZeroPage},
@@ -114,6 +114,7 @@ const BPL: u8 = 0x10;
 const PPU_STATUS: u16 = 0x2002;
 const LDX_IMMEDIATE: u8 = 0xa2;
 const LDA_ABSOLUTE_X: u8 = 0xbd;
+const TAX: u8 = 0xaa;
 const INX: u8 = 0xe8;
 const CPX_IMMEDIATE: u8 = 0xe0;
 const BNE: u8 = 0xd0;
@@ -190,6 +191,7 @@ pub fn generate_with_isa(
         frame_rows: Vec::new(),
         frame_overruns: Vec::new(),
         data_pieces: BTreeMap::new(),
+        page_aligned: BTreeSet::new(),
     };
     generator.split_data(program);
 
@@ -255,6 +257,8 @@ struct Generator<'a> {
     /// Each ROM data block's pieces: a copy loop moves at most 255 bytes, because `CPX #n` takes
     /// a one-byte operand, so a block is stored as consecutive pieces with a label each.
     data_pieces: BTreeMap<IrLabel, Vec<(IrLabel, usize)>>,
+    /// The constant arrays, each laid out from the start of a page.
+    page_aligned: BTreeSet<Label>,
     zero_page: &'a BTreeMap<Place, u8>,
     function_parameters: BTreeMap<IrLabel, Vec<Place>>,
     next_internal_label: u32,
@@ -671,6 +675,7 @@ impl Generator<'_> {
         self.statements(body, halt_label)?;
 
         let mut instructions: Vec<_> = raster_link::instructions(&self.output.items[start..]);
+        let page_aligned_reads = self.page_aligned_reads(start);
         // The `PLP` closing the region is measured before it is emitted, so the padding that makes
         // the budget can be placed ahead of it.
         let restore = implied(PLP);
@@ -684,6 +689,7 @@ impl Generator<'_> {
                 pad,
                 interruptible,
                 instructions,
+                page_aligned_reads,
             },
             self.legal_isa,
         )
@@ -698,6 +704,29 @@ impl Generator<'_> {
             self.reports.push((label, report.measured_cycles));
         }
         Ok(report.measured_cycles)
+    }
+
+    /// The indexed reads emitted since item `start` whose base is a constant array, counted as
+    /// instructions from there: a page-aligned table read with an 8-bit index never crosses a page.
+    fn page_aligned_reads(&self, start: usize) -> Vec<usize> {
+        self.output.items[start..]
+            .iter()
+            .filter_map(|item| match item {
+                FixedBankItem::Instruction {
+                    instruction,
+                    relocation,
+                } => Some((instruction, relocation)),
+                _ => None,
+            })
+            .enumerate()
+            .filter(|(_, (instruction, relocation))| {
+                instruction.mode == AbsoluteX
+                    && relocation
+                        .as_ref()
+                        .is_some_and(|relocation| self.page_aligned.contains(&relocation.target))
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 
     /// Emit one piece of a planned delay.
@@ -799,6 +828,11 @@ impl Generator<'_> {
                 arguments,
                 argument_temporaries,
             } => self.call(*target, arguments, argument_temporaries)?,
+            Value::Element { table, index } => {
+                self.value(index)?;
+                self.emit(TAX, Implied, None);
+                self.relocated(LDA_ABSOLUTE_X, AbsoluteX, RelocationKind::Absolute, *table);
+            }
         }
         Ok(())
     }
@@ -1015,6 +1049,10 @@ impl Generator<'_> {
     /// Give every data block's pieces labels, before any code asks for them.
     fn split_data(&mut self, program: &Program) {
         for block in &program.data {
+            if block.page_aligned {
+                self.page_aligned.insert(link_label(block.label));
+                continue;
+            }
             let pieces = block
                 .bytes
                 .chunks(MAX_COPY_PIECE)
@@ -1026,8 +1064,18 @@ impl Generator<'_> {
 
     /// The data blocks, after everything that can execute: the 6502 would run them as code if
     /// control reached them, and nothing past `main`'s halt loop does.
+    ///
+    /// A constant array is one block from the start of a page, addressed by its own label.
     fn emit_data(&mut self, program: &Program) {
         for block in &program.data {
+            if block.page_aligned {
+                self.output.items.push(FixedBankItem::PageAlign);
+                self.emit_label(block.label);
+                self.output
+                    .items
+                    .push(FixedBankItem::Data(block.bytes.clone()));
+                continue;
+            }
             let mut offset = 0;
             for (label, length) in self.data_pieces[&block.label].clone() {
                 self.emit_label(label);

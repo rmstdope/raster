@@ -323,6 +323,11 @@ pub enum Value {
         arguments: Vec<Value>,
         argument_temporaries: Vec<Place>,
     },
+    /// `TABLE[index]`: one byte of a constant array, which is a page-aligned [`DataBlock`].
+    Element {
+        table: Label,
+        index: Box<Value>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -427,6 +432,10 @@ pub struct PpuBlock {
 pub struct DataBlock {
     pub label: Label,
     pub bytes: Vec<u8>,
+    /// Whether the block must start on a 256-byte page. A constant array does, so that reading it
+    /// with an 8-bit index never pays the page-crossing cycle and a timed region can be held to
+    /// its exact cost.
+    pub page_aligned: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1055,6 +1064,7 @@ fn ppu_data_reads_in(expression: &Spanned<SyntaxExpression>) -> usize {
             ppu_data_reads_in(base) + ppu_data_reads_in(index)
         }
         SyntaxExpression::Range { start, end } => ppu_data_reads_in(start) + ppu_data_reads_in(end),
+        SyntaxExpression::Array(elements) => elements.iter().map(ppu_data_reads_in).sum(),
         SyntaxExpression::Name(_)
         | SyntaxExpression::Number(_)
         | SyntaxExpression::String(_)
@@ -1362,6 +1372,7 @@ fn ppu_status_read_in(expression: &Spanned<SyntaxExpression>) -> Option<Span> {
         SyntaxExpression::Range { start, end } => {
             ppu_status_read_in(start).or_else(|| ppu_status_read_in(end))
         }
+        SyntaxExpression::Array(elements) => elements.iter().find_map(ppu_status_read_in),
         SyntaxExpression::Name(_)
         | SyntaxExpression::Number(_)
         | SyntaxExpression::String(_)
@@ -1407,6 +1418,7 @@ fn contains_call(expression: &Spanned<SyntaxExpression>) -> bool {
         SyntaxExpression::Infix { left, right, .. } => contains_call(left) || contains_call(right),
         SyntaxExpression::Index { base, index } => contains_call(base) || contains_call(index),
         SyntaxExpression::Range { start, end } => contains_call(start) || contains_call(end),
+        SyntaxExpression::Array(elements) => elements.iter().any(contains_call),
         SyntaxExpression::Name(_)
         | SyntaxExpression::Number(_)
         | SyntaxExpression::String(_)
@@ -1706,8 +1718,9 @@ pub fn lower_with_pictures(
     lowerer.pictures = pictures.clone();
     lowerer.predeclare_labels(&typed.program);
     lowerer.predeclare_globals(&typed.program);
+    lowerer.predeclare_tables(&typed.tables);
     lowerer.reject_recursive_calls(&typed.program);
-    lowerer.bank_effects = bank_effects(&typed.program);
+    lowerer.bank_effects = bank_effects(&typed.program, &typed.tables);
     lowerer.lower_program(&typed.program);
     lowerer.check_mmc3_irq_frame();
     lowerer.check_timed_frame_nmi();
@@ -1729,6 +1742,8 @@ pub fn lower_with_pictures(
 enum Binding {
     Place(Place),
     Constant(u8),
+    /// A constant array, and the data block that holds it.
+    Table(Label),
 }
 
 #[derive(Clone, Copy)]
@@ -1934,6 +1949,20 @@ impl Lowerer {
             let place = self.allocate_place(PlaceKind::Global, name.span, explicit_zero_page);
             self.global_places.insert(name.span.start, place);
             self.scopes[0].insert(name.value.clone(), Binding::Place(place));
+        }
+    }
+
+    /// Store every constant array once, page-aligned, and bind its name to it before any code is
+    /// lowered, so a read may come before the declaration in the source.
+    fn predeclare_tables(&mut self, tables: &BTreeMap<String, Vec<u8>>) {
+        for (name, bytes) in tables {
+            let label = self.fresh_label();
+            self.program.data.push(DataBlock {
+                label,
+                bytes: bytes.clone(),
+                page_aligned: true,
+            });
+            self.scopes[0].insert(name.clone(), Binding::Table(label));
         }
     }
 
@@ -2434,6 +2463,9 @@ impl Lowerer {
                 let Some(name) = &declaration.name else {
                     return;
                 };
+                if matches!(self.scopes[0].get(&name.value), Some(Binding::Table(_))) {
+                    return;
+                }
                 if !self.declaration_is_u8(declaration) {
                     return;
                 }
@@ -3463,6 +3495,10 @@ impl Lowerer {
                     span: name.span,
                     label: format!("`{}` is a variable", name.value),
                 }),
+                Some(Binding::Table(_)) => Err(AddressFault::NotConstant {
+                    span: name.span,
+                    label: format!("`{}` is a constant array", name.value),
+                }),
                 None => Err(not_constant()),
             },
             SyntaxExpression::Prefix { operator, operand } if operator.value == Operator::Tilde => {
@@ -3668,7 +3704,11 @@ impl Lowerer {
             None => {
                 let label = self.fresh_label();
                 self.data_labels.insert((asset.to_owned(), member), label);
-                self.program.data.push(DataBlock { label, bytes });
+                self.program.data.push(DataBlock {
+                    label,
+                    bytes,
+                    page_aligned: false,
+                });
                 label
             }
         };
@@ -3683,7 +3723,7 @@ impl Lowerer {
         match &expression.value {
             SyntaxExpression::Name(name) => match self.lookup(&name.value) {
                 Some(Binding::Place(place)) => Some(Destination::Place(place)),
-                Some(Binding::Constant(_)) => {
+                Some(Binding::Constant(_) | Binding::Table(_)) => {
                     self.error(name.span, "constants cannot be assigned");
                     None
                 }
@@ -3760,6 +3800,17 @@ impl Lowerer {
             SyntaxExpression::Name(name) => match self.lookup(&name.value) {
                 Some(Binding::Place(place)) => Value::Place(place),
                 Some(Binding::Constant(value)) => Value::Constant(value),
+                // `raster-sema` refuses a bare table name first; this is the backstop.
+                Some(Binding::Table(_)) => {
+                    self.error(
+                        name.span,
+                        format!(
+                            "`{0}` is a constant array; read one element with `{0}[i]`",
+                            name.value
+                        ),
+                    );
+                    Value::Constant(0)
+                }
                 None if name.value == VRAM_ADDR => {
                     self.refuse_register_read(
                         VRAM_ADDR,
@@ -3860,9 +3911,22 @@ impl Lowerer {
                 }
             }
             SyntaxExpression::Index { base, index } => {
+                if let Some(table) = self.table(base) {
+                    return Value::Element {
+                        table,
+                        index: Box::new(self.lower_value(index)),
+                    };
+                }
                 self.not_in_this_release(expression.span, "arrays are not supported yet");
                 let _ = self.lower_value(base);
                 let _ = self.lower_value(index);
+                Value::Constant(0)
+            }
+            SyntaxExpression::Array(_) => {
+                self.error(
+                    expression.span,
+                    "an array literal is only supported as a top-level `const` initializer",
+                );
                 Value::Constant(0)
             }
             SyntaxExpression::Member { .. } => match self.register(expression) {
@@ -3882,6 +3946,17 @@ impl Lowerer {
                 let _ = self.lower_value(end);
                 Value::Constant(0)
             }
+        }
+    }
+
+    /// The data block a constant array's name stands for, when `base` is one.
+    fn table(&self, base: &Spanned<SyntaxExpression>) -> Option<Label> {
+        match &base.value {
+            SyntaxExpression::Name(name) => match self.lookup(&name.value) {
+                Some(Binding::Table(label)) => Some(label),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -4306,10 +4381,14 @@ enum VisitState {
 /// bodies - over a scratch `Lowerer` whose output is thrown away, callees
 /// first, so each body is judged with its callees' effects already known. A
 /// call cycle is already an error; its members stay `Unsure` here.
-fn bank_effects(syntax: &SyntaxProgram) -> BTreeMap<String, BankEffect> {
+fn bank_effects(
+    syntax: &SyntaxProgram,
+    tables: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, BankEffect> {
     let mut scratch = Lowerer::new();
     scratch.predeclare_labels(syntax);
     scratch.predeclare_globals(syntax);
+    scratch.predeclare_tables(tables);
     for item in &syntax.items {
         if let Item::Declaration(declaration) = &item.value {
             scratch.lower_top_level_declaration(declaration);
@@ -4559,6 +4638,11 @@ fn collect_calls_in_expression(
             }
         }
         SyntaxExpression::Member { base, .. } => collect_calls_in_expression(base, calls),
+        SyntaxExpression::Array(elements) => {
+            for element in elements {
+                collect_calls_in_expression(element, calls);
+            }
+        }
         SyntaxExpression::Name(_)
         | SyntaxExpression::Number(_)
         | SyntaxExpression::String(_)
@@ -4823,6 +4907,9 @@ fn collect_value_stores(
             }
             enter_function(*target, functions, visiting, configuration, conditional);
         }
+        Value::Element { index, .. } => {
+            collect_value_stores(index, functions, visiting, configuration, conditional)
+        }
     }
 }
 
@@ -4995,6 +5082,7 @@ impl NmiWalk<'_> {
                 }
                 self.call(*target, state);
             }
+            Value::Element { index, .. } => self.value(index, state),
         }
     }
 

@@ -260,6 +260,54 @@ main {
         );
     }
 
+    fn const_initializer(source: &str) -> Spanned<Expression> {
+        let program = parse(source).expect(source);
+        let Item::Declaration(declaration) = &program.items[0].value else {
+            panic!("{source}: not a declaration");
+        };
+        declaration.initializer.clone().expect("an initializer")
+    }
+
+    #[test]
+    fn parses_an_array_literal_across_lines_with_a_trailing_comma() {
+        let source = "const FADE: [3]u8 = [\n    $01, $11,\n    $21,\n]\nmain { }";
+        let initializer = const_initializer(source);
+        let Expression::Array(elements) = &initializer.value else {
+            panic!("not an array literal: {initializer:?}");
+        };
+        let spelled: Vec<_> = elements.iter().map(|e| slice(source, e.span)).collect();
+        assert_eq!(spelled, ["$01", "$11", "$21"]);
+        assert!(slice(source, initializer.span).starts_with('['));
+        assert!(slice(source, initializer.span).ends_with(']'));
+    }
+
+    #[test]
+    fn an_array_literal_holds_expressions() {
+        let initializer = const_initializer("const A: [2]u8 = [B + 1, $10 | 2]");
+        let Expression::Array(elements) = &initializer.value else {
+            panic!("not an array literal");
+        };
+        assert!(
+            elements
+                .iter()
+                .all(|element| matches!(element.value, Expression::Infix { .. }))
+        );
+    }
+
+    #[test]
+    fn an_empty_array_literal_parses() {
+        let initializer = const_initializer("const A: [1]u8 = []");
+        assert_eq!(initializer.value, Expression::Array(Vec::new()));
+    }
+
+    #[test]
+    fn an_unclosed_array_literal_is_one_error() {
+        let errors = parse("const A: [2]u8 = [1, 2\nmain { }").expect_err("unclosed");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let errors = parse("const A: [2]u8 = [1 2]").expect_err("no comma");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
     #[test]
     fn a_chrrom_bank_may_end_in_a_comma_or_be_empty() {
         assert_eq!(chrrom("chrrom bank 0 { a.tiles, }").entries.len(), 1);

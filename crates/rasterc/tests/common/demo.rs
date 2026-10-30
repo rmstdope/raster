@@ -22,3 +22,9 @@ pub fn mvp_demo_path() -> PathBuf {
 pub fn backdrop_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/backdrop/backdrop.raster")
 }
+
+/// The copper bar example, built from its path so that the PNG beside it is found.
+#[allow(dead_code)]
+pub fn copper_demo_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/copper/copper.raster")
+}

@@ -260,6 +260,7 @@ fn timed_region_emits_analyzed_bytes_without_post_analysis_changes() {
                 pad: true,
                 interruptible: false,
                 instructions: measured,
+                page_aligned_reads: Vec::new(),
             },
             true,
         )
@@ -481,6 +482,7 @@ fn program_whose_timed_block_contains(statement: Statement) -> Program {
         data: vec![raster_ir::DataBlock {
             label: DATA,
             bytes: vec![0; 16],
+            page_aligned: false,
         }],
         main: Some(Main {
             label: MAIN,
@@ -1067,4 +1069,67 @@ fn loading_twice_stores_the_data_once_but_copies_it_twice() {
     let (bank, _) = linked_loads("load_palette(picture.palette)\nload_palette(picture.palette)");
     assert_eq!(find(&bank, &[0xa1; 16]).len(), 1);
     assert_eq!(find(&bank, &[0xa2, 0x00, 0xbd]).len(), 2);
+}
+
+#[test]
+fn an_element_read_indexes_a_page_aligned_table() {
+    let output = generate_source(
+        "const T: [3]u8 = [$01, $11, $21]\nvar i: u8 = 2\nmain { ppu.mask = T[i] }",
+    );
+    let items = &output.program.items;
+
+    let read = items
+        .iter()
+        .position(|item| {
+            matches!(item, FixedBankItem::Instruction { instruction, relocation: Some(_) }
+                if instruction.opcode == 0xbd && instruction.mode == AddressingMode::AbsoluteX)
+        })
+        .expect("an `LDA table,X`");
+    let FixedBankItem::Instruction {
+        relocation: Some(relocation),
+        ..
+    } = &items[read]
+    else {
+        unreachable!();
+    };
+    assert!(
+        matches!(
+            &items[read - 1],
+            FixedBankItem::Instruction { instruction, .. } if instruction.opcode == 0xaa
+        ),
+        "the index reaches X through `TAX`"
+    );
+
+    let table = items
+        .iter()
+        .position(|item| *item == FixedBankItem::Label(relocation.target))
+        .expect("the table's label");
+    assert_eq!(items[table - 1], FixedBankItem::PageAlign);
+    assert_eq!(
+        items[table + 1],
+        FixedBankItem::Data(vec![0x01, 0x11, 0x21])
+    );
+}
+
+#[test]
+fn a_full_256_byte_table_is_one_block() {
+    let elements = (0..=255)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let output = generate_source(&format!("const T: [256]u8 = [{elements}]\nmain {{ }}"));
+    let expected: Vec<u8> = (0..=255).collect();
+    assert!(output
+        .program
+        .items
+        .contains(&FixedBankItem::Data(expected)));
+}
+
+#[test]
+fn a_table_read_inside_a_timed_region_costs_exactly_four_cycles() {
+    let output = generate_source(
+        "const T: [2]u8 = [1, 2]\nvar i: u8 = 1\nvar v: u8\nmain {\n    cycles(?) read {\n        v = T[i]\n    }\n}",
+    );
+    // PHP 3, SEI 2, LDA zp 3, TAX 2, LDA abs,X 4 (no page can be crossed), STA zp 3, PLP 4.
+    assert_eq!(output.reports, [("read".to_owned(), 21)]);
 }
