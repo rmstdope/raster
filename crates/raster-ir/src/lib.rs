@@ -461,6 +461,9 @@ pub struct Main {
 pub const FIRST_VISIBLE_SCANLINE: u32 = 0;
 /// The last scanline of the NTSC visible picture — spec Appendix A.
 pub const LAST_VISIBLE_SCANLINE: u32 = 239;
+/// The line after the picture, on which nothing is drawn: a `using irq` frame may put one event
+/// there.
+pub const POST_RENDER_SCANLINE: u32 = LAST_VISIBLE_SCANLINE + 1;
 
 /// How a frame's schedule is realised — spec section 7.1's `using` clause.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2138,7 +2141,7 @@ impl Lowerer {
                         self.not_in_this_release(*span, "`at vblank` is not supported yet");
                     }
                     FramePosition::Scanline(value) => {
-                        if let Some(scanline) = self.visible_scanline(value) {
+                        if let Some(scanline) = self.event_scanline(value, strategy) {
                             let collected = self.handler_ctrl_writes.len();
                             let body = self.lower_frame_body(body);
                             self.tag_handler_ctrl_writes(collected, scanline);
@@ -2160,8 +2163,8 @@ impl Lowerer {
                     // All three are evaluated before the schedule is built, so a range with two
                     // mistakes in it reports both rather than only the first.
                     let interval_value = self.constant_value_u32(interval);
-                    let from_value = self.visible_scanline(from);
-                    let to_value = self.visible_scanline(to);
+                    let from_value = self.event_scanline(from, strategy);
+                    let to_value = self.event_scanline(to, strategy);
                     let (Some(interval_value), Some(from), Some(to)) =
                         (interval_value, from_value, to_value)
                     else {
@@ -2218,17 +2221,34 @@ impl Lowerer {
         });
     }
 
-    /// A constant scanline that falls on the visible picture, or nothing and a diagnostic.
-    fn visible_scanline(&mut self, value: &Spanned<SyntaxExpression>) -> Option<u32> {
+    /// A constant scanline a frame event may fall on, or nothing and a diagnostic.
+    ///
+    /// That is the visible picture, and under `using irq` also the post-render line after it:
+    /// an IRQ counted to the last visible line's A12 rise runs there, after the last pixel, which
+    /// is where a frame puts back what the next one starts from. A timed schedule is built on the
+    /// visible scanlines' windows and has none for it.
+    fn event_scanline(
+        &mut self,
+        value: &Spanned<SyntaxExpression>,
+        strategy: FrameStrategy,
+    ) -> Option<u32> {
         let scanline = self.constant_value_u32(value)?;
-        if !(FIRST_VISIBLE_SCANLINE..=LAST_VISIBLE_SCANLINE).contains(&scanline) {
-            self.error(
-                value.span,
-                format!(
+        let last = match strategy {
+            FrameStrategy::Irq => POST_RENDER_SCANLINE,
+            FrameStrategy::Timed => LAST_VISIBLE_SCANLINE,
+        };
+        if !(FIRST_VISIBLE_SCANLINE..=last).contains(&scanline) {
+            let message = match strategy {
+                FrameStrategy::Irq => format!(
+                    "a `using irq` frame event must fall on scanline {FIRST_VISIBLE_SCANLINE} to \
+                     {POST_RENDER_SCANLINE}: the picture, or the line after it"
+                ),
+                FrameStrategy::Timed => format!(
                     "a frame event must fall on a visible scanline, \
                      {FIRST_VISIBLE_SCANLINE} to {LAST_VISIBLE_SCANLINE}"
                 ),
-            );
+            };
+            self.error(value.span, message);
             return None;
         }
         Some(scanline)
@@ -2374,8 +2394,9 @@ impl Lowerer {
 
     /// Warn where a `cycles` block in `main`, or in anything `main` runs, can start with NMI on.
     ///
-    /// Frame handlers are never walked: an IRQ handler runs on visible scanlines and
-    /// re-synchronizes, and a `timed` frame is warned about as a whole.
+    /// Frame handlers are never walked: an IRQ handler runs on the picture or the line after
+    /// it, ending long before vblank, and re-synchronizes, and a `timed` frame is warned about
+    /// as a whole.
     fn check_block_nmi(&mut self) {
         if !self.errors.is_empty() || !self.recoverable_errors.is_empty() {
             return;
