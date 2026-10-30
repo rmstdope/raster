@@ -848,7 +848,8 @@ fn a_delay_planned_for_islands_costs_exactly_what_was_asked_for_at_every_length(
             for legal_isa in [true, false] {
                 let plan = raster_timing::plan_delay_in_islands(cycles, legal_isa, 6)
                     .unwrap_or_else(|error| panic!("{cycles} cycles: {error:?}"));
-                let spent = raster_timing::delay_cycles(&plan) + 6 * raster_timing::loops(&plan);
+                let spent =
+                    raster_timing::delay_cycles(&plan) + 6 * raster_timing::delay_loops(&plan);
                 if sender.send((cycles, spent)).is_err() {
                     return;
                 }

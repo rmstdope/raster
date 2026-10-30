@@ -518,13 +518,14 @@ pub fn delay_cycles(steps: &[DelayStep]) -> u32 {
 /// spent as filler; a whole number of hops is never the single cycle filler cannot reach.
 ///
 /// A delay too short to keep a loop once its hops are paid is filler alone, which has no branch.
+/// `hop_cycles` must be a count filler can spend, so not 1.
 pub fn plan_delay_in_islands(
     cycles: u32,
     legal_isa: bool,
     hop_cycles: u32,
 ) -> Result<Vec<DelayStep>, TimingError> {
     let inline = plan_delay(cycles, legal_isa)?;
-    let mut paid = loops(&inline);
+    let mut paid = delay_loops(&inline);
     loop {
         if paid == 0 {
             return Ok(inline);
@@ -532,13 +533,13 @@ pub fn plan_delay_in_islands(
         let Some(mut plan) = cycles
             .checked_sub(hop_cycles * paid)
             .and_then(|left| plan_delay(left, legal_isa).ok())
-            .filter(|plan| loops(plan) > 0)
+            .filter(|plan| delay_loops(plan) > 0)
         else {
             return Ok(vec![DelayStep::Filler(synthesize_padding(
                 cycles, legal_isa,
             )?)]);
         };
-        let used = loops(&plan);
+        let used = delay_loops(&plan);
         if used <= paid {
             let unused = hop_cycles * (paid - used);
             if unused > 0 {
@@ -551,7 +552,7 @@ pub fn plan_delay_in_islands(
 }
 
 /// How many loops a delay plan holds.
-pub fn loops(plan: &[DelayStep]) -> u32 {
+pub fn delay_loops(plan: &[DelayStep]) -> u32 {
     plan.iter()
         .filter(|step| matches!(step, DelayStep::Loop { .. }))
         .count() as u32

@@ -978,8 +978,8 @@ impl Generator<'_> {
     ///
     /// A loop leaves through a `BEQ`, which costs a cycle more when it crosses a page, and where
     /// the linker puts code is not known here. So each loop runs in an island kept on one page, and
-    /// the jumps there and back, six cycles a loop, come out of the delay: the plan is made for
-    /// what is left, again until its loops are the ones paid for. A delay too short to keep a loop
+    /// the jumps there and back, six cycles a loop, come out of the delay —
+    /// [`raster_timing::plan_delay_in_islands`] makes the plan. A delay too short to keep a loop
     /// once the jumps are paid is spent as filler, which has no branch at all.
     fn delay_on_pages(&mut self, cycles: u32, span: Span) -> Result<(), CodegenError> {
         let plan =
