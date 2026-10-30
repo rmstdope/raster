@@ -380,7 +380,7 @@ impl Analyzer {
                 if matches!(name, "driver" | "channels") {
                     self.asset_not_in_this_release(
                         field.name.span,
-                        "only `kind`, `palette`, `dedup` and `convert` are supported yet",
+                        "only `kind`, `palette`, `dedup`, `convert` and `tiles` are supported yet",
                     );
                 } else {
                     self.error(
@@ -409,6 +409,12 @@ impl Analyzer {
                     &AssetValue::Word("true".into()),
                     "only `dedup: true` is supported yet",
                 ),
+                "tiles" => {
+                    if !matches!(&field.value.value, AssetValue::Number(number) if number == "256" || number == "512")
+                    {
+                        self.error(field.value.span, "`tiles` is 256 or 512");
+                    }
+                }
                 "convert" => {
                     if !matches!(&field.value.value, AssetValue::Word(word) if word == "true" || word == "false")
                     {
@@ -420,11 +426,11 @@ impl Analyzer {
                 // be told they invented it.
                 "compress" => self.asset_not_in_this_release(
                     field.name.span,
-                    "only `kind`, `palette`, `dedup` and `convert` are supported yet",
+                    "only `kind`, `palette`, `dedup`, `convert` and `tiles` are supported yet",
                 ),
                 _ => self.error(
                     field.name.span,
-                    "unknown asset field; this release knows `kind`, `palette`, `dedup` and `convert`",
+                    "unknown asset field; this release knows `kind`, `palette`, `dedup`, `convert` and `tiles`",
                 ),
             }
         }

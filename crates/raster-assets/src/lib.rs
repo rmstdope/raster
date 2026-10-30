@@ -3,12 +3,13 @@ use std::io::Read;
 mod convert;
 mod nes;
 
-pub use convert::{convert_background, ConvertError};
+pub use convert::{convert_background, convert_background_split, ConvertError};
 
 pub use nes::{
-    encode_background, BackgroundEncodeError, NesBackground, ATTRIBUTE_TABLE_BYTES,
-    BACKGROUND_PALETTE_BYTES, BACKGROUND_SUBPALETTE_BYTES, BACKGROUND_SUBPALETTE_COUNT,
-    NAMETABLE_BYTES, NAMETABLE_HEIGHT_TILES, NAMETABLE_WIDTH_TILES,
+    encode_background, encode_background_split, BackgroundEncodeError, NesBackground,
+    ATTRIBUTE_TABLE_BYTES, BACKGROUND_PALETTE_BYTES, BACKGROUND_SUBPALETTE_BYTES,
+    BACKGROUND_SUBPALETTE_COUNT, NAMETABLE_BYTES, NAMETABLE_HEIGHT_TILES, NAMETABLE_WIDTH_TILES,
+    SPLIT_SHARED_TILES, SPLIT_TILE_ROW,
 };
 
 pub const TILE_WIDTH: u32 = 8;

@@ -1,8 +1,9 @@
 use std::io::Cursor;
 
 use raster_assets::{
-    decode_background, encode_background, BackgroundEncodeError, BACKGROUND_PALETTE_BYTES,
-    NAMETABLE_BYTES, TRANSPARENT_COLOUR,
+    decode_background, encode_background, encode_background_split, BackgroundEncodeError,
+    BACKGROUND_PALETTE_BYTES, NAMETABLE_BYTES, NAMETABLE_WIDTH_TILES, SPLIT_SHARED_TILES,
+    SPLIT_TILE_ROW, TRANSPARENT_COLOUR,
 };
 
 const COLOURS: [[u8; 4]; 6] = [
@@ -167,4 +168,86 @@ fn rejects_an_attribute_region_with_four_nontransparent_colours() {
         encode_background(&background),
         Err(BackgroundEncodeError::TooManyColours { colour_count: 4 })
     );
+}
+
+/// A full-screen picture whose tile `index` draws `index`'s bits along its first two rows,
+/// for `tiles` of the rows above the split and `tiles` below it, counted afresh in each half.
+fn counting_halves(tiles: usize) -> Vec<[u8; 4]> {
+    let mut pixels = vec![COLOURS[0]; 256 * 240];
+    for tile in 0..960usize {
+        let row = tile / 32;
+        let index = if row < SPLIT_TILE_ROW {
+            tile
+        } else {
+            tile - SPLIT_TILE_ROW * 32
+        } % tiles
+            + 1;
+        for bit in 0..16 {
+            if index & (1 << bit) != 0 {
+                pixels[(row * 8 + bit / 8) * 256 + (tile % 32) * 8 + bit % 8] = COLOURS[1];
+            }
+        }
+    }
+    pixels
+}
+
+#[test]
+fn a_split_picture_counts_its_tiles_in_each_half_and_fills_two_pattern_tables() {
+    // 255 distinct tiles above the split and the same 255 below, besides the blank one.
+    let background = decode_background(Cursor::new(png(256, 240, counting_halves(255)))).unwrap();
+
+    let encoded = encode_background_split(&background).unwrap();
+
+    assert_eq!(encoded.pattern_tables(), 2);
+    assert_eq!(encoded.chr().len(), 512 * 16);
+    assert_eq!(encoded.chr()[..256 * 16], encoded.chr()[256 * 16..]);
+    assert!(
+        encode_background(&background).is_ok(),
+        "one pattern table holds them too, the halves sharing"
+    );
+}
+
+#[test]
+fn a_split_picture_refuses_a_half_of_more_than_256_tiles() {
+    let background = decode_background(Cursor::new(png(256, 240, counting_halves(256)))).unwrap();
+
+    assert_eq!(
+        encode_background_split(&background),
+        Err(BackgroundEncodeError::TooManyTilesInHalf {
+            lower: false,
+            tile_count: 257
+        })
+    );
+}
+
+#[test]
+fn a_split_picture_keeps_the_first_tiles_of_its_lower_half_in_both_pattern_tables() {
+    // Tiles 1-200 above the split and 201-400 below it, so the lower half's first tiles appear
+    // nowhere in the upper half and take room in the first pattern table only to be shared.
+    let mut pixels = vec![COLOURS[0]; 256 * 240];
+    for tile in 0..960usize {
+        let index = if tile / 32 < SPLIT_TILE_ROW {
+            tile % 200 + 1
+        } else {
+            (tile - SPLIT_TILE_ROW * 32) % 200 + 201
+        };
+        for bit in 0..16 {
+            if index & (1 << bit) != 0 {
+                pixels[((tile / 32) * 8 + bit / 8) * 256 + (tile % 32) * 8 + bit % 8] = COLOURS[1];
+            }
+        }
+    }
+    let background = decode_background(Cursor::new(png(256, 240, pixels))).unwrap();
+
+    let encoded = encode_background_split(&background).unwrap();
+
+    for column in 0..SPLIT_SHARED_TILES {
+        let index = encoded.nametable()[SPLIT_TILE_ROW * NAMETABLE_WIDTH_TILES + column] as usize;
+        assert_ne!(index, 0, "column {column} is not the blank tile");
+        assert_eq!(
+            encoded.chr()[index * 16..index * 16 + 16],
+            encoded.chr()[(256 + index) * 16..(256 + index) * 16 + 16],
+            "column {column}, tile {index}"
+        );
+    }
 }

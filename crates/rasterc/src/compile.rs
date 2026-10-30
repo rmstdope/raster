@@ -25,9 +25,9 @@ const SUPPORTED_SUBSET: &str = "this release compiles `main`, `fn`, `if`, `while
 /// What this release reads for assets, listed once per run beside the first asset
 /// construct it had to refuse. The general note says nothing about assets.
 const ASSET_SUBSET: &str = "this release reads one kind of asset: `asset image` from a `png`,\n\
-                            with `kind: background`, `palette: auto(4)`, `dedup: true` and\n\
-                            `convert: true` or `false`, used through `.tiles`, `.nametable`,\n\
-                            `.attributes` and `.palette`";
+                            with `kind: background`, `palette: auto(4)`, `dedup: true`,\n\
+                            `convert: true` or `false` and `tiles: 256` or `512`, used through\n\
+                            `.tiles`, `.nametable`, `.attributes` and `.palette`";
 
 /// Why a timed region refuses a construct that is fine everywhere else, said
 /// once per run beside the first of them.

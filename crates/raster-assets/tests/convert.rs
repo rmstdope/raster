@@ -1,6 +1,9 @@
 use std::io::Cursor;
 
-use raster_assets::{convert_background, NesBackground, NAMETABLE_WIDTH_TILES};
+use raster_assets::{
+    convert_background, convert_background_split, NesBackground, NAMETABLE_WIDTH_TILES,
+    SPLIT_SHARED_TILES, SPLIT_TILE_ROW,
+};
 
 /// The FCEUX colour of the NES entries these pictures are drawn in.
 fn rgb(entry: u8) -> [u8; 3] {
@@ -48,7 +51,11 @@ fn picture_png(width: u32, height: u32, entries: &[u8], scale: u32) -> Vec<u8> {
 /// The NES entry the encoded background shows at (`x`, `y`): the tile's two bits pick a colour
 /// of the palette its attribute names, and 0 is the backdrop.
 fn shown(background: &NesBackground, x: usize, y: usize) -> u8 {
-    let tile = background.nametable()[(y / 8) * NAMETABLE_WIDTH_TILES + x / 8] as usize;
+    let mut tile = background.nametable()[(y / 8) * NAMETABLE_WIDTH_TILES + x / 8] as usize;
+    // A picture split across two pattern tables draws its lower rows from the second.
+    if background.pattern_tables() == 2 && y / 8 >= SPLIT_TILE_ROW {
+        tile += 256;
+    }
     let bits = &background.chr()[tile * 16..tile * 16 + 16];
     let bit = 7 - x % 8;
     let value = ((bits[y % 8] >> bit) & 1) | (((bits[8 + y % 8] >> bit) & 1) << 1);
@@ -455,5 +462,89 @@ fn no_two_palettes_are_the_same() {
                 "palettes {first} and {second}: {palettes:02x?}"
             );
         }
+    }
+}
+
+/// A picture of white noise on black, tile by tile from `noise`, whose upper rows draw 200
+/// noise tiles and lower rows 200 others: 400 distinct tiles, at most 201 in either half.
+fn two_halves_of_noise() -> Vec<u8> {
+    let mut seed = 0x1234_5679u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let noise: Vec<u64> = (0..400)
+        .map(|_| u64::from(next()) << 32 | u64::from(next()))
+        .collect();
+    let mut picture = vec![0x0fu8; 256 * 240];
+    for tile in 0..960usize {
+        let half = usize::from(tile / 32 >= SPLIT_TILE_ROW);
+        let bits = noise[half * 200 + tile % 200];
+        for bit in 0..64 {
+            if bits >> bit & 1 == 1 {
+                picture[((tile / 32) * 8 + bit / 8) * 256 + (tile % 32) * 8 + bit % 8] = 0x20;
+            }
+        }
+    }
+    picture
+}
+
+#[test]
+fn a_picture_split_in_two_is_drawn_exactly_when_each_half_fits_its_pattern_table() {
+    let picture = two_halves_of_noise();
+
+    let split = convert_background_split(Cursor::new(picture_png(256, 240, &picture, 1))).unwrap();
+    let whole = convert_background(Cursor::new(picture_png(256, 240, &picture, 1))).unwrap();
+
+    assert_eq!(split.pattern_tables(), 2);
+    assert_eq!(split.chr().len(), 512 * 16, "two whole pattern tables");
+    assert_eq!(shown_picture(&split), picture);
+    assert_ne!(
+        shown_picture(&whole),
+        picture,
+        "in one pattern table it cannot be exact"
+    );
+}
+
+#[test]
+fn each_half_of_a_split_picture_is_drawn_in_256() {
+    // Every tile of this picture is different: its rows count the tile's index in binary.
+    let mut picture = vec![0x0fu8; 256 * 240];
+    for tile in 0..960usize {
+        for bit in 0..10 {
+            if tile >> bit & 1 == 1 {
+                picture[((tile / 32) * 8 + bit % 8) * 256 + (tile % 32) * 8 + bit / 8] = 0x20;
+            }
+        }
+    }
+
+    let background =
+        convert_background_split(Cursor::new(picture_png(256, 240, &picture, 1))).unwrap();
+
+    assert_eq!(background.chr().len(), 512 * 16);
+}
+
+#[test]
+fn the_first_tiles_of_the_lower_half_are_the_same_in_both_pattern_tables() {
+    // The switch between pattern tables can land while the PPU fetches them, so they must look
+    // the same from either.
+    let background = convert_background_split(Cursor::new(picture_png(
+        256,
+        240,
+        &two_halves_of_noise(),
+        1,
+    )))
+    .unwrap();
+
+    for column in 0..SPLIT_SHARED_TILES {
+        let index =
+            background.nametable()[SPLIT_TILE_ROW * NAMETABLE_WIDTH_TILES + column] as usize;
+        assert_eq!(
+            background.chr()[index * 16..index * 16 + 16],
+            background.chr()[(256 + index) * 16..(256 + index) * 16 + 16],
+            "column {column}, tile {index}"
+        );
     }
 }
