@@ -352,3 +352,26 @@ fn a_constant_u8_index_wraps_to_eight_bits_as_the_running_program_would() {
     );
     assert_eq!(backdrop_entry("wrapped.nes", &source), 0x12);
 }
+
+#[test]
+fn a_variable_stepped_by_one_holds_the_value_adding_or_taking_one_gives() {
+    // Each steps a variable and then reads it back, so the read cannot reuse whatever the step
+    // left in the accumulator: $11 + 1 is $12, $FF + 1 wraps to $00 and $00 - 1 to $FF.
+    let source = |initial: &str, step: &str, expression: &str| {
+        format!(
+            "var v: u8 = {initial}\nmain {{\n    {step}\n    ppu.addr = $3f\n    ppu.addr = $00\n    ppu.data = {expression}\n    ppu.addr = $00\n    ppu.addr = $00\n}}\n"
+        )
+    };
+    assert_eq!(
+        backdrop_entry("inc.nes", &source("$11", "v += 1", "v")),
+        0x12
+    );
+    assert_eq!(
+        backdrop_entry("inc-wraps.nes", &source("$FF", "v += 1", "v + $12")),
+        0x12
+    );
+    assert_eq!(
+        backdrop_entry("dec-wraps.nes", &source("$00", "v -= 1", "v - $CD")),
+        0x32
+    );
+}

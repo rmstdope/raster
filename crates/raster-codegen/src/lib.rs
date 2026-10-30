@@ -1461,7 +1461,9 @@ enum SimpleOperand {
 
 /// `INC v` for `v = v + 1` and `DEC v` for `v = v - 1`, which is how `v += 1` and `v -= 1` reach
 /// codegen: five cycles where loading, adding and storing spend ten. It leaves the accumulator and
-/// carry alone, and nothing after an assignment reads either.
+/// carry alone, and nothing after an assignment reads either: every use of a value loads it, which
+/// `a_variable_stepped_by_one_holds_the_value_adding_or_taking_one_gives` in rasterc's emulator
+/// tests holds to.
 fn step_by_one(destination: Destination, value: &Value) -> Option<(u8, Place)> {
     let Destination::Place(place) = destination else {
         return None;
