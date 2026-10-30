@@ -861,6 +861,23 @@ fn a_timed_frame_charges_the_handler_its_save_mask_and_restore_against_a_scanlin
 
 #[test]
 fn consecutive_scanlines_give_a_timed_handler_the_tighter_window() {
+    // Five scanlines are too few for two turns of a loop, so each handler is unrolled.
+    let output = generate_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 1 scanlines from 10 to 14 { ppu.mask = $1e }
+            }
+        "#,
+    );
+
+    let rows = budget_rows(&output);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].2, 113);
+}
+
+#[test]
+fn a_looped_run_charges_the_end_of_each_turn_to_its_last_handler() {
     let output = generate_source(
         r#"
             main { ppu.mask = 0 }
@@ -870,9 +887,10 @@ fn consecutive_scanlines_give_a_timed_handler_the_tighter_window() {
         "#,
     );
 
+    // A 113-cycle scanline less the 19 cycles a turn spends going round, or leaving.
     let rows = budget_rows(&output);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].2, 113);
+    assert_eq!(rows[0].2, 113 - 19);
 }
 
 #[test]

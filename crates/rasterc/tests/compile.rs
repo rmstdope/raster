@@ -148,11 +148,12 @@ fn a_cycle_annotated_function_that_returns_still_names_the_real_refusal() {
 
 #[test]
 fn a_frame_too_large_for_the_bank_says_the_schedule_is_emitted_three_times() {
-    // Every handler fits its scanline; there are simply too many of them for the bank.
+    // Every handler fits its scanline; there are simply too many of them for the bank. Only an
+    // `every 1` run is looped, so every other scanline is unrolled, all 120 of them.
     let diagnostics = compile_source(
         "main { ppu.mask = 0 }\n\
          frame bars using timed {\n\
-         \x20   every 1 scanlines from 0 to 239 { ppu.mask = 0 }\n\
+         \x20   every 2 scanlines from 0 to 239 { ppu.mask = 0 }\n\
          }\n",
     )
     .expect_err("the fixed bank is finite");

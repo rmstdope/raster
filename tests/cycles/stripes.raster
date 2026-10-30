@@ -1,0 +1,24 @@
+// A handler on every visible scanline, which a `frame ... using timed` schedule runs as a loop.
+//
+// Rendering stays off, so the picture shows the palette entry `ppu.addr` points at (see
+// .cerebro/traps.md). Each scanline flips the address between $3F00 (black) and $3F01 (white), so
+// the picture is a stripe a line, and where along its row each flip lands says where its handler
+// ran.
+var flip: u8 = 0
+
+main {
+    ppu.addr = $3f
+    ppu.addr = $00
+    ppu.data = $0f              // $3F00: black
+    ppu.data = $30              // $3F01: white
+    ppu.addr = $00
+    ppu.addr = $00
+}
+
+frame stripes using timed {
+    every 1 scanlines from 0 to 239 {
+        flip = flip ^ 1
+        ppu.addr = $3f
+        ppu.addr = flip
+    }
+}
