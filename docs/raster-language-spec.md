@@ -836,9 +836,9 @@ a test in `raster-syntax` reads it out of this document and keeps it parsing;
 everything past the parser is still ahead of the compiler, including arrays in RAM,
 a call inside a handler and `using irq`. For a program that compiles now, see
 `examples/mvp/demo.raster`, the copper bar `examples/copper/copper.raster` set one
-scanline at a time, the same bar drawn once and scrolled in
-`examples/copper-scroll/copper.raster` (and the one-colour
-`examples/backdrop/backdrop.raster`).
+scanline at a time, three such bars in `examples/copper-bars/copper-bars.raster`, the
+same bar drawn once and scrolled in `examples/copper-scroll/copper.raster` (and the
+one-colour `examples/backdrop/backdrop.raster`).
 
 ```
 target nes {
