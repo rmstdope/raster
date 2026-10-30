@@ -119,19 +119,31 @@ fn decode_rgba(png: impl Read) -> Result<(usize, usize, Vec<[u8; 4]>), ConvertEr
     Ok((frame.width as usize, frame.height as usize, pixels))
 }
 
-/// The picture scaled to the screen: each screen pixel the average of the source pixels it
-/// covers, or the nearest one when the picture is smaller. A pixel mostly transparent is `None`,
-/// the backdrop.
+/// The picture scaled to fit the screen with its shape kept, centred, and the backdrop around
+/// it: each screen pixel the average of the source pixels it covers, or the nearest one when
+/// the picture is smaller. A pixel mostly transparent is `None`, the backdrop.
 fn scale(width: usize, height: usize, rgba: &[[u8; 4]]) -> Vec<Option<[u8; 3]>> {
+    let (fit_width, fit_height) = if width * HEIGHT >= height * WIDTH {
+        (
+            WIDTH,
+            ((height * WIDTH + width / 2) / width).clamp(1, HEIGHT),
+        )
+    } else {
+        (
+            ((width * HEIGHT + height / 2) / height).clamp(1, WIDTH),
+            HEIGHT,
+        )
+    };
+    let (left_border, top_border) = ((WIDTH - fit_width) / 2, (HEIGHT - fit_height) / 2);
     let span = |index: usize, source: usize, screen: usize| {
         let start = index * source / screen;
         (start, ((index + 1) * source / screen).max(start + 1))
     };
-    let mut screen = Vec::with_capacity(WIDTH * HEIGHT);
-    for y in 0..HEIGHT {
-        let (top, bottom) = span(y, height, HEIGHT);
-        for x in 0..WIDTH {
-            let (left, right) = span(x, width, WIDTH);
+    let mut screen = vec![None; WIDTH * HEIGHT];
+    for y in 0..fit_height {
+        let (top, bottom) = span(y, height, fit_height);
+        for x in 0..fit_width {
+            let (left, right) = span(x, width, fit_width);
             let (mut sum, mut opaque) = ([0u32; 3], 0u32);
             for row in top..bottom {
                 for pixel in &rgba[row * width + left..row * width + right] {
@@ -144,10 +156,9 @@ fn scale(width: usize, height: usize, rgba: &[[u8; 4]]) -> Vec<Option<[u8; 3]>> 
                 }
             }
             let covered = ((bottom - top) * (right - left)) as u32;
-            screen.push(
-                (opaque * 2 >= covered && opaque > 0)
-                    .then(|| sum.map(|total| ((total + opaque / 2) / opaque) as u8)),
-            );
+            screen[(top_border + y) * WIDTH + left_border + x] = (opaque * 2 >= covered
+                && opaque > 0)
+                .then(|| sum.map(|total| ((total + opaque / 2) / opaque) as u8));
         }
     }
     screen

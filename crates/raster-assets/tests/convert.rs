@@ -206,7 +206,8 @@ fn a_picture_of_more_distinct_tiles_than_a_pattern_table_holds_is_refused_with_t
 #[test]
 fn a_picture_scaled_down_is_the_average_of_what_each_screen_pixel_covers() {
     // Twice the screen, in 2-by-2 blocks of white and black: their average, (7C, 7C, 7C), is
-    // NES grey $00, a colour the picture never draws. Three wide and one tall, the same mix
+    // NES grey $00, a colour the picture never draws. Three times as wide as the screen and as
+    // tall, it keeps its shape as a band 80 lines tall, each pixel the average of 3 by 3, and
     // two whites to a black is nearer light grey $10 than grey or white.
     let checker: Vec<[u8; 4]> = (0..480)
         .flat_map(|y| (0..512).map(move |x| (x, y)))
@@ -234,9 +235,45 @@ fn a_picture_scaled_down_is_the_average_of_what_each_screen_pixel_covers() {
         })
         .collect();
     let background = convert_background(Cursor::new(png(768, 240, &wide))).unwrap();
-    assert!(shown_picture(&background)
-        .iter()
-        .all(|&entry| entry == 0x10));
+    for (index, &entry) in shown_picture(&background).iter().enumerate() {
+        let expected = if (80..160).contains(&(index / 256)) {
+            0x10
+        } else {
+            0x0f
+        };
+        assert_eq!(entry, expected, "({}, {})", index % 256, index / 256);
+    }
+}
+
+#[test]
+fn a_square_picture_keeps_its_shape_between_black_borders() {
+    let red = vec![[0xf8, 0x38, 0x00, 0xff]; 480 * 480];
+
+    let background = convert_background(Cursor::new(png(480, 480, &red))).unwrap();
+
+    for (index, &entry) in shown_picture(&background).iter().enumerate() {
+        let expected = if (8..248).contains(&(index % 256)) {
+            0x16
+        } else {
+            0x0f
+        };
+        assert_eq!(entry, expected, "({}, {})", index % 256, index / 256);
+    }
+}
+
+#[test]
+fn a_picture_of_224_lines_fits_unscaled_between_black_borders() {
+    // The usual capture of an NES screen, without the lines a TV hides: no line is doubled.
+    let palettes = [[0x01, 0x11, 0x20], [0x16, 0x27, 0x28]];
+    let picture = legal_picture(&palettes, |x, y| (x + y) % 2);
+    let capture = &picture[8 * 256..232 * 256];
+
+    let background = convert_background(Cursor::new(picture_png(256, 224, capture, 1))).unwrap();
+
+    let shown = shown_picture(&background);
+    assert!(shown[..8 * 256].iter().all(|&entry| entry == 0x0f));
+    assert_eq!(&shown[8 * 256..232 * 256], capture);
+    assert!(shown[232 * 256..].iter().all(|&entry| entry == 0x0f));
 }
 
 #[test]
