@@ -134,3 +134,15 @@ fn pads_an_incomplete_edge_attribute_region_with_0f() {
 
     assert!(decode_background(Cursor::new(png(8, 8, pixels))).is_ok());
 }
+
+/// $0D is black too, and comes first in the palette, but it is not the backdrop.
+#[test]
+fn maps_opaque_black_to_the_backdrop_0f() {
+    let background =
+        decode_background(Cursor::new(png(8, 8, image(8, 8, [0, 0, 0, 0xff])))).unwrap();
+
+    assert!(background
+        .pixels()
+        .iter()
+        .all(|colour| *colour == TRANSPARENT_COLOUR));
+}

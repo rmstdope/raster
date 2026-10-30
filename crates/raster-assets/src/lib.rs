@@ -178,12 +178,12 @@ fn decode_error(error: png::DecodingError) -> PngBackgroundError {
     }
 }
 
+/// The backdrop is tried first, so every black, its own colour, maps to `$0F` and never to the
+/// `$0D` that comes before it in the palette.
 fn nearest_palette_entry(rgb: [u8; 3]) -> u8 {
-    FCEUX_2C02_PALETTE
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, candidate)| squared_distance(rgb, **candidate))
-        .map(|(index, _)| index as u8)
+    std::iter::once(TRANSPARENT_COLOUR)
+        .chain(0..64)
+        .min_by_key(|&entry| squared_distance(rgb, FCEUX_2C02_PALETTE[usize::from(entry)]))
         .expect("the FCEUX palette is non-empty")
 }
 

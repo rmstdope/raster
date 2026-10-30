@@ -251,3 +251,22 @@ fn a_split_picture_keeps_the_first_tiles_of_its_lower_half_in_both_pattern_table
         );
     }
 }
+
+/// Black is the backdrop, so a black-and-white picture needs one colour besides it.
+#[test]
+fn a_black_and_white_picture_needs_one_colour_besides_the_backdrop() {
+    let pixels = (0..16 * 16)
+        .map(|index| {
+            if index % 2 == 0 {
+                [0, 0, 0, 0xff]
+            } else {
+                [0xf8, 0xf8, 0xf8, 0xff]
+            }
+        })
+        .collect();
+
+    let background = encode(16, 16, pixels);
+
+    assert_eq!(background.palettes()[..2], [TRANSPARENT_COLOUR, 0x20]);
+    assert!(!background.palettes().contains(&0x0d));
+}
