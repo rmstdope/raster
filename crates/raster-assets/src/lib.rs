@@ -1,6 +1,9 @@
 use std::io::Read;
 
+mod convert;
 mod nes;
+
+pub use convert::{convert_background, ConvertError};
 
 pub use nes::{
     encode_background, BackgroundEncodeError, NesBackground, ATTRIBUTE_TABLE_BYTES,
