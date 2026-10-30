@@ -817,6 +817,18 @@ fn refuses_asset_fields_this_release_does_not_build() {
             "100",
         ),
         (
+            "width: 0",
+            "`width` is a multiple of 16 from 16 to 256",
+            Refusal::Rejected,
+            "0",
+        ),
+        (
+            "width: 272",
+            "`width` is a multiple of 16 from 16 to 256",
+            Refusal::Rejected,
+            "272",
+        ),
+        (
             "convert: maybe",
             "`convert` is `true` or `false`",
             Refusal::Rejected,
@@ -866,7 +878,30 @@ fn a_width_places_a_converted_picture_and_nothing_else() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(
         found[0].message,
-        "`width` places a converted picture; add `convert: true`"
+        "`width` places a converted picture; set `convert: true`"
+    );
+
+    // One field, one error: a music asset's `width` is an unknown music field and nothing else,
+    // and a `width` set twice is the second one, not a second complaint about converting.
+    let messages = |source: &str| -> Vec<String> {
+        errors_with_spans(source)
+            .into_iter()
+            .map(|error| error.message)
+            .collect()
+    };
+    assert_eq!(
+        messages("asset music m = fam(\"m\") { width: 144 }\nmain { }")
+            .iter()
+            .filter(|message| message.contains("converted picture"))
+            .count(),
+        0
+    );
+    assert_eq!(
+        messages("asset image p = png(\"p.png\") { width: 100  width: 144 }\nmain { }"),
+        [
+            "`width` is a multiple of 16 from 16 to 256",
+            "this asset field is set twice"
+        ]
     );
 }
 

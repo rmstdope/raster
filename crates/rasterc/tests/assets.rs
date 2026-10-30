@@ -321,8 +321,18 @@ fn a_jpeg_named_png_is_called_a_jpeg() {
 fn a_converted_picture_with_a_width_compiles() {
     let picture = png_bytes(480, 480, |_, _| [0xf8, 0x38, 0x00, 0xff]);
     let source = format!(
-        "asset image picture = png(\"{PATH}\") {{ kind: background  convert: true  width: 144 }}\nmain {{ }}"
+        "asset image picture = png(\"{PATH}\") {{ kind: background  convert: true  width: 144 }}\n\
+         chrrom bank 0 {{ picture.tiles }}\n\
+         main {{\n    load_palette(picture.palette)\n    load_nametable(picture.nametable, picture.attributes)\n}}"
     );
 
-    compile_source_with_assets(&source, &Fixture(PATH, picture)).expect("it compiles");
+    let narrow =
+        compile_source_with_assets(&source, &Fixture(PATH, picture.clone())).expect("it compiles");
+    let whole =
+        compile_source_with_assets(&source.replace("  width: 144", ""), &Fixture(PATH, picture))
+            .expect("it compiles");
+
+    // The square fills 144 by 144 on the left with it, and 240 by 240 in the middle without: the
+    // width reached the converter, so the two ROMs are different pictures.
+    assert_ne!(narrow.image, whole.image);
 }

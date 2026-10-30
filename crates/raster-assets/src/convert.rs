@@ -42,8 +42,9 @@ type Histogram = [u32; 64];
 /// whether it is split across two pattern tables.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Conversion {
-    /// Pixels from the left edge, a multiple of 16 up to 256: the picture is fitted into that
-    /// much of the screen, centred in it, and the rest is backdrop.
+    /// Pixels from the left edge, up to 256: the picture is fitted into that much of the screen,
+    /// centred in it, and the rest is backdrop. A source program's `width` is a multiple of 16,
+    /// whole attribute cells, which `raster-sema` checks.
     pub width: usize,
     /// Split at [`SPLIT_TILE_ROW`] across two pattern tables, as
     /// [`convert_background_split`] does.

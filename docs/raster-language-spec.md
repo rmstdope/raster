@@ -558,7 +558,6 @@ asset image logo = png("art/logo.png") {
     dedup:   true              // merge identical tiles
     convert: false             // true: make any PNG into one the NES can show
     tiles:   256               // 512: split across both pattern tables
-    width:   256               // converted: fit into this many pixels from the left
     compress: none             // none | rle | lz
 }
 ```
@@ -583,9 +582,9 @@ was not drawn for the NES. The picture is scaled to fit 256 by 240 with its shap
 centred, with the backdrop around it: each screen pixel is the average of the pixels it
 covers, or the nearest pixel when the picture is smaller than the screen, and a pixel
 mostly transparent is the backdrop. A 256 by 224 capture of an NES screen fits as it is.
-`width: N`, a multiple of 16, fits a converted picture into the left N pixels instead,
-centred in them, with the backdrop beside it, for a screen that keeps its right part
-for something else.
+`width: N`, a multiple of 16 from 16 to 256 and only beside `convert: true`, fits the
+converted picture into the left N pixels instead, centred in them, with the backdrop
+beside it, for a screen that keeps its right part for something else.
 Four palettes of three colours beside a black backdrop are fitted to it, each 16×16
 attribute cell drawing in the palette that loses it least, and every pixel takes the
 nearest colour its cell allows. A converted picture that needs more than the 256

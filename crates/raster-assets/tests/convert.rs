@@ -593,3 +593,21 @@ fn a_wide_picture_given_a_width_is_as_wide_as_it_and_centred_down_the_screen() {
         assert_eq!(entry, expected, "({x}, {y})");
     }
 }
+
+#[test]
+fn a_tall_picture_given_a_width_is_centred_across_it() {
+    // 100 by 480 in the left 144 pixels is 50 by 240, from x 47.
+    let red = vec![[0xf8, 0x38, 0x00, 0xff]; 100 * 480];
+    let conversion = Conversion {
+        width: 144,
+        ..Conversion::default()
+    };
+
+    let background = convert_background_with(Cursor::new(png(100, 480, &red)), conversion).unwrap();
+
+    for (index, &entry) in shown_picture(&background).iter().enumerate() {
+        let (x, y) = (index % 256, index / 256);
+        let expected = if (47..97).contains(&x) { 0x16 } else { 0x0f };
+        assert_eq!(entry, expected, "({x}, {y})");
+    }
+}

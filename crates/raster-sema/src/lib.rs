@@ -445,15 +445,19 @@ impl Analyzer {
             field.name.value == "convert"
                 && matches!(&field.value.value, AssetValue::Word(word) if word == "true")
         });
+        // The first `width` only: a second is already the field set twice, and a music asset's is
+        // already a field music does not have.
         if let Some(width) = asset
             .fields
             .iter()
-            .find(|field| field.name.value == "width" && valid_width(&field.value.value))
-            .filter(|_| !converts)
+            .find(|field| field.name.value == "width")
+            .filter(|width| {
+                !converts && asset.kind.value != "music" && valid_width(&width.value.value)
+            })
         {
             self.error(
                 width.name.span,
-                "`width` places a converted picture; add `convert: true`",
+                "`width` places a converted picture; set `convert: true`",
             );
         }
     }
