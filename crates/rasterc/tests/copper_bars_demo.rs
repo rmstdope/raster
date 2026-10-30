@@ -18,17 +18,22 @@ mod scratch;
 use demo::copper_bars_demo_path;
 use scratch::Scratch;
 
-/// The NES colour each palette entry the example loads holds.
-fn colour(entry: u8) -> u16 {
-    match entry {
-        0x00 => 0x0f,
-        0x01 => 0x02,
-        0x03 => 0x12,
-        0x07 => 0x22,
-        0x0f => 0x32,
-        0x1f => 0x30,
-        other => panic!("the example loads no palette entry ${other:02X}"),
-    }
+/// The palette entries the example loads, darkest first, and the NES colour each holds.
+const SHADES: [(u8, u16); 6] = [
+    (0x00, 0x0f),
+    (0x01, 0x02),
+    (0x03, 0x12),
+    (0x07, 0x22),
+    (0x0f, 0x32),
+    (0x1f, 0x30),
+];
+
+/// How bright a palette entry is: its place in [`SHADES`].
+fn brightness(entry: u8) -> usize {
+    SHADES
+        .iter()
+        .position(|&(shade, _)| shade == entry)
+        .unwrap_or_else(|| panic!("the example loads no palette entry ${entry:02X}"))
 }
 
 /// The numbers of the example's `const NAME: [256]u8 = [...]`, read from the source so this test
@@ -48,21 +53,35 @@ fn table(source: &str, name: &str) -> Vec<u8> {
         .collect()
 }
 
-/// What every line shows at `step` of the swing: the brightest of the three bars it is in.
-fn expected(source: &str, step: u8) -> Vec<u16> {
-    let (bar, swing) = (table(source, "BAR"), table(source, "SWING"));
-    let phase: u8 = source
+/// The example's `PHASE`, read from the source.
+fn phase(source: &str) -> u8 {
+    let value = source
         .lines()
         .find_map(|line| line.strip_prefix("const PHASE: u8 = "))
-        .expect("the phase is declared")
-        .parse()
-        .unwrap();
-    let tops = [0, 1, 2].map(|bar| swing[usize::from(step.wrapping_add(phase.wrapping_mul(bar)))]);
+        .expect("the phase is declared");
+    value.split("//").next().unwrap().trim().parse().unwrap()
+}
+
+/// The three bars' top lines at `step` of the swing.
+fn tops(source: &str, step: u8) -> [u8; 3] {
+    let (swing, phase) = (table(source, "SWING"), phase(source));
+    [0, 1, 2].map(|bar| swing[usize::from(step.wrapping_add(phase.wrapping_mul(bar)))])
+}
+
+/// What every line shows at `step` of the swing: the brightest shade of the bars it is in, or
+/// black. Said as the brightest, not as the OR the ROM works it out with, so the test holds the
+/// example to what it means.
+fn expected(source: &str, step: u8) -> Vec<u16> {
+    let bar = table(source, "BAR");
+    let tops = tops(source, step);
     (0..FRAME_HEIGHT as u8)
         .map(|line| {
-            colour(tops.iter().fold(0, |shade, &top| {
-                shade | bar[usize::from(line.wrapping_sub(top))]
-            }))
+            let brightest = tops
+                .iter()
+                .map(|&top| brightness(bar[usize::from(line.wrapping_sub(top))]))
+                .max()
+                .unwrap();
+            SHADES[brightest].1
         })
         .collect()
 }
@@ -113,22 +132,38 @@ fn lines(rom: &[u8], frames: u32) -> Vec<u16> {
 }
 
 #[test]
-fn every_frame_is_the_three_bars_at_one_step_and_the_next_frame_is_the_next_step() {
+fn every_frame_is_the_three_bars_at_the_step_its_frame_has_reached() {
     let source = fs::read_to_string(copper_bars_demo_path()).expect("the example is readable");
     let rom = build();
 
     // Three consecutive frames are the three phases of the timed pass, each with its own loop.
-    let steps: Vec<u8> = [10, 11, 12, 40]
-        .into_iter()
-        .map(|frames| {
-            let shown = lines(&rom, frames);
-            (0..=255u8)
-                .find(|&step| expected(&source, step) == shown)
-                .unwrap_or_else(|| panic!("frame {frames} is no step of the swing: {shown:02x?}"))
+    // The others are where bars overlap: two partly, then two exactly on top of each other, then
+    // long after, when `step` has wrapped.
+    let frames: [u32; 6] = [10, 11, 12, 35, 57, 300];
+    let shown: Vec<Vec<u16>> = frames.iter().map(|&frames| lines(&rom, frames)).collect();
+    let step = |frames: u32, offset: u8| (frames as u8).wrapping_sub(offset);
+
+    // Frame `n` shows step `n - offset`, for the frames the ROM spent starting up. One picture can
+    // be more than one step, because the swing mirrors itself, but only one offset explains every
+    // frame — counted within one swing, since SWING holds two identical ones.
+    let offsets: Vec<u8> = (0..128u8)
+        .filter(|&offset| {
+            frames
+                .iter()
+                .zip(&shown)
+                .all(|(&frames, shown)| expected(&source, step(frames, offset)) == *shown)
         })
         .collect();
+    assert_eq!(
+        offsets.len(),
+        1,
+        "offsets explaining every frame: {offsets:?}"
+    );
 
-    assert_eq!(steps[1], steps[0].wrapping_add(1), "{steps:?}");
-    assert_eq!(steps[2], steps[1].wrapping_add(1), "{steps:?}");
-    assert_eq!(steps[3], steps[0].wrapping_add(30), "{steps:?}");
+    let overlapping = frames.iter().any(|&frames| {
+        let mut tops = tops(&source, step(frames, offsets[0]));
+        tops.sort_unstable();
+        tops.windows(2).any(|pair| pair[1] - pair[0] < 9)
+    });
+    assert!(overlapping, "some frame checked shows bars overlapping");
 }

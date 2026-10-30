@@ -1,5 +1,5 @@
-// Three copper bars on one swing, each a third of a swing behind the
-// last.
+// Three copper bars on one swing, each about a third of a swing behind
+// the last.
 //
 // The same trick as examples/copper: rendering stays off, so the PPU
 // shows the palette entry its address register points at (see
@@ -61,9 +61,10 @@ const SWING: [256]u8 = [
      45,  49,  52,  56,  60,  64,  69,  73,  77,  82,  87,  91,  96, 101, 106, 111,
 ]
 
-// A third of a swing, in steps: 128 steps make one.
+// About a third of a swing, in steps: 128 steps make one.
 const PHASE: u8 = 43
 
+// The bars' first tops: SWING[0], SWING[PHASE] and SWING[2 * PHASE].
 var step: u8 = 0
 var top1: u8 = 116
 var top2: u8 = 201
@@ -101,7 +102,11 @@ main {
 frame bars using timed {
     // Each handler sets the colour of the line after its own, and its
     // last write lands once the beam is past the right edge of the
-    // picture, so the colour changes where nobody can see it.
+    // picture, so the colour changes where nobody can see it. Unlike
+    // examples/copper, nothing waits for the edge: the work before the
+    // write takes 85 cycles, about a dozen dots past it. A compiler
+    // that does the work faster would land it inside the picture, and
+    // crates/rasterc/tests/copper_bars_demo.rs would say so.
     every 1 scanlines from 0 to 238 {
         shade = BAR[line - top1] | BAR[line - top2] | BAR[line - top3]
         line += 1
