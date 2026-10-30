@@ -311,3 +311,14 @@ fn vram_addr_sets_the_address_the_raw_pair_sets() {
         backdrop_colour("demo.nes", &demo)
     );
 }
+
+#[test]
+fn a_constant_array_element_reaches_the_screen() {
+    let source = |index: u8| {
+        format!(
+            "const SHADES: [3]u8 = [$0F, $16, $21]\nvar i: u8 = {index}\nmain {{\n    ppu.addr = $3f\n    ppu.addr = $00\n    ppu.data = SHADES[i]\n    ppu.addr = $00\n    ppu.addr = $00\n}}\n"
+        )
+    };
+    assert_eq!(backdrop_entry("first.nes", &source(0)), 0x0f);
+    assert_eq!(backdrop_entry("last.nes", &source(2)), 0x21);
+}
