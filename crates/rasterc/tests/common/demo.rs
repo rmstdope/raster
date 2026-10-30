@@ -28,3 +28,9 @@ pub fn backdrop_path() -> PathBuf {
 pub fn copper_scroll_demo_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/copper-scroll/copper.raster")
 }
+
+/// The copper bar example, set one scanline at a time.
+#[allow(dead_code)]
+pub fn copper_demo_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/copper/copper.raster")
+}

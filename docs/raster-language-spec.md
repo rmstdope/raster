@@ -449,6 +449,16 @@ restriction: an IRQ chain re-synchronizes on every scanline it fires.
 holds when the frame starts and what its handlers write to it, and warns where
 bit 7 is set or where it cannot see the value. The ROM is still written.
 
+**A `timed` schedule is emitted once per frame of its pass**, three frames, because
+only three whole frames are a whole number of CPU cycles. Each handler is unrolled
+there, except an `every 1 scanlines` run long enough for two turns of a loop. Three
+scanlines are exactly 341 cycles, so a turn is three handlers whose budgets repeat
+exactly, and the run's handlers are emitted three times a frame rather than once a
+scanline: a handler on all 240 lines fits the fixed bank. The end of each turn costs
+19 cycles, out of the turn's last handler, whether the loop goes round or leaves, so
+the budget table shows that handler's window 19 cycles narrower than its scanline.
+The run's last handler, and any a whole turn does not cover, are still unrolled.
+
 ### 7.2 What the compiler verifies
 
 For each event the compiler checks that the handler body fits its available window
@@ -823,8 +833,10 @@ This is the program the MVP must compile — not one that compiles today. It par
 a test in `raster-syntax` reads it out of this document and keeps it parsing;
 everything past the parser is still ahead of the compiler, including arrays in RAM,
 a call inside a handler and `using irq`. For a program that compiles now, see
-`examples/mvp/demo.raster`, the sine-swung `examples/copper/copper.raster` (and the
-one-colour `examples/backdrop/backdrop.raster`).
+`examples/mvp/demo.raster`, the copper bar `examples/copper/copper.raster` set one
+scanline at a time, the same bar drawn once and scrolled in
+`examples/copper-scroll/copper.raster` (and the one-colour
+`examples/backdrop/backdrop.raster`).
 
 ```
 target nes {
