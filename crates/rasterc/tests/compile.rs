@@ -745,6 +745,31 @@ fn an_irq_event_on_the_first_visible_scanline_arms_with_a_latch_of_zero() {
     );
 }
 
+/// raster-xnm. Two events on consecutive scanlines are linked by a latch of 0, and that link holds
+/// on every MMC3 revision only because the handler reloads through `$C001` straight after writing
+/// `$C000`. Sharp MMC3A and the NEC parts skip the IRQ on an *automatic* reload to 0, but a reload
+/// requested through `$C001` fires even when the latch it loads is 0 (NESdev, MMC3: "a manual
+/// reload request via $C001 fulfills this condition"). Drop the `$C001` and the chain stops after
+/// scanline 60 on those boards.
+#[test]
+fn a_latch_of_zero_between_consecutive_irq_events_is_reloaded_through_c001() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 { ppu.mask = $3e }\n\
+                  \n    at scanline 61 { ppu.mask = $1e }\n}\n";
+    let rom = compile_source(source).expect("the fixture compiles");
+    assert!(rom.warnings.is_empty(), "found {:?}", rom.warnings);
+
+    let link = [
+        0xa9, 0x3e, 0x8d, 0x01, 0x20, // the scanline-60 handler: ppu.mask = $3e
+        0xa9, 0x00, 0x8d, 0x00, 0xc0, // latch 0: scanline 61 is the very next rise
+        0x8d, 0x01, 0xc0, // and the manual reload that makes every revision fire on it
+    ];
+    assert!(
+        rom.image.windows(link.len()).any(|window| window == link),
+        "the scanline-60 handler programs latch 0 and reloads it through $C001"
+    );
+}
+
 /// A `using irq` frame with no events has no handler to dispatch to, so `$FFFE` must fall back to
 /// the runtime's own `RTI` rather than to whatever the chain would otherwise have pointed at. An
 /// IRQ vector left dangling here is a console that jumps into the middle of the program.

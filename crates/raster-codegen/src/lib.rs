@@ -466,7 +466,10 @@ impl Generator<'_> {
             // The order hardware requires: the latch, then the reload request, then the
             // acknowledgement — which also disables — and only then the re-arm. Enabling before
             // acknowledging would leave the line asserted and the console would take this same
-            // interrupt for ever.
+            // interrupt for ever. The manual reload is also what lets a latch of 0 (two events on
+            // consecutive scanlines, or the wrap from scanline 240 to scanline 0) fire on the
+            // older MMC3 revisions, which skip an IRQ on an automatic reload to 0 but not on a
+            // `$C001` one.
             self.emit_register(Register::Mmc3IrqLatch);
             self.emit_register(Register::Mmc3IrqReload);
             self.emit_register(Register::Mmc3IrqDisable);
