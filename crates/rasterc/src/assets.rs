@@ -8,7 +8,7 @@
 use raster_assets::{
     convert_background, convert_background_split, decode_background, encode_background,
     encode_background_split, BackgroundEncodeError, ConvertError, NesBackground,
-    PngBackgroundError,
+    PngBackgroundError, SPLIT_SHARED_TILES,
 };
 use raster_syntax::{Asset, AssetValue, Item, Program, Span};
 
@@ -178,6 +178,21 @@ fn encode_message(path: &str, error: BackgroundEncodeError) -> String {
         BackgroundEncodeError::TooManyTiles { tile_count } => {
             format!("`{path}` needs {tile_count} distinct tiles; a background allows 256")
         }
+        BackgroundEncodeError::TooManyTilesInHalf {
+            lower: false,
+            tile_count,
+        } => format!(
+            "the upper half of `{path}` needs {tile_count} distinct tiles, counting the first \
+             {SPLIT_SHARED_TILES} of the lower half that both pattern tables hold; a pattern table \
+             allows 256"
+        ),
+        BackgroundEncodeError::TooManyTilesInHalf {
+            lower: true,
+            tile_count,
+        } => format!(
+            "the lower half of `{path}` needs {tile_count} distinct tiles; a pattern table allows \
+             256"
+        ),
         BackgroundEncodeError::TooManyPalettes { palette_count } => {
             format!("`{path}` needs {palette_count} sub-palettes; a background allows 4")
         }

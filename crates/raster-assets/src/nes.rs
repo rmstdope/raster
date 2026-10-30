@@ -18,8 +18,11 @@ const PATTERN_TABLE_TILES: usize = 256;
 ///
 /// The PPU fetches a line's first two tiles at the end of the line before, and an MMC3 IRQ
 /// counted to that line runs its handler from about dot 260: the write switching pattern tables
-/// lands as those fetches happen, and as late as the third tile's when the CPU was in a long
-/// instruction. Kept in both, they look the same whichever table they are fetched from.
+/// lands as those fetches happen. Measured, it lands during the first tile's fetch or the
+/// second's, depending on the frame. Kept in both, they look the same whichever table they are
+/// fetched from, and the third is margin. That margin assumes the CPU waits for the IRQ in the
+/// three-cycle `JMP` a `using irq` frame spins in: code running beside the chain, in instructions
+/// of up to seven cycles, would use it up.
 pub const SPLIT_SHARED_TILES: usize = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,9 +60,21 @@ impl NesBackground {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackgroundEncodeError {
-    TooManyTiles { tile_count: usize },
-    TooManyPalettes { palette_count: u8 },
-    TooManyColours { colour_count: u8 },
+    TooManyTiles {
+        tile_count: usize,
+    },
+    /// A picture split across two pattern tables needs more than one holds in one half. The
+    /// upper half's count includes the first tiles of the lower half, which both tables hold.
+    TooManyTilesInHalf {
+        lower: bool,
+        tile_count: usize,
+    },
+    TooManyPalettes {
+        palette_count: u8,
+    },
+    TooManyColours {
+        colour_count: u8,
+    },
 }
 
 pub fn encode_background(
@@ -158,13 +173,20 @@ pub(crate) fn assemble(
             nametable[tile_y * NAMETABLE_WIDTH_TILES + tile_x] = index as u8;
         }
     }
-    if let Some(tile_count) = tables
+    if let Some((table, tiles)) = tables
         .iter()
-        .map(Vec::len)
-        .filter(|count| *count > PATTERN_TABLE_TILES)
-        .max()
+        .enumerate()
+        .find(|(_, tiles)| tiles.len() > PATTERN_TABLE_TILES)
     {
-        return Err(BackgroundEncodeError::TooManyTiles { tile_count });
+        let tile_count = tiles.len();
+        return Err(if split {
+            BackgroundEncodeError::TooManyTilesInHalf {
+                lower: table == 1,
+                tile_count,
+            }
+        } else {
+            BackgroundEncodeError::TooManyTiles { tile_count }
+        });
     }
     // Split, the first pattern table is filled out so that the second starts at tile 256.
     if split {

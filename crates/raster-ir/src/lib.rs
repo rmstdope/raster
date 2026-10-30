@@ -3310,6 +3310,19 @@ impl Lowerer {
                         "place `{asset}.tiles` within tiles 0–255 of `chrrom bank 0`, or map its bank with `mmc3.bank_data`"
                     ),
                 )
+            } else if !self.may_select_pattern_table_1 && first < 256 && last >= 256 {
+                // Only a `tiles: 512` picture spans both pattern tables: its upper half shows, and
+                // its lower half needs the switch that frame makes.
+                (
+                    format!(
+                        "the lower half of `{asset}` never shows: nothing in this program selects \
+                         pattern table 1"
+                    ),
+                    format!("`{asset}`'s lower half is tiles 256–{last} of `chrrom bank 0`"),
+                    "`tiles: 512` draws lines 120–239 from tiles 256–511: set `ppu.ctrl` bit 4 at \
+                     scanline 120 and clear it at scanline 240, in a `using irq` frame"
+                        .to_owned(),
+                )
             } else if !self.may_select_pattern_table_1 {
                 (
                     "a picture at tiles 256–511 is not supported yet".to_owned(),

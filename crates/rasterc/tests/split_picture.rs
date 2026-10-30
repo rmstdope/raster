@@ -27,6 +27,11 @@ impl AssetSource for Fixture {
 /// half fits one. White is entry $20, and black is transparent, the backdrop $0F: the strict
 /// importer reads opaque black as $0D (raster-bt8).
 fn noise_halves() -> Vec<bool> {
+    noise(200, 200)
+}
+
+/// [`noise_halves`] with `upper` noise tiles above the split and `lower` others below it.
+fn noise(upper: usize, lower: usize) -> Vec<bool> {
     let mut seed = 0x1234_5679u32;
     let mut next = move || {
         seed ^= seed << 13;
@@ -34,12 +39,16 @@ fn noise_halves() -> Vec<bool> {
         seed ^= seed << 5;
         seed
     };
-    let noise: Vec<u64> = (0..400)
+    let tiles: Vec<u64> = (0..upper + lower)
         .map(|_| u64::from(next()) << 32 | u64::from(next()))
         .collect();
     let mut white = vec![false; 256 * 240];
     for tile in 0..960usize {
-        let bits = noise[usize::from(tile / 32 >= 15) * 200 + tile % 200];
+        let bits = if tile / 32 < 15 {
+            tiles[tile % upper]
+        } else {
+            tiles[upper + tile % lower]
+        };
         for bit in 0..64 {
             white[((tile / 32) * 8 + bit / 8) * 256 + (tile % 32) * 8 + bit % 8] =
                 bits >> bit & 1 == 1;
@@ -98,18 +107,21 @@ fn assert_shows(fields: &str) {
     let rom = compile_source_with_assets(&program(fields, SWITCH_HALFWAY), &Fixture(png(&white)))
         .unwrap_or_else(|diagnostics| panic!("it compiles: {diagnostics:?}"));
 
-    let frame = render_after_frames("split.nes", &rom.image, NonZeroU32::new(10).unwrap())
-        .expect("the ROM runs");
-
-    let shown = frame.as_indices();
-    for y in 0..FRAME_HEIGHT {
-        for x in 0..FRAME_WIDTH {
-            let expected = if white[y * 256 + x] { 0x20 } else { 0x0f };
-            assert_eq!(
-                shown[y * FRAME_WIDTH + x],
-                expected,
-                "({x}, {y}) with `{fields}`"
-            );
+    // Two frames in a row: the CPU and the PPU meet in a different phase from one frame to the
+    // next, and the switch at line 120 lands a tile later in one of them than in the other.
+    for frames in [10, 11] {
+        let frame = render_after_frames("split.nes", &rom.image, NonZeroU32::new(frames).unwrap())
+            .expect("the ROM runs");
+        let shown = frame.as_indices();
+        for y in 0..FRAME_HEIGHT {
+            for x in 0..FRAME_WIDTH {
+                let expected = if white[y * 256 + x] { 0x20 } else { 0x0f };
+                assert_eq!(
+                    shown[y * FRAME_WIDTH + x],
+                    expected,
+                    "frame {frames}, ({x}, {y}) with `{fields}`"
+                );
+            }
         }
     }
 }
@@ -132,7 +144,14 @@ fn a_split_picture_in_a_program_that_never_selects_the_second_pattern_table_is_r
 
     assert_eq!(
         found[0].message,
-        "a picture at tiles 256–511 is not supported yet"
+        "the lower half of `picture` never shows: nothing in this program selects pattern table 1"
+    );
+    assert_eq!(
+        found[0].help.as_deref(),
+        Some(
+            "`tiles: 512` draws lines 120–239 from tiles 256–511: set `ppu.ctrl` bit 4 at scanline \
+             120 and clear it at scanline 240, in a `using irq` frame"
+        )
     );
 }
 
@@ -145,5 +164,21 @@ fn without_tiles_512_a_picture_of_400_tiles_is_refused() {
     assert_eq!(
         found[0].message,
         "`art/picture.png` needs 401 distinct tiles; a background allows 256"
+    );
+}
+
+#[test]
+fn a_half_of_more_tiles_than_its_pattern_table_holds_is_refused_by_name() {
+    // 300 noise tiles above the split, and the first three of row 15 that both tables hold.
+    let found = compile_source_with_assets(
+        &program("tiles: 512", SWITCH_HALFWAY),
+        &Fixture(png(&noise(300, 200))),
+    )
+    .expect_err("the upper half is too big");
+
+    assert_eq!(
+        found[0].message,
+        "the upper half of `art/picture.png` needs 304 distinct tiles, counting the first 3 of the \
+         lower half that both pattern tables hold; a pattern table allows 256"
     );
 }
