@@ -1,0 +1,101 @@
+// A copper bar: one colour per scanline, set as the beam reaches it,
+// swinging up and down the screen on a sine.
+//
+// Rendering stays off, and with it off the PPU shows the palette entry
+// its address register points at (see .cerebro/traps.md). So the bar is
+// five palette entries, dark to white, and every scanline points the
+// address at the one its line of the bar needs, or at the black
+// backdrop. A `frame ... using timed` schedule runs that handler on 239
+// scanlines as a loop.
+//
+// Build it with
+//
+//     rasterc examples/copper/copper.raster
+//
+// and open copper.nes in an emulator.
+
+target nes { mapper: mmc3  region: ntsc }
+
+// Which palette entry each line of the bar shows, counted from its top:
+// 28 lines, brightest in the middle. Every entry past the bar is $00,
+// the backdrop, so a line above or below the bar reads black.
+const BAR: [256]u8 = [
+    $01, $01, $01, $02, $02, $02, $03, $03, $03, $04, $04, $04, $05, $05, $05, $05,
+    $04, $04, $04, $03, $03, $03, $02, $02, $02, $01, $01, $01, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+]
+
+// The bar's top line for each step of the swing: two whole swings,
+// between lines 16 and 196.
+const SWING: [256]u8 = [
+    106, 110, 115, 119, 124, 128, 132, 136, 140, 144, 148, 152, 156, 160, 163, 166,
+    170, 173, 176, 178, 181, 183, 185, 187, 189, 191, 192, 193, 194, 195, 196, 196,
+    196, 196, 196, 195, 194, 193, 192, 191, 189, 187, 185, 183, 181, 178, 176, 173,
+    170, 166, 163, 160, 156, 152, 148, 144, 140, 136, 132, 128, 124, 119, 115, 110,
+    106, 102,  97,  93,  88,  84,  80,  76,  72,  68,  64,  60,  56,  52,  49,  46,
+     42,  39,  36,  34,  31,  29,  27,  25,  23,  21,  20,  19,  18,  17,  16,  16,
+     16,  16,  16,  17,  18,  19,  20,  21,  23,  25,  27,  29,  31,  34,  36,  39,
+     42,  46,  49,  52,  56,  60,  64,  68,  72,  76,  80,  84,  88,  93,  97, 102,
+    106, 110, 115, 119, 124, 128, 132, 136, 140, 144, 148, 152, 156, 160, 163, 166,
+    170, 173, 176, 178, 181, 183, 185, 187, 189, 191, 192, 193, 194, 195, 196, 196,
+    196, 196, 196, 195, 194, 193, 192, 191, 189, 187, 185, 183, 181, 178, 176, 173,
+    170, 166, 163, 160, 156, 152, 148, 144, 140, 136, 132, 128, 124, 119, 115, 110,
+    106, 102,  97,  93,  88,  84,  80,  76,  72,  68,  64,  60,  56,  52,  49,  46,
+     42,  39,  36,  34,  31,  29,  27,  25,  23,  21,  20,  19,  18,  17,  16,  16,
+     16,  16,  16,  17,  18,  19,  20,  21,  23,  25,  27,  29,  31,  34,  36,  39,
+     42,  46,  49,  52,  56,  60,  64,  68,  72,  76,  80,  84,  88,  93,  97, 102,
+]
+
+var step: u8 = 0
+var top: u8 = 106
+var line: u8 = 0
+var shade: u8 = 0
+
+main {
+    ppu.ctrl = $00              // NMI off: a timed frame cannot spare its 13 cycles
+    ppu.mask = $00              // rendering off, so the address picks the colour
+
+    ppu.addr = $3f
+    ppu.addr = $00
+    ppu.data = $0f              // $3F00: black, everywhere but the bar
+    ppu.data = $02              // $3F01: the bar's edges, darkest
+    ppu.data = $12
+    ppu.data = $22
+    ppu.data = $32
+    ppu.data = $30              // $3F05: its middle, white
+
+    ppu.addr = $00              // leave palette space until the first
+    ppu.addr = $00              // scanline points somewhere on purpose
+}
+
+frame copper using timed {
+    every 1 scanlines from 0 to 238 {
+        shade = BAR[line - top]
+        line += 1
+        // Wait until the beam is past the right edge of the picture, so
+        // the colour changes where nobody can see it.
+        cycles(18) pad { }
+        ppu.addr = $3f
+        ppu.addr = shade
+    }
+    // The bar never reaches the last line, so it stays black, and its
+    // handler moves the bar for the next frame.
+    at scanline 239 {
+        step += 1
+        top = SWING[step]
+        line = 0
+    }
+}

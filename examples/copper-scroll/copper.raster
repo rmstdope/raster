@@ -1,4 +1,5 @@
-// A copper bar that swings up and down the screen on a sine.
+// A copper bar that swings up and down the screen on a sine, drawn once
+// and scrolled. examples/copper does the same bar a scanline at a time.
 //
 // The bar is drawn once, in art/bar.png: 48 lines of red, brightest in
 // the middle and darker towards both edges, on a transparent background
@@ -52,6 +53,10 @@ main {
 
 // The PPU copies the vertical scroll at the start of each frame, so a
 // handler on the last visible line moves the whole of the next picture.
+// A timed pass is three frames of a picture with rendering off. This
+// one renders, which makes frames a dot shorter every other time, so the
+// handler slides slowly along the frame: harmless here, because the two
+// scroll writes take effect at the next frame wherever they land.
 frame copper using timed {
     at scanline 239 {
         step += 1
