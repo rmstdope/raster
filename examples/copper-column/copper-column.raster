@@ -1,0 +1,149 @@
+// A copper bar behind a picture: the zombie-NES illustration on the left
+// of the screen, and a red copper bar swinging up and down behind it,
+// showing through the picture's black and running on across a copper
+// column on the right.
+//
+// A picture is drawn with rendering on, and the PPU's palette cannot be
+// written while it renders. So each line turns rendering off for a few
+// dozen cycles, writes the bar's colour into the backdrop at $3F00, puts
+// the scroll back where the next line expects it, and turns rendering on
+// again. While rendering is off the PPU shows the backdrop instead of the
+// picture, and that happens at the end of every line: the copper column.
+// The picture is fitted into the left 128 pixels so it stays clear of it.
+// Each line's colour is written part-way into the column, so the column's
+// left part still shows the line before: a small step down the bar.
+//
+// Build it with
+//
+//     rasterc examples/copper-column/copper-column.raster
+//
+// and open copper-column.nes in an emulator.
+
+target nes { mapper: mmc3  region: ntsc }
+
+asset image zombie = png("../assets/zombie-nes.png") {
+    kind:    background
+    palette: auto(4)
+    convert: true
+    width:   128     // the left 128 pixels; the column is on the right
+}
+chrrom bank 0 { zombie.tiles }
+
+// The bar, line by line from its top: nine shades of red, dark to white
+// and back, two lines each. $0F, black, everywhere past it.
+const BAR: [256]u8 = [
+    $06, $06, $16, $16, $26, $26, $36, $36, $30, $30, $36, $36, $26, $26, $16, $16,
+    $06, $06, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+    $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
+]
+
+// The bar's top line for each step of one swing, down and up between
+// lines 8 and 214.
+const SWING: [256]u8 = [
+      8,   8,   8,   8,   8,   9,   9,  10,  10,  11,  11,  12,  12,  13,  14,  15,
+     16,  17,  18,  19,  20,  21,  23,  24,  25,  27,  28,  30,  31,  33,  35,  36,
+     38,  40,  42,  44,  46,  48,  50,  52,  54,  56,  58,  60,  62,  65,  67,  69,
+     72,  74,  76,  79,  81,  84,  86,  88,  91,  93,  96,  98, 101, 103, 106, 108,
+    111, 114, 116, 119, 121, 124, 126, 129, 131, 134, 136, 138, 141, 143, 146, 148,
+    150, 153, 155, 157, 160, 162, 164, 166, 168, 170, 172, 174, 176, 178, 180, 182,
+    184, 186, 187, 189, 191, 192, 194, 195, 197, 198, 199, 201, 202, 203, 204, 205,
+    206, 207, 208, 209, 210, 210, 211, 211, 212, 212, 213, 213, 214, 214, 214, 214,
+    214, 214, 214, 214, 214, 213, 213, 212, 212, 211, 211, 210, 210, 209, 208, 207,
+    206, 205, 204, 203, 202, 201, 199, 198, 197, 195, 194, 192, 191, 189, 187, 186,
+    184, 182, 180, 178, 176, 174, 172, 170, 168, 166, 164, 162, 160, 157, 155, 153,
+    150, 148, 146, 143, 141, 138, 136, 134, 131, 129, 126, 124, 121, 119, 116, 114,
+    111, 108, 106, 103, 101,  98,  96,  93,  91,  88,  86,  84,  81,  79,  76,  74,
+     72,  69,  67,  65,  62,  60,  58,  56,  54,  52,  50,  48,  46,  44,  42,  40,
+     38,  36,  35,  33,  31,  30,  28,  27,  25,  24,  23,  21,  20,  19,  18,  17,
+     16,  15,  14,  13,  12,  12,  11,  11,  10,  10,   9,   9,   8,   8,   8,   8,
+]
+
+// The low byte of the address the scroll is put back to for each line:
+// the low three bits of its tile row in bits 5-7, the rest of it having
+// come from the second $2005 write. With the writes before it, this one
+// sets the whole address.
+const LOW: [256]u8 = [
+    $00, $00, $00, $00, $00, $00, $00, $00, $20, $20, $20, $20, $20, $20, $20, $20,
+    $40, $40, $40, $40, $40, $40, $40, $40, $60, $60, $60, $60, $60, $60, $60, $60,
+    $80, $80, $80, $80, $80, $80, $80, $80, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0,
+    $C0, $C0, $C0, $C0, $C0, $C0, $C0, $C0, $E0, $E0, $E0, $E0, $E0, $E0, $E0, $E0,
+    $00, $00, $00, $00, $00, $00, $00, $00, $20, $20, $20, $20, $20, $20, $20, $20,
+    $40, $40, $40, $40, $40, $40, $40, $40, $60, $60, $60, $60, $60, $60, $60, $60,
+    $80, $80, $80, $80, $80, $80, $80, $80, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0,
+    $C0, $C0, $C0, $C0, $C0, $C0, $C0, $C0, $E0, $E0, $E0, $E0, $E0, $E0, $E0, $E0,
+    $00, $00, $00, $00, $00, $00, $00, $00, $20, $20, $20, $20, $20, $20, $20, $20,
+    $40, $40, $40, $40, $40, $40, $40, $40, $60, $60, $60, $60, $60, $60, $60, $60,
+    $80, $80, $80, $80, $80, $80, $80, $80, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0,
+    $C0, $C0, $C0, $C0, $C0, $C0, $C0, $C0, $E0, $E0, $E0, $E0, $E0, $E0, $E0, $E0,
+    $00, $00, $00, $00, $00, $00, $00, $00, $20, $20, $20, $20, $20, $20, $20, $20,
+    $40, $40, $40, $40, $40, $40, $40, $40, $60, $60, $60, $60, $60, $60, $60, $60,
+    $80, $80, $80, $80, $80, $80, $80, $80, $A0, $A0, $A0, $A0, $A0, $A0, $A0, $A0,
+    $C0, $C0, $C0, $C0, $C0, $C0, $C0, $C0, $E0, $E0, $E0, $E0, $E0, $E0, $E0, $E0,
+]
+
+var line: u8 = 0
+var top: u8 = 0
+var step: u8 = 0
+var shade: u8 = 0
+
+main {
+    load_palette(zombie.palette)
+    load_nametable(zombie.nametable, zombie.attributes)
+    // Writes to the palette step the address by 32 rather than 1: after
+    // $3F00 it points at $3F20, which is $3F00 again, so the column shows
+    // the bar's colour while rendering is off rather than the palette
+    // entry after it.
+    ppu.ctrl = $04
+    ppu.mask = $0a              // the background on, including its left edge
+}
+
+frame bar using timed {
+    // Each handler sets up the line after its own. The work before the
+    // writes runs while the line is drawn; rendering goes off as the beam
+    // reaches the column and comes back on in the horizontal blank, before
+    // the PPU fetches the next line's first tiles.
+    every 1 scanlines from 0 to 238 {
+        line += 1
+        shade = BAR[line - top]
+        ppu.addr = $3f          // the first write only waits in the PPU, so it
+                                // can come before rendering goes off
+        ppu.mask = $00          // rendering off: from here, the column
+        ppu.addr = $00          // the backdrop, $3F00
+        ppu.data = shade
+        ppu.addr = $00          // the scroll for the next line: nametable 0,
+        ppu.scroll = line       // that line,
+        ppu.scroll = 0          // no fine scroll across,
+        ppu.addr = LOW[line]    // and the address it all makes
+        ppu.mask = $0a          // rendering on again
+    }
+    // The bar never reaches the last line or the first, so this handler
+    // blacks the backdrop for the top of the next frame, moves the bar one
+    // step along its swing, and starts the count again. That work goes
+    // while rendering is off, so that it comes back on in the horizontal
+    // blank here too, and the last line ends in the column like the rest.
+    at scanline 239 {
+        ppu.addr = $3f
+        ppu.mask = $00
+        ppu.addr = $00
+        ppu.data = $0f
+        ppu.addr = $00          // the top-left of nametable 0, which the
+        ppu.addr = $00          // next frame starts from
+        step += 1
+        top = SWING[step]
+        line = 0
+        ppu.mask = $0a
+    }
+}
