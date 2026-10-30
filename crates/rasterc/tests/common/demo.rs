@@ -34,3 +34,9 @@ pub fn copper_scroll_demo_path() -> PathBuf {
 pub fn copper_demo_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/copper/copper.raster")
 }
+
+/// The three-bar copper example.
+#[allow(dead_code)]
+pub fn copper_bars_demo_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/copper-bars/copper-bars.raster")
+}

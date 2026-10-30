@@ -1,0 +1,121 @@
+// Three copper bars on one swing, each a third of a swing behind the
+// last.
+//
+// The same trick as examples/copper: rendering stays off, so the PPU
+// shows the palette entry its address register points at (see
+// .cerebro/traps.md), and every scanline points it at the shade that
+// line needs. With three bars a line can be in more than one, so each
+// line works out all three and keeps the brightest, without a branch.
+//
+// Build it with
+//
+//     rasterc examples/copper-bars/copper-bars.raster
+//
+// and open copper-bars.nes in an emulator.
+
+target nes { mapper: mmc3  region: ntsc }
+
+// Each line of a bar, counted from its top: nine shades, dark to white
+// and back. A shade is the palette entry that holds it, and the entries
+// are $01, $03, $07, $0F and $1F so that each brighter one has every bit
+// of the darker ones. OR-ing the shades of the bars a line is in then
+// gives the brightest of them. Every entry past the bar is $00, the
+// backdrop.
+const BAR: [256]u8 = [
+    $01, $03, $07, $0F, $1F, $0F, $07, $03, $01, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+]
+
+// A bar's top line for each step of the swing: two whole swings,
+// between lines 16 and 215.
+const SWING: [256]u8 = [
+    116, 120, 125, 130, 135, 140, 144, 149, 154, 158, 162, 167, 171, 175, 179, 182,
+    186, 189, 192, 195, 198, 201, 203, 205, 207, 209, 211, 212, 213, 214, 215, 215,
+    215, 215, 215, 214, 213, 212, 211, 209, 207, 205, 203, 201, 198, 195, 192, 189,
+    186, 182, 179, 175, 171, 167, 162, 158, 154, 149, 144, 140, 135, 130, 125, 120,
+    116, 111, 106, 101,  96,  91,  87,  82,  77,  73,  69,  64,  60,  56,  52,  49,
+     45,  42,  39,  36,  33,  30,  28,  26,  24,  22,  20,  19,  18,  17,  16,  16,
+     16,  16,  16,  17,  18,  19,  20,  22,  24,  26,  28,  30,  33,  36,  39,  42,
+     45,  49,  52,  56,  60,  64,  69,  73,  77,  82,  87,  91,  96, 101, 106, 111,
+    115, 120, 125, 130, 135, 140, 144, 149, 154, 158, 162, 167, 171, 175, 179, 182,
+    186, 189, 192, 195, 198, 201, 203, 205, 207, 209, 211, 212, 213, 214, 215, 215,
+    215, 215, 215, 214, 213, 212, 211, 209, 207, 205, 203, 201, 198, 195, 192, 189,
+    186, 182, 179, 175, 171, 167, 162, 158, 154, 149, 144, 140, 135, 130, 125, 120,
+    116, 111, 106, 101,  96,  91,  87,  82,  77,  73,  69,  64,  60,  56,  52,  49,
+     45,  42,  39,  36,  33,  30,  28,  26,  24,  22,  20,  19,  18,  17,  16,  16,
+     16,  16,  16,  17,  18,  19,  20,  22,  24,  26,  28,  30,  33,  36,  39,  42,
+     45,  49,  52,  56,  60,  64,  69,  73,  77,  82,  87,  91,  96, 101, 106, 111,
+]
+
+// A third of a swing, in steps: 128 steps make one.
+const PHASE: u8 = 43
+
+var step: u8 = 0
+var top1: u8 = 116
+var top2: u8 = 201
+var top3: u8 = 28
+var line: u8 = 1
+var shade: u8 = 0
+
+main {
+    ppu.ctrl = $00              // NMI off: a timed frame cannot spare its 13 cycles
+    ppu.mask = $00              // rendering off, so the address picks the colour
+
+    ppu.addr = $3f              // $3F00: black, everywhere but the bars
+    ppu.addr = $00
+    ppu.data = $0f
+    ppu.addr = $3f              // $3F01: the bars' edges, darkest
+    ppu.addr = $01
+    ppu.data = $02
+    ppu.addr = $3f
+    ppu.addr = $03
+    ppu.data = $12
+    ppu.addr = $3f
+    ppu.addr = $07
+    ppu.data = $22
+    ppu.addr = $3f
+    ppu.addr = $0f
+    ppu.data = $32
+    ppu.addr = $3f              // $3F1F: their middles, white
+    ppu.addr = $1f
+    ppu.data = $30
+
+    ppu.addr = $00              // leave palette space until the first
+    ppu.addr = $00              // scanline points somewhere on purpose
+}
+
+frame bars using timed {
+    // Each handler sets the colour of the line after its own, and its
+    // last write lands once the beam is past the right edge of the
+    // picture, so the colour changes where nobody can see it.
+    every 1 scanlines from 0 to 238 {
+        shade = BAR[line - top1] | BAR[line - top2] | BAR[line - top3]
+        line += 1
+        ppu.addr = $3f
+        ppu.addr = shade
+    }
+    // The bars never reach the last line or the first, so they stay
+    // black, and this handler moves the bars for the next frame. Line 0's
+    // handler colours line 1, so that is where the count starts.
+    at scanline 239 {
+        step += 1
+        top1 = SWING[step]
+        top2 = SWING[step + PHASE]
+        top3 = SWING[step + PHASE + PHASE]
+        line = 1
+    }
+}
