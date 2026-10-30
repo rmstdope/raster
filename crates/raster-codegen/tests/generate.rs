@@ -11,6 +11,20 @@ use raster_link::{
 use raster_sema::analyze;
 use raster_syntax::{parse, Span};
 
+/// Every instruction a program emits, in order, leaving out the page alignments and data blocks
+/// laid out among them.
+fn program_instructions(output: &raster_codegen::CodegenOutput) -> Vec<raster_6502::Instruction> {
+    output
+        .program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+            _ => None,
+        })
+        .collect()
+}
+
 fn generate_source(source: &str) -> raster_codegen::CodegenOutput {
     let syntax = parse(source).expect("fixture should parse");
     let typed = analyze(&syntax).expect("fixture should analyze");
@@ -35,7 +49,7 @@ fn generates_relocatable_calls_control_flow_arithmetic_and_register_stores() {
             }
         "#,
     );
-    let instructions = raster_link::instructions(&output.program.items);
+    let instructions = program_instructions(&output);
 
     assert!(instructions
         .iter()
@@ -207,7 +221,7 @@ fn timed_region_emits_analyzed_bytes_without_post_analysis_changes() {
             }
         "#,
     );
-    let instructions = raster_link::instructions(&output.program.items);
+    let instructions = program_instructions(&output);
 
     let php = instructions
         .iter()
@@ -276,7 +290,7 @@ fn timed_region_emits_analyzed_bytes_without_post_analysis_changes() {
 #[test]
 fn an_interruptible_region_keeps_interrupts_enabled() {
     let output = generate_source("main { cycles(10) pad interruptible { var value: u8 = 1 } }");
-    let instructions = raster_link::instructions(&output.program.items);
+    let instructions = program_instructions(&output);
 
     assert!(!instructions
         .iter()
@@ -286,7 +300,7 @@ fn an_interruptible_region_keeps_interrupts_enabled() {
 #[test]
 fn a_nested_region_restores_the_interrupt_flag_rather_than_enabling_interrupts() {
     let output = generate_source("main { cycles(<= 40) { cycles(<= 20) { var value: u8 = 1 } } }");
-    let instructions = raster_link::instructions(&output.program.items);
+    let instructions = program_instructions(&output);
 
     // `CLI` here would unmask interrupts for the rest of the outer region, which had asked for
     // exactly the opposite. `PLP` puts back whatever `PHP` saved.
@@ -336,13 +350,15 @@ fn a_report_region_carries_its_measured_cost_out_under_its_label() {
 #[test]
 fn wait_cycles_emits_the_planned_delay_as_a_counted_loop() {
     let output = generate_source("main { wait cycles(40) }");
-    let instructions = raster_link::instructions(&output.program.items);
+    let instructions = program_instructions(&output);
 
     let plan = raster_timing::plan_delay(40, true).expect("a 40 cycle delay");
     assert_eq!(raster_timing::delay_cycles(&plan), 40);
 
-    // `LDX #n`, `DEX`, `BEQ out`, `JMP back`: the loop closes on a jump, so no taken branch's
-    // page-crossing penalty has to be proven away.
+    // `LDX #n`, `DEX`, `BEQ out`, `JMP back`: the loop closes on a jump, so only the `BEQ` out is
+    // ever taken, and the loop sits in an island laid out after a page alignment, where that
+    // branch cannot cross into another page.
+    assert!(output.program.items.contains(&FixedBankItem::PageAlign));
     let ldx = instructions
         .iter()
         .position(|instruction| instruction.opcode == 0xa2)
@@ -355,7 +371,7 @@ fn wait_cycles_emits_the_planned_delay_as_a_counted_loop() {
 #[test]
 fn sync_exact_lowers_to_the_documented_de_jitter_poll() {
     let output = generate_source("main { sync exact }");
-    let instructions = raster_link::instructions(&output.program.items);
+    let instructions = program_instructions(&output);
 
     // `BIT $2002` then `BPL` back to it: the read-and-branch de-jitter of spec section 6.6.
     let bit = instructions
@@ -393,7 +409,7 @@ const BIT_ABSOLUTE: u8 = 0x2c;
 const STA_ABSOLUTE: u8 = 0x8d;
 
 fn instructions(source: &str) -> Vec<raster_6502::Instruction> {
-    raster_link::instructions(&generate_source(source).program.items)
+    program_instructions(&generate_source(source))
 }
 
 /// The cost of each timed region in the emitted stream, in order. The fixtures here nest none, so
@@ -655,7 +671,7 @@ fn a_timed_frame_delays_from_the_origin_to_each_handlers_scanline() {
             }
         "#,
     );
-    let instructions = raster_link::instructions(&output.program.items);
+    let instructions = program_instructions(&output);
 
     let pass = raster_timing::plan_timed_frame(&[60, 120], 3);
     assert!(pass.handlers.iter().all(|handler| handler.delay_cycles > 0));

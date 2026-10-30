@@ -42,7 +42,16 @@ fn emitted(source: &str) -> Vec<Instruction> {
     // The same ISA policy `compile_source` builds a ROM under, so this measures what ships.
     let output = generate_with_isa(&lower(&typed).expect("the fixture lowers"), true)
         .expect("the fixture generates");
-    raster_link::instructions(&output.program.items)
+    // Instructions only: the islands a loop is kept on are laid out after a page alignment.
+    output
+        .program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            raster_link::FixedBankItem::Instruction { instruction, .. } => Some(*instruction),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The instructions between the region's `SEI` and `PLP` — exactly what was analysed.
@@ -301,18 +310,10 @@ fn a_delay_spends_its_planned_cycles_across_the_branch_its_loop_takes() {
     )
     .expect("the fixture is measurable");
 
-    // `DelayStep::Loop` closes on a `JMP` so that only one branch is ever taken, and the compiler
-    // reserves exactly one cycle for that branch crossing a page. Asserting the whole range is
-    // asserting the guarantee; asserting a single number would assert a linker layout instead.
-    //
-    // Which also means the upper end is unexercised: this loop happens to sit within one page, so
-    // the reserved cycle is charged by `worst_case_cycles` and measured by nothing. Forcing the
-    // branch across a page needs alignment control the linker cannot yet express.
-    assert!(
-        (predicted..=predicted + 1).contains(&actual),
-        "delay-bracketed.raster: the compiler predicted {predicted} cycles and the delay spent \
-         {actual}, more than the one cycle a page-crossing branch is allowed"
-    );
+    // `DelayStep::Loop` closes on a `JMP` so that only one branch is ever taken, and the loop runs
+    // in an island kept on one page, so that branch never pays for crossing one: the delay spends
+    // exactly what was planned, wherever the linker puts it.
+    compare("delay-bracketed.raster", predicted, actual);
 }
 
 #[test]
@@ -416,5 +417,34 @@ fn direct_operands_spend_exactly_the_budget_their_region_was_held_to() {
         "direct-operands.raster",
         57,
         measured("direct-operands.raster", &source),
+    );
+}
+
+#[test]
+fn a_delay_spends_exactly_its_planned_cycles_wherever_its_loop_lands() {
+    // `value = 1` is four bytes, so 0 to 63 of them ahead of the delay move its loop through every
+    // position on a page, among them the ones where the branch closing the loop crosses into the
+    // next. A timed frame never re-synchronizes, so one cycle more there is a cycle more every pass.
+    let planned = delay_cycles(&plan_delay(1000, true).expect("a thousand cycles are reachable"));
+    let predicted = planned + cost(&[bare(PLP), bare(PHP)]);
+    let mut wrong = Vec::new();
+    for shift in 0..64 {
+        let source = format!(
+            "main {{\n    var value: u8 = 0\n{}    cycles(?) before {{\n        value = 1\n    }}\n    wait cycles(1000)\n    cycles(?) after {{\n        value = 2\n    }}\n}}\n",
+            "    value = 1\n".repeat(shift)
+        );
+        let actual = cycles_between(
+            "shifted-delay.raster",
+            &compile_source(&source).expect("the fixture compiles").image,
+            Window::new(PLP, PHP),
+        )
+        .expect("the fixture is measurable");
+        if actual != predicted {
+            wrong.push((shift, actual));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the delay was planned at {predicted} cycles and spent otherwise (shift, cycles): {wrong:?}"
     );
 }

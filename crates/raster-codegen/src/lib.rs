@@ -157,9 +157,8 @@ const SCANLINES_PER_TURN: usize = 3;
 const LOOP_TURN_CYCLES: u32 = 3 + 5 + 2 + 6 + 3;
 const _: () = assert!(LOOP_TURN_CYCLES == 3 + 5 + 3 + 2 + 3 + 3);
 const NOP: u8 = 0xea;
-/// The bytes of one loop island: `DEC` 2, `BEQ` 2, three `NOP`s 3, `JMP` 3, `LDA #` 2, `STA` 2,
-/// `JMP` 3.
-const ISLAND_BYTES: usize = 17;
+/// The bytes of one page, which an island is kept within.
+const PAGE_BYTES: usize = 256;
 /// The two RAM bytes an IRQ chain dispatches through: each handler leaves the address of its
 /// successor here, and the `$FFFE` entry is a `JMP` through it.
 ///
@@ -212,6 +211,7 @@ pub fn generate_with_isa(
         data_pieces: BTreeMap::new(),
         page_aligned: BTreeSet::new(),
         next_counter: usize::from(FIRST_ZERO_PAGE_ADDRESS) + program.places.len(),
+        islands: Vec::new(),
     };
     generator.split_data(program);
 
@@ -236,6 +236,7 @@ pub fn generate_with_isa(
         });
     }
     let reports = std::mem::take(&mut generator.reports);
+    generator.emit_islands();
     generator.emit_data(program);
     let irq = generator.irq.map(link_label);
     let frame = program.frame.as_ref().map(|frame| FrameBudget {
@@ -281,6 +282,8 @@ struct Generator<'a> {
     page_aligned: BTreeSet<Label>,
     /// The zero-page byte the next timed-frame loop counts its turns in, past every place.
     next_counter: usize,
+    /// Code that must sit on one page, held back to be laid out after everything else.
+    islands: Vec<Vec<FixedBankItem>>,
     zero_page: &'a BTreeMap<Place, u8>,
     function_parameters: BTreeMap<IrLabel, Vec<Place>>,
     next_internal_label: u32,
@@ -598,7 +601,9 @@ impl Generator<'_> {
         }
         self.delay(pass.trailing_delay_cycles, frame.span)?;
         self.jump(pass_top);
-        self.islands(&islands);
+        for island in &islands {
+            self.loop_island(island);
+        }
         Ok(())
     }
 
@@ -703,27 +708,48 @@ impl Generator<'_> {
         Ok(counter)
     }
 
-    /// Every loop's island, after the frame's closing jump so nothing falls into one.
-    ///
-    /// Each island is kept on one page, which is what holds its `BEQ` to exactly three cycles when
-    /// taken: a page alignment before the first island, and again whenever the next would cross.
-    fn islands(&mut self, islands: &[Island]) {
-        for (index, island) in islands.iter().enumerate() {
-            if index % (256 / ISLAND_BYTES) == 0 {
+    /// The code a loop jumps to at the end of every turn, kept on one page, which is what holds
+    /// its `BEQ` to exactly three cycles when taken.
+    fn loop_island(&mut self, island: &Island) {
+        let start = self.output.items.len();
+        let exit = self.internal_label();
+        self.emit_label(island.label);
+        self.emit(DEC_ZERO_PAGE, ZeroPage, Some(u16::from(island.counter)));
+        self.branch(BEQ, exit);
+        for _ in 0..3 {
+            self.emit(NOP, Implied, None);
+        }
+        self.jump(island.top);
+        self.emit_label(exit);
+        self.emit(LDA_IMMEDIATE, Immediate, Some(island.turns as u16));
+        self.emit(STA_ZERO_PAGE, ZeroPage, Some(u16::from(island.counter)));
+        self.jump(island.after);
+        self.keep_on_one_page(start);
+    }
+
+    /// Take the code emitted since item `start` out of the stream, to be laid out after all the
+    /// code where nothing falls into it, and on one page.
+    fn keep_on_one_page(&mut self, start: usize) {
+        let block = self.output.items.split_off(start);
+        self.islands.push(block);
+    }
+
+    /// Every block that must sit on one page, after the code: a page alignment before the first,
+    /// and again whenever the next would cross into another page.
+    fn emit_islands(&mut self) {
+        let mut used = PAGE_BYTES;
+        for block in std::mem::take(&mut self.islands) {
+            let bytes = raster_link::items_len(&block);
+            assert!(
+                bytes <= PAGE_BYTES,
+                "an island of {bytes} bytes fits no page"
+            );
+            if used + bytes > PAGE_BYTES {
                 self.output.items.push(FixedBankItem::PageAlign);
+                used = 0;
             }
-            let exit = self.internal_label();
-            self.emit_label(island.label);
-            self.emit(DEC_ZERO_PAGE, ZeroPage, Some(u16::from(island.counter)));
-            self.branch(BEQ, exit);
-            for _ in 0..3 {
-                self.emit(NOP, Implied, None);
-            }
-            self.jump(island.top);
-            self.emit_label(exit);
-            self.emit(LDA_IMMEDIATE, Immediate, Some(island.turns as u16));
-            self.emit(STA_ZERO_PAGE, ZeroPage, Some(u16::from(island.counter)));
-            self.jump(island.after);
+            used += bytes;
+            self.output.items.extend(block);
         }
     }
 
@@ -838,11 +864,35 @@ impl Generator<'_> {
                 self.timed_region(constraint, *pad, *interruptible, body, *span, halt_label)?;
             }
             Statement::Delay { cycles, span } => {
-                let plan = plan_delay(*cycles, self.legal_isa)
-                    .map_err(|error| CodegenError::Timing { error, span: *span })?;
-                for step in &plan {
+                let plan = |cycles| {
+                    plan_delay(cycles, self.legal_isa)
+                        .map_err(|error| CodegenError::Timing { error, span: *span })
+                };
+                let inline = plan(*cycles)?;
+                if !inline
+                    .iter()
+                    .any(|step| matches!(step, DelayStep::Loop { .. }))
+                {
+                    for step in &inline {
+                        self.delay_step(step);
+                    }
+                    return Ok(());
+                }
+                // A loop closes on a branch, which costs a cycle more when it crosses a page, and
+                // where the linker puts it is not known here. So the loop runs in an island kept
+                // on one page, and the jumps there and back come out of the delay.
+                let looped = plan(*cycles - 2 * JMP_ABSOLUTE_CYCLES)?;
+                let island = self.internal_label();
+                let back = self.internal_label();
+                self.jump(island);
+                self.emit_label(back);
+                let start = self.output.items.len();
+                self.emit_label(island);
+                for step in &looped {
                     self.delay_step(step);
                 }
+                self.jump(back);
+                self.keep_on_one_page(start);
             }
             Statement::SyncExact => {
                 // Spec section 6.6's read-and-branch de-jitter: spin on the PPU status register
@@ -951,8 +1001,9 @@ impl Generator<'_> {
 
     /// Emit one piece of a planned delay.
     ///
-    /// The loops close on a relocated `JMP` rather than a backward branch, so no taken branch's
-    /// page-crossing penalty has to be proven away — see [`raster_timing::DelayStep`].
+    /// The loops close on a relocated `JMP` rather than a backward branch, so only the `BEQ` that
+    /// leaves each loop is ever taken; a `Delay` keeps the whole loop on one page, so that branch
+    /// never pays for crossing one — see [`raster_timing::DelayStep`].
     fn delay_step(&mut self, step: &DelayStep) {
         match step {
             DelayStep::Filler(instructions) => self.emit_all(instructions),
