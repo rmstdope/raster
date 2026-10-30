@@ -1605,3 +1605,25 @@ fn the_specifications_register_table_lists_every_apu_register() {
     );
     assert!(section.contains("`apu.status` ($4015) is the one sound register that reads back"));
 }
+
+/// A handler with a `return`, a store that turns rendering off and an hblank overrun earns three
+/// refusals, and the author fixing it sees all three in the one build rather than one per run.
+#[test]
+fn an_irq_handler_with_three_faults_reports_all_three_at_once() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 {\n\
+                  \n        ppu.mask = $00\n        ppu.mask = $5e\n        ppu.mask = $7e\n\
+                  \n        ppu.mask = $9e\n        ppu.mask = $be\n        return\n    }\n}\n";
+    let diagnostics = compile_source(source).expect_err("the handler has three faults");
+
+    let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "an `irq` handler cannot `return`",
+            "an `irq` handler cannot turn rendering off",
+            "an `irq` handler exceeds its hblank",
+        ],
+        "found {diagnostics:?}"
+    );
+}
