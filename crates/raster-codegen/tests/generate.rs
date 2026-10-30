@@ -1151,3 +1151,23 @@ fn a_table_read_inside_a_timed_region_costs_exactly_four_cycles() {
     // PHP 3, SEI 2, LDA zp 3, TAX 2, LDA abs,X 4 (no page can be crossed), STA zp 3, PLP 4.
     assert_eq!(output.reports, [("read".to_owned(), 21)]);
 }
+
+#[test]
+fn a_run_whose_handler_cannot_spare_a_turn_s_end_is_unrolled_rather_than_refused() {
+    // 109 cycles fit a scanline but not the 19 a loop takes from the end of each turn, so the run
+    // stays unrolled: looping is how the compiler saves space, never a reason to refuse a program.
+    let output = generate_source(
+        r#"
+            var a: u8
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                every 1 scanlines from 10 to 16 {
+                    cycles(100) pad { a = a ^ 1 }
+                }
+            }
+        "#,
+    );
+
+    let rows = budget_rows(&output);
+    assert_eq!(rows, [("scanline 10-16 every 1".to_owned(), 109, 113)]);
+}

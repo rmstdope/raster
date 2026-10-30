@@ -61,7 +61,7 @@ const SWING: [256]u8 = [
 
 var step: u8 = 0
 var top: u8 = 106
-var line: u8 = 0
+var line: u8 = 1
 var shade: u8 = 0
 
 main {
@@ -82,20 +82,22 @@ main {
 }
 
 frame copper using timed {
+    // Each handler sets the colour of the line after its own: it waits
+    // until the beam is past the right edge of the picture, so the colour
+    // changes where nobody can see it, and the next line starts in it.
     every 1 scanlines from 0 to 238 {
         shade = BAR[line - top]
         line += 1
-        // Wait until the beam is past the right edge of the picture, so
-        // the colour changes where nobody can see it.
         cycles(18) pad { }
         ppu.addr = $3f
         ppu.addr = shade
     }
-    // The bar never reaches the last line, so it stays black, and its
-    // handler moves the bar for the next frame.
+    // The bar never reaches the last line or the first, so they stay
+    // black, and this handler moves the bar for the next frame. Line 0's
+    // handler colours line 1, so that is where the count starts.
     at scanline 239 {
         step += 1
         top = SWING[step]
-        line = 0
+        line = 1
     }
 }

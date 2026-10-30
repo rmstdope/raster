@@ -451,13 +451,15 @@ bit 7 is set or where it cannot see the value. The ROM is still written.
 
 **A `timed` schedule is emitted once per frame of its pass**, three frames, because
 only three whole frames are a whole number of CPU cycles. Each handler is unrolled
-there, except an `every 1 scanlines` run long enough for two turns of a loop. Three
-scanlines are exactly 341 cycles, so a turn is three handlers whose budgets repeat
-exactly, and the run's handlers are emitted three times a frame rather than once a
-scanline: a handler on all 240 lines fits the fixed bank. The end of each turn costs
-19 cycles, out of the turn's last handler, whether the loop goes round or leaves, so
-the budget table shows that handler's window 19 cycles narrower than its scanline.
-The run's last handler, and any a whole turn does not cover, are still unrolled.
+there, except an `every 1 scanlines` run of seven or more scanlines, which becomes a
+loop. Three scanlines are exactly 341 cycles, so a turn is three handlers whose
+budgets repeat exactly, and the run's handlers are emitted three times a frame rather
+than once a scanline: a handler on all 240 lines fits the fixed bank. The end of each
+turn costs 19 cycles, out of the turn's last handler, whether the loop goes round or
+leaves, so the budget table shows that handler's window 19 cycles narrower than its
+scanline. The run's last handler, and any a whole turn does not cover, are still
+unrolled. A loop only saves space and never refuses a program: a run whose handler
+cannot spare those 19 cycles is unrolled, and judged against its whole scanline.
 
 ### 7.2 What the compiler verifies
 

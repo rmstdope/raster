@@ -84,5 +84,16 @@ fn every_looped_handler_lands_at_the_same_point_of_its_scanline() {
             latest - earliest <= 3,
             "frame {frames}: writes land between columns {earliest} and {latest}: {columns:?}"
         );
+        // Three scanlines are exactly 341 cycles, so a row lands where the row three above it did,
+        // to the dot. That holds across a turn's end and across leaving the loop, where a cycle
+        // too many on either path would show as a three-dot step.
+        for y in 3..FRAME_HEIGHT {
+            assert_eq!(
+                columns[y],
+                columns[y - 3],
+                "frame {frames}: row {y} lands at a different column from row {}: {columns:?}",
+                y - 3
+            );
+        }
     }
 }

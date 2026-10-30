@@ -123,14 +123,16 @@ fn the_example_builds_with_a_handler_on_every_line() {
 fn the_bar_is_set_line_by_line_and_swings() {
     let (_, _, rom) = build();
 
-    // Three consecutive frames are the three phases of the timed pass, each with its own loop.
+    // Three consecutive frames are the three phases of the timed pass, each with its own loop,
+    // and they sit where the swing is moving. Later frames may land where it turns and pauses, so
+    // they are only judged whole and on screen.
     let tops: Vec<usize> = [10, 11, 12, 40, 300]
         .into_iter()
         .map(|frames| bar_top(&lines(&rom, frames)))
         .collect();
 
     assert!(
-        tops.windows(2).all(|pair| pair[0] != pair[1]),
+        tops[0] != tops[1] && tops[1] != tops[2],
         "the bar moves every frame: {tops:?}"
     );
     for top in tops {

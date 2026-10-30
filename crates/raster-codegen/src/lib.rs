@@ -302,11 +302,10 @@ struct FrameRow {
 /// How one frame of a timed pass emits its handlers: one at a time, or a run of them as a loop.
 enum Segment {
     Handler(usize),
-    /// `turns` turns of [`SCANLINES_PER_TURN`] handlers from `start`, counted in `counter`.
+    /// `turns` turns of [`SCANLINES_PER_TURN`] handlers from `start`.
     Loop {
         start: usize,
         turns: usize,
-        counter: u8,
     },
 }
 
@@ -523,13 +522,20 @@ impl Generator<'_> {
         let pass = plan_timed_frame(&scanlines, JMP_ABSOLUTE_CYCLES);
         let mut frames = Vec::new();
         for handlers in pass.handlers.chunks(frame.events.len()) {
-            frames.push(self.segments(&frame.events, handlers, frame.span)?);
+            frames.push(self.segments(&frame.events, handlers, halt_label));
         }
-        // Every counter starts armed; each loop re-arms its own on the way out.
+        // One counter for each run, shared by its loop in every frame of the pass: the copies
+        // never run at once, and each leaves it re-armed. Every counter starts armed.
+        let mut counters = BTreeMap::new();
         for segment in frames.iter().flatten() {
-            if let Segment::Loop { turns, counter, .. } = segment {
-                self.emit(LDA_IMMEDIATE, Immediate, Some(*turns as u16));
-                self.emit(STA_ZERO_PAGE, ZeroPage, Some(u16::from(*counter)));
+            if let Segment::Loop { start, turns } = *segment {
+                if counters.contains_key(&start) {
+                    continue;
+                }
+                let counter = self.allocate_counter(frame.span)?;
+                counters.insert(start, counter);
+                self.emit(LDA_IMMEDIATE, Immediate, Some(turns as u16));
+                self.emit(STA_ZERO_PAGE, ZeroPage, Some(u16::from(counter)));
             }
         }
 
@@ -555,11 +561,8 @@ impl Generator<'_> {
                             halt_label,
                         )?;
                     }
-                    Segment::Loop {
-                        start,
-                        turns,
-                        counter,
-                    } => {
+                    Segment::Loop { start, turns } => {
+                        let counter = counters[&start];
                         self.delay(handlers[start].delay_cycles, frame.events[start].span)?;
                         let top = self.internal_label();
                         let after = self.internal_label();
@@ -622,12 +625,16 @@ impl Generator<'_> {
     /// budgets repeat every [`SCANLINES_PER_TURN`]. The run's last handler is always left out of
     /// the loop, because its budget reaches whatever follows the run rather than the next scanline,
     /// and so are the ones a whole turn does not cover.
+    ///
+    /// A loop is how the compiler saves space, never a reason to refuse a program: a run whose
+    /// handler cannot also spare the [`LOOP_TURN_CYCLES`] the end of a turn takes is unrolled, and
+    /// judged against its whole scanline as it always was.
     fn segments(
         &mut self,
         events: &[FrameEvent],
         handlers: &[ScheduledHandler],
-        span: Span,
-    ) -> Result<Vec<Segment>, CodegenError> {
+        halt_label: IrLabel,
+    ) -> Vec<Segment> {
         let mut segments = Vec::new();
         let mut start = 0;
         while start < events.len() {
@@ -642,21 +649,43 @@ impl Generator<'_> {
                 let first = start + (index - start) % SCANLINES_PER_TURN;
                 handlers[index].budget_cycles == handlers[first].budget_cycles
             });
-            let looped = if turns >= 2 && periodic {
-                let counter = self.allocate_counter(span)?;
-                segments.push(Segment::Loop {
-                    start,
-                    turns,
-                    counter,
-                });
-                turns * SCANLINES_PER_TURN
+            let last_of_turn = start + SCANLINES_PER_TURN - 1;
+            let looped = turns >= 2
+                && periodic
+                && self
+                    .handler_cycles(&events[start], halt_label)
+                    .is_some_and(|cycles| {
+                        cycles + LOOP_TURN_CYCLES <= handlers[last_of_turn].budget_cycles
+                    });
+            let unrolled_from = if looped {
+                segments.push(Segment::Loop { start, turns });
+                start + turns * SCANLINES_PER_TURN
             } else {
-                0
+                start
             };
-            segments.extend((start + looped..start + run).map(Segment::Handler));
+            segments.extend((unrolled_from..start + run).map(Segment::Handler));
             start += run;
         }
-        Ok(segments)
+        segments
+    }
+
+    /// What a handler's body costs with its interrupt masking, measured by emitting it and taking
+    /// it back out. `None` when it cannot be measured, which the handler's own emission will say.
+    fn handler_cycles(&mut self, event: &FrameEvent, halt_label: IrLabel) -> Option<u32> {
+        let (items, reports) = (self.output.items.len(), self.reports.len());
+        let cycles = self
+            .timed_region(
+                &CycleConstraint::AtMost(u32::MAX),
+                false,
+                false,
+                &event.body,
+                event.span,
+                Some(halt_label),
+            )
+            .ok();
+        self.output.items.truncate(items);
+        self.reports.truncate(reports);
+        cycles
     }
 
     /// A zero-page byte of the compiler's own, past every place the program declared.
