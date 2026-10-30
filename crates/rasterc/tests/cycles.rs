@@ -508,7 +508,9 @@ fn a_delay_whose_loop_count_turns_on_its_jumps_is_spent_exactly() {
             bracketed_delay(cycles),
         );
     }
+}
 
+#[test]
 fn constant_arithmetic_in_a_timed_region_is_folded_and_reported_at_its_cost() {
     let source = fixture("constant-arithmetic.raster");
     let rom = compile_source(&source).expect("constant arithmetic has a fixed cost");

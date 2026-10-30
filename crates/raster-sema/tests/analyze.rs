@@ -266,6 +266,10 @@ fn accepts_constant_arithmetic_with_loop_operators_in_a_timed_block() {
                     ppu.data = 2*3
                     count = N * 4 + 12 / 4 + 7 % 3 + (1 << 2) + ($80 >> N)
                     vram_addr = $2000 + 32*4 + 2
+                    ppu.data = -1*2
+                    ppu.data = (1-2)*3
+                    ppu.data = 7/0*1
+                    ppu.data = ~1*2
                 }
             }
         "#,

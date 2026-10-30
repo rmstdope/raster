@@ -1315,8 +1315,7 @@ impl Analyzer {
         let right_type = self.expression_type(right);
         // `raster-ir` folds an operation on two constants into its value, so `2*3` costs what
         // the constant 6 costs and emits no loop at all.
-        let folded =
-            self.evaluate_constant(left).is_some() && self.evaluate_constant(right).is_some();
+        let folded = self.folds_to_constant(left) && self.folds_to_constant(right);
         match operator.value {
             _ if folded => {}
             // Each of these lowers to a `DEX`/`BNE` loop over one of its operands, so its cost
@@ -1738,6 +1737,46 @@ impl Analyzer {
             );
         }
         value
+    }
+
+    /// Whether `raster-ir` lowers this expression to a constant: the operations it folds, over
+    /// literals and named constants. Not [`Self::evaluate_constant`], which refuses what
+    /// underflows or divides by zero, where the folding wraps to eight bits as the code would.
+    fn folds_to_constant(&self, expression: &Spanned<Expression>) -> bool {
+        match &expression.value {
+            Expression::Number(_) => true,
+            Expression::Name(name) => self.lookup(&name.value).is_some_and(|symbol| {
+                matches!(symbol.kind, SymbolKind::Constant(Some(_)))
+                    && !is_constant_array_symbol(symbol)
+            }),
+            Expression::Prefix { operator, operand } => {
+                matches!(
+                    operator.value,
+                    Operator::Plus | Operator::Minus | Operator::Tilde
+                ) && self.folds_to_constant(operand)
+            }
+            Expression::Infix {
+                left,
+                operator,
+                right,
+            } => {
+                matches!(
+                    operator.value,
+                    Operator::Plus
+                        | Operator::Minus
+                        | Operator::Star
+                        | Operator::Slash
+                        | Operator::Percent
+                        | Operator::Ampersand
+                        | Operator::Pipe
+                        | Operator::Caret
+                        | Operator::ShiftLeft
+                        | Operator::ShiftRight
+                ) && self.folds_to_constant(left)
+                    && self.folds_to_constant(right)
+            }
+            _ => false,
+        }
     }
 
     fn evaluate_constant(&self, expression: &Spanned<Expression>) -> Option<u32> {
