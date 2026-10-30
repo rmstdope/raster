@@ -151,8 +151,10 @@ fn an_attribute_cell_over_four_colours_is_located() {
 fn too_many_distinct_tiles_says_the_count() {
     // 32 by 30 tiles is 960, and each tile draws its own index in binary — eight
     // bits along its top row and a ninth below — so the first 512 are distinct.
-    // Two colours everywhere keeps every attribute cell and the sub-palette
-    // budget well inside their limits, so it is the tile count that is reached.
+    // Opaque black is entry $0D, not the backdrop, so tile 0 is not the blank tile
+    // every background starts from, and that is 513, every one of them counted. Two colours everywhere keeps every attribute cell and the
+    // sub-palette budget well inside their limits, so it is the tile count that is
+    // reached.
     let bytes = png_bytes(256, 240, |x, y| {
         let index = (y / 8) * 32 + (x / 8);
         let (column, row) = (x % 8, y % 8);
@@ -167,7 +169,7 @@ fn too_many_distinct_tiles_says_the_count() {
     let (source, diagnostic) = only_diagnostic(Fixture(PATH, bytes));
     assert_eq!(
         diagnostic.message,
-        "`art/picture.png` needs 257 distinct tiles; a background allows 256"
+        "`art/picture.png` needs 513 distinct tiles; a background allows 256"
     );
     assert_points_at_the_path(&source, &diagnostic);
 }
@@ -249,4 +251,71 @@ fn two_broken_pictures_are_both_reported() {
             "could not read `b.png`: no such file `b.png`",
         ]
     );
+}
+
+/// The program of [`source`], asking for the picture to be converted.
+fn converting_source() -> String {
+    format!(
+        "asset image picture = png(\"{PATH}\") {{ kind: background  convert: true }}\nmain {{ }}"
+    )
+}
+
+#[test]
+fn a_picture_too_large_for_the_screen_compiles_when_converted() {
+    // Twice the screen, in five colours to a region: refused as it stands, shown once converted.
+    let picture = png_bytes(512, 480, |x, y| match (x / 8 + y / 8) % 5 {
+        0 => BLACK,
+        1 => [0xf8, 0x38, 0x00, 0xff],
+        2 => [0xfc, 0xa0, 0x44, 0xff],
+        3 => [0x00, 0x00, 0xfc, 0xff],
+        _ => [0xf8, 0xf8, 0xf8, 0xff],
+    });
+
+    let found = compile_source_with_assets(&source(), &Fixture(PATH, picture.clone()))
+        .expect_err("refused as it stands");
+    assert!(
+        found[0].message.contains("is 512 by 480 pixels"),
+        "got {found:?}"
+    );
+
+    compile_source_with_assets(&converting_source(), &Fixture(PATH, picture))
+        .expect("converted, it compiles");
+}
+
+#[test]
+fn a_converted_picture_of_too_many_tiles_says_how_many_it_needs() {
+    // Every tile different: its first rows count the tile's index in binary.
+    let picture = png_bytes(256, 240, |x, y| {
+        let tile = (y / 8) * 32 + x / 8;
+        let bit = (x % 8) * 8 + y % 8;
+        if bit < 10 && tile >> bit & 1 == 1 {
+            [0xf8, 0xf8, 0xf8, 0xff]
+        } else {
+            BLACK
+        }
+    });
+    let source = converting_source();
+
+    let found =
+        compile_source_with_assets(&source, &Fixture(PATH, picture)).expect_err("too many tiles");
+
+    assert_eq!(found.len(), 1, "got {found:?}");
+    assert_eq!(
+        found[0].message,
+        "`art/picture.png` needs 960 distinct tiles; a background allows 256"
+    );
+    assert_points_at_the_path(&source, &found[0]);
+}
+
+#[test]
+fn a_jpeg_named_png_is_called_a_jpeg() {
+    let jpeg = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, b'J', b'F', b'I', b'F'].to_vec();
+    for source in [source(), converting_source()] {
+        let found = compile_source_with_assets(&source, &Fixture(PATH, jpeg.clone()))
+            .expect_err("a JPEG is not a PNG");
+        assert_eq!(
+            found[0].message, "`art/picture.png` is a JPEG, not a PNG; save it as a PNG",
+            "for {source}"
+        );
+    }
 }

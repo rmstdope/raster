@@ -1361,8 +1361,9 @@ fn a_call_an_if_and_a_while_are_still_refused_in_an_irq_handler() {
 
 const ASSET_SUBSET: &str = concat!(
     "this release reads one kind of asset: `asset image` from a `png`,\n",
-    "with `kind: background`, `palette: auto(4)` and `dedup: true`, used\n",
-    "through `.tiles`, `.nametable`, `.attributes` and `.palette`"
+    "with `kind: background`, `palette: auto(4)`, `dedup: true` and\n",
+    "`convert: true` or `false`, used through `.tiles`, `.nametable`,\n",
+    "`.attributes` and `.palette`"
 );
 
 #[test]
@@ -1390,7 +1391,7 @@ fn every_asset_refusal_says_what_the_release_reads_for_assets() {
         ),
         (
             "asset image picture = png(\"p.png\") { compress: none }\nmain { }\n",
-            "only `kind`, `palette` and `dedup` are supported yet",
+            "only `kind`, `palette`, `dedup` and `convert` are supported yet",
         ),
         (
             "asset image picture = png(\"p.png\")\nmain { picture.tile_count }\n",
@@ -1428,8 +1429,8 @@ fn the_specifications_music_asset_is_four_refusals_with_the_note_once() {
         [
             "only `asset image` is supported yet",
             "only `png` is supported yet",
-            "only `kind`, `palette` and `dedup` are supported yet",
-            "only `kind`, `palette` and `dedup` are supported yet",
+            "only `kind`, `palette`, `dedup` and `convert` are supported yet",
+            "only `kind`, `palette`, `dedup` and `convert` are supported yet",
         ]
     );
     assert_eq!(diagnostics[0].notes, [ASSET_SUBSET]);

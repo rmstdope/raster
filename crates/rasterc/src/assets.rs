@@ -6,9 +6,10 @@
 //! here is testable from bytes held in memory.
 
 use raster_assets::{
-    decode_background, encode_background, BackgroundEncodeError, NesBackground, PngBackgroundError,
+    convert_background, decode_background, encode_background, BackgroundEncodeError, ConvertError,
+    NesBackground, PngBackgroundError,
 };
-use raster_syntax::{Asset, Item, Program, Span};
+use raster_syntax::{Asset, AssetValue, Item, Program, Span};
 
 /// Where an `asset` item's file comes from.
 ///
@@ -92,9 +93,33 @@ fn resolve_one(asset: &Asset, source: &dyn AssetSource) -> Result<NesBackground,
     let bytes = source
         .read(path)
         .map_err(|reason| format!("could not read `{path}`: {reason}"))?;
+    // A JPEG renamed `.png` is the likeliest file that is not a PNG, and the PNG decoder can only
+    // say the signature is wrong.
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Err(format!("`{path}` is a JPEG, not a PNG; save it as a PNG"));
+    }
+    if converts(asset) {
+        return convert_background(bytes.as_slice()).map_err(|error| match error {
+            ConvertError::Decode { message } => {
+                format!("`{path}` is not a readable PNG: {message}")
+            }
+            ConvertError::TooManyTiles { tile_count } => {
+                encode_message(path, BackgroundEncodeError::TooManyTiles { tile_count })
+            }
+        });
+    }
     let indexed =
         decode_background(bytes.as_slice()).map_err(|error| decode_message(path, error))?;
     encode_background(&indexed).map_err(|error| encode_message(path, error))
+}
+
+/// Whether the asset says `convert: true`: made into a picture the NES can show, rather than
+/// refused unless it already is one.
+fn converts(asset: &Asset) -> bool {
+    asset.fields.iter().any(|field| {
+        field.name.value == "convert"
+            && matches!(&field.value.value, AssetValue::Word(word) if word == "true")
+    })
 }
 
 /// Every variant of `PngBackgroundError`, as something the author can act on.

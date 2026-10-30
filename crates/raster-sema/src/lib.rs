@@ -380,7 +380,7 @@ impl Analyzer {
                 if matches!(name, "driver" | "channels") {
                     self.asset_not_in_this_release(
                         field.name.span,
-                        "only `kind`, `palette` and `dedup` are supported yet",
+                        "only `kind`, `palette`, `dedup` and `convert` are supported yet",
                     );
                 } else {
                     self.error(
@@ -409,16 +409,22 @@ impl Analyzer {
                     &AssetValue::Word("true".into()),
                     "only `dedup: true` is supported yet",
                 ),
+                "convert" => {
+                    if !matches!(&field.value.value, AssetValue::Word(word) if word == "true" || word == "false")
+                    {
+                        self.error(field.value.span, "`convert` is `true` or `false`");
+                    }
+                }
                 // §8.1 of the specification defines this and this release does
                 // not build it. An author copying that block verbatim must not
                 // be told they invented it.
                 "compress" => self.asset_not_in_this_release(
                     field.name.span,
-                    "only `kind`, `palette` and `dedup` are supported yet",
+                    "only `kind`, `palette`, `dedup` and `convert` are supported yet",
                 ),
                 _ => self.error(
                     field.name.span,
-                    "unknown asset field; this release knows `kind`, `palette` and `dedup`",
+                    "unknown asset field; this release knows `kind`, `palette`, `dedup` and `convert`",
                 ),
             }
         }

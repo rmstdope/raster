@@ -69,7 +69,20 @@ pub fn encode_background(
     if palette_records.is_empty() {
         palette_records.push([TRANSPARENT_COLOUR; BACKGROUND_SUBPALETTE_BYTES]);
     }
+    assemble(background, &palette_records, &region_palette_ids)
+}
 
+/// The background `background` draws with `palette_records`, region by region as
+/// `region_palette_ids` says: its attributes, its tiles deduplicated in row-major order, and its
+/// palettes. Every pixel's colour must be in its region's palette.
+///
+/// A picture needing more than 256 tiles is refused with how many it needs, all of them, so an
+/// author knows how far over it is.
+pub(crate) fn assemble(
+    background: &IndexedBackground,
+    palette_records: &[[u8; BACKGROUND_SUBPALETTE_BYTES]],
+    region_palette_ids: &[[u8; 16]; 16],
+) -> Result<NesBackground, BackgroundEncodeError> {
     let mut attributes = [0; ATTRIBUTE_TABLE_BYTES];
     for (region_y, palette_ids) in region_palette_ids.iter().enumerate() {
         for (region_x, palette_id) in palette_ids.iter().enumerate() {
@@ -88,16 +101,16 @@ pub fn encode_background(
             let index = if let Some(index) = chr_tiles.iter().position(|known| *known == tile) {
                 index
             } else {
-                if chr_tiles.len() == 256 {
-                    return Err(BackgroundEncodeError::TooManyTiles {
-                        tile_count: chr_tiles.len() + 1,
-                    });
-                }
                 chr_tiles.push(tile);
                 chr_tiles.len() - 1
             };
             nametable[tile_y * NAMETABLE_WIDTH_TILES + tile_x] = index as u8;
         }
+    }
+    if chr_tiles.len() > 256 {
+        return Err(BackgroundEncodeError::TooManyTiles {
+            tile_count: chr_tiles.len(),
+        });
     }
 
     let mut palettes = [TRANSPARENT_COLOUR; BACKGROUND_PALETTE_BYTES];
