@@ -31,7 +31,7 @@ fn build(source: &str) -> (Result<(), i32>, String, String) {
 
 fn program(using: &str, first: &str, second: &str) -> String {
     format!(
-        "main {{\n    ppu.ctrl = $10\n    ppu.mask = $18\n}}\nframe bars {using} {{\n    at scanline 60 {{\n{first}\n    }}\n    every 8 scanlines from 96 to 200 {{\n{second}\n    }}\n}}\n"
+        "main {{\n    ppu.ctrl = $08\n    ppu.mask = $18\n}}\nframe bars {using} {{\n    at scanline 60 {{\n{first}\n    }}\n    every 8 scanlines from 96 to 200 {{\n{second}\n    }}\n}}\n"
     )
 }
 
@@ -88,7 +88,7 @@ fn a_program_with_no_frame_prints_no_table() {
 
 #[test]
 fn the_table_follows_the_cycles_rows() {
-    let source = "main {\n    ppu.ctrl = $10\n    ppu.mask = $18\n    sync exact\n    cycles(?) hblank {\n        ppu.mask = $18\n    }\n}\nframe bars using irq {\n    at scanline 60 {\n        ppu.mask = $1f\n    }\n}\n";
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $18\n    sync exact\n    cycles(?) hblank {\n        ppu.mask = $18\n    }\n}\nframe bars using irq {\n    at scanline 60 {\n        ppu.mask = $1f\n    }\n}\n";
     let (result, stdout, _) = build(source);
 
     assert_eq!(result, Ok(()));
@@ -179,7 +179,7 @@ fn a_failure_that_is_not_a_handler_overrun_prints_no_table() {
 
 #[test]
 fn rows_follow_the_order_the_frame_block_writes_them() {
-    let source = "main {\n    ppu.ctrl = $10\n    ppu.mask = $18\n}\nframe bars using irq {\n    every 8 scanlines from 96 to 200 {\n        ppu.mask = $1e\n    }\n    at scanline 0 {\n        ppu.mask = $1f\n    }\n}\n";
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $18\n}\nframe bars using irq {\n    every 8 scanlines from 96 to 200 {\n        ppu.mask = $1e\n    }\n    at scanline 0 {\n        ppu.mask = $1f\n    }\n}\n";
     let (_, stdout, _) = build(source);
 
     let every = stdout
@@ -191,7 +191,7 @@ fn rows_follow_the_order_the_frame_block_writes_them() {
 
 #[test]
 fn an_earlier_overrun_is_still_told_when_a_later_error_stops_the_build() {
-    let source = "main {\n    ppu.ctrl = $10\n    ppu.mask = $18\n}\nframe bars using irq {\n    at scanline 60 {\n        ppu.mask = $1f\n        ppu.scroll = 0\n    }\n    at scanline 100 {\n        cycles(4) {\n            ppu.mask = $1f\n        }\n    }\n}\n";
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $18\n}\nframe bars using irq {\n    at scanline 60 {\n        ppu.mask = $1f\n        ppu.scroll = 0\n    }\n    at scanline 100 {\n        cycles(4) {\n            ppu.mask = $1f\n        }\n    }\n}\n";
     let (result, _, stderr) = build(source);
 
     assert_eq!(result, Err(1));

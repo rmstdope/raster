@@ -723,7 +723,7 @@ fn nothing_unmasks_irqs_before_main_has_run() {
 
     let irq_source = r#"
         main {
-            ppu.ctrl = $10
+            ppu.ctrl = $08
             ppu.mask = $18
         }
         frame bars using irq {
@@ -815,7 +815,7 @@ fn frame_source(using: &str, first: &str, second: &str) -> String {
     format!(
         r#"
             main {{
-                ppu.ctrl = $10
+                ppu.ctrl = $08
                 ppu.mask = $18
             }}
             frame bars {using} {{

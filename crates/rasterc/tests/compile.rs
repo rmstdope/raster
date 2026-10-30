@@ -193,6 +193,28 @@ fn irq_frame_rejects_same_half_background_and_sprite_patterns() {
     );
 }
 
+/// With the background at $1000 the counter clocks twice on the pre-render line, so a schedule
+/// that compiled ran each event a scanline earlier every frame. Refused, naming the value and the
+/// layout that works.
+#[test]
+fn irq_frame_rejects_the_background_at_1000() {
+    let source = "main {\n    ppu.ctrl = $10\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 120 { ppu.data = $12 }\n    \
+                  at scanline 200 { ppu.data = $12 }\n}\n";
+    let diagnostics = compile_source(source).expect_err("the chain drifts a scanline a frame");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "`using irq` needs the background pattern table at $0000 and the sprites at $1000, \
+         and `ppu.ctrl = $10` puts the background at $1000"
+    );
+    assert!(
+        diagnostics[0].span.is_some(),
+        "the diagnostic is source-spanned"
+    );
+}
+
 #[test]
 fn irq_frame_rejects_a_schedule_the_ppu_would_never_clock() {
     let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $06\n}\n\
