@@ -279,7 +279,13 @@ fn a_blanking_irq_handler_is_refused_once_however_often_it_runs() {
     let twice = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
                  \nframe bars using irq {\n\
                  \n    at scanline 60 {\n        ppu.mask = $00\n        ppu.mask = $06\n    }\n}\n";
-    let diagnostics = compile_source(twice).expect_err("the handler blanks the screen");
+    // Two stores cost 12 cycles, so this handler also overruns its hblank, which is now reported
+    // beside the blanking; the count here is of the blanking refusals alone.
+    let diagnostics: Vec<_> = compile_source(twice)
+        .expect_err("the handler blanks the screen")
+        .into_iter()
+        .filter(|d| d.message == "an `irq` handler cannot turn rendering off")
+        .collect();
     assert_eq!(diagnostics.len(), 1, "found {diagnostics:?}");
     assert_eq!(
         diagnostics[0].message,
