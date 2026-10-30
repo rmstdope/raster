@@ -34,3 +34,6 @@ examples/**/*.nes
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# MacOS
+.DS_Store

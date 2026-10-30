@@ -64,11 +64,11 @@ const SWING: [256]u8 = [
 // How fast the bars swing: sixteenths of a step a frame, from 1 to 240.
 // 16 is a step a frame, a whole swing every 256 frames, about 4.3
 // seconds; 8 takes twice as long, and 1 more than a minute.
-const SPEED: u8 = 8
+const SPEED: u8 = 18
 
 // How far apart the bars are: steps of the swing between one and the
 // next. 256 steps are a whole swing, so 85 spreads the three about evenly.
-const PHASE: u8 = 20
+const PHASE: u8 = 30
 
 // A count of sixteenths in whole steps: entry i is i / 16. Adding SPEED
 // to the sixteenths left over and looking the sum up here is how many
