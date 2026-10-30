@@ -930,6 +930,67 @@ fn a_looped_run_over_a_rendered_picture_loops_in_each_of_its_six_frames() {
 }
 
 #[test]
+fn a_frame_handler_holds_the_constant_it_repeats_in_x() {
+    let output = generate_source(
+        r#"
+            main { ppu.mask = 0 }
+            frame bars using timed {
+                at scanline 60 {
+                    ppu.addr = $3f
+                    ppu.addr = $00
+                    ppu.addr = $00
+                    ppu.addr = $00
+                }
+            }
+        "#,
+    );
+
+    // PHP SEI PLP 9; LDA #$3F STA 6; then LDX #$00 STX 6 where the first $00 is stored, and STX 4
+    // for each after it: 29, where loading every constant would be 33.
+    assert_eq!(budget_rows(&output), [("scanline 60".to_owned(), 29, 114)]);
+    // X is loaded where it is first stored, not ahead of the run, so no store lands later than it
+    // did with every constant loaded: the `$3F` store is where it always was.
+    let opcodes: Vec<u8> = program_instructions(&output)
+        .iter()
+        .map(|instruction| instruction.opcode)
+        .collect();
+    let handler = [0x08, 0x78, 0xa9, 0x8d, 0xa2, 0x8e, 0x8e, 0x8e];
+    assert!(
+        opcodes
+            .windows(handler.len())
+            .any(|window| window == handler),
+        "PHP SEI, LDA #$3F STA, LDX #$00 STX, STX, STX: {opcodes:02x?}"
+    );
+}
+
+/// An unpadded exact block keeps its code only while it is being emitted: a bounded block after
+/// it holds its constants as if it were alone.
+#[test]
+fn a_bounded_block_after_an_exact_one_still_holds_its_constants() {
+    let output = generate_source(
+        r#"
+            main {
+                sync exact
+                cycles(21) {
+                    ppu.mask = 1
+                    ppu.mask = 1
+                }
+                cycles(<= 60) {
+                    ppu.addr = $00
+                    ppu.addr = $00
+                }
+            }
+        "#,
+    );
+
+    let stores_from_x = program_instructions(&output)
+        .iter()
+        .filter(|instruction| instruction.opcode == 0x8e && instruction.operand == Some(0x2006))
+        .count();
+    assert_eq!(stores_from_x, 2, "both `$00` stores come from X");
+}
+
+#[test]
 fn a_program_without_a_frame_reports_no_budget() {
     let output = generate_source("main { ppu.mask = 0 }");
     assert_eq!(output.frame, None);

@@ -461,6 +461,23 @@ fn a_subtraction_takes_its_operands_in_source_order() {
 }
 
 #[test]
+fn constants_held_in_x_and_y_are_the_values_stored() {
+    // `$00` four times and `$3F` twice, inside a bounded block: held in X and Y and stored from
+    // there. The backdrop is $12 only if the palette address, held in both, reached `ppu.addr`.
+    let source = "main {\n    sync exact\n    cycles(<= 60) {\n        ppu.addr = $3f\n        ppu.addr = $00\n        ppu.data = $12\n        ppu.addr = $3f\n        ppu.addr = $00\n        ppu.addr = $00\n        ppu.addr = $00\n    }\n}\n";
+    assert_eq!(backdrop_entry("held.nes", source), 0x12);
+}
+
+#[test]
+fn a_table_read_between_stores_does_not_disturb_a_held_constant() {
+    // `$00` is held in X across the stores either side, and the table read in between indexes
+    // with X, leaving 1 there: the read must end the run, or the palette address after it would be
+    // $3F01, and the backdrop at $3F00 would never get its colour.
+    let source = "const T: [2]u8 = [$0F, $12]\nvar i: u8 = 1\nvar v: u8 = 0\nmain {\n    sync exact\n    cycles(<= 80) {\n        ppu.addr = $3f\n        ppu.addr = $00\n        v = T[i]\n        ppu.addr = $3f\n        ppu.addr = $00\n        ppu.data = v\n        ppu.addr = $00\n        ppu.addr = $00\n    }\n}\n";
+    assert_eq!(backdrop_entry("held-read.nes", source), 0x12);
+}
+
+#[test]
 fn a_constant_u8_index_wraps_to_eight_bits_as_the_running_program_would() {
     // `PHASE + PHASE` is 400 on paper and 144 in eight bits; only entry 144 is blue.
     let table = (0..256)

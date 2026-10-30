@@ -322,6 +322,14 @@ never removes work.
 budget cannot be padded — a single cycle has no filler — and says so rather than
 rounding.
 
+In a padded block, a `cycles(<= N)` block and a `frame` handler, which are padded or
+bounded anyway, rasterc holds the two constants a run of plain stores repeats most in
+X and Y, each loaded where it is first stored and stored with `stx` and `sty` after
+that: four cycles a store instead of six. No store lands later than it did, and the
+ones after a held store land sooner. An unpadded `cycles(N)`, and every block inside
+one, keeps the code its count was written for, since a cheaper body would be refused
+there; so does an interruptible block, since an IRQ handler saves only A.
+
 ### 6.3 Rules inside a timed block
 
 For a cycle count to be provable, the compiler restricts what may appear. A `frame`
