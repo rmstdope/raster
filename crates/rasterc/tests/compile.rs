@@ -1656,3 +1656,34 @@ fn an_irq_handler_with_three_faults_reports_all_three_at_once() {
         "found {diagnostics:?}"
     );
 }
+
+/// Line 240 is never drawn, so a handler too long for it is told so, and is not sent back to line
+/// 239's pixels by advice to split its work across consecutive scanlines.
+#[test]
+fn an_irq_handler_too_long_for_the_undrawn_line_is_not_told_to_split_across_scanlines() {
+    let body = "        ppu.scroll = 0\n".repeat(30);
+    let source = format!(
+        "main {{\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}}\n\
+         \nframe bars using irq {{\n    at scanline 240 {{\n{body}    }}\n}}\n"
+    );
+    let diagnostics = compile_source(&source).expect_err("thirty stores do not fit line 240");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].message,
+        "an `irq` handler exceeds the undrawn line 240"
+    );
+    assert_eq!(
+        diagnostics[0].label,
+        "handler costs 180 cycles, the undrawn line leaves 122"
+    );
+    assert_eq!(
+        diagnostics[0].notes,
+        [
+            "scanline 240 is never drawn, so a handler there has the whole line\n\
+             and no visible row to tear",
+            "shorten the handler, or move the work that need not happen on that\n\
+             line into `main`",
+        ]
+    );
+}

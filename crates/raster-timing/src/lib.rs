@@ -349,6 +349,19 @@ pub const SCANLINE_BODY_CYCLES: u32 = 114;
 /// the navigator once the measurement was in.
 pub const IRQ_HANDLER_BODY_CYCLES: u32 = 9;
 
+/// The cycles of body a `frame ... using irq` handler at scanline 240 has.
+///
+/// Line 240 is the post-render line: nothing on it is drawn, so a store made anywhere along it
+/// harms no pixel. The handler still starts where every other one does, with the same
+/// [`IRQ_HANDLER_BODY_CYCLES`] left before dot 0 of the line it names, and then has the 341 dots
+/// of that line as well. By the model [`IRQ_HANDLER_BODY_CYCLES`] records (a store completing at
+/// body cycle `c` lands at column `3c - 27`), the last store must land by column 340, which is
+/// `c = 122`: the nine cycles to dot 0 and the 113 whole cycles in a line. Only the body is
+/// bounded: the last store of a body that fits lands on line 240, and the epilogue after it (about
+/// 38 cycles of latch, acknowledgement and dispatch) may run on into vblank, where nothing minds.
+pub const IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES: u32 =
+    IRQ_HANDLER_BODY_CYCLES + DOTS_PER_SCANLINE / DOTS_PER_CPU_CYCLE;
+
 /// The CPU cycles in `scanlines` NTSC scanlines, to the nearest cycle.
 ///
 /// 341 dots is not a whole number of CPU cycles, so this rounds; the error never exceeds half a

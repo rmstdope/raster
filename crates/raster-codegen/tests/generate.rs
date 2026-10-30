@@ -1281,3 +1281,72 @@ fn a_call_on_the_left_still_runs_before_the_right_is_read() {
         "the call's result is kept first"
     );
 }
+
+/// Line 240 is never drawn: a handler there is held to the whole undrawn line, not the hblank a
+/// visible line leaves.
+#[test]
+fn a_handler_at_scanline_240_gets_the_undrawn_line_and_other_lines_keep_the_hblank() {
+    let source = |at: u32, body: &str| {
+        format!(
+            "main {{ ppu.ctrl = $10\n ppu.mask = $18 }}\n\
+             frame bars using irq {{ at scanline {at} {{ {body} }} }}"
+        )
+    };
+    // Three register stores: 18 cycles, which is over a visible line's hblank.
+    let three = "ppu.ctrl = $08\n ppu.mask = $1e\n ppu.scroll = 0";
+
+    let output = generate_source(&source(240, three));
+    assert_eq!(budget_rows(&output)[0].2, 122);
+    assert_eq!(budget_rows(&output)[0].1, 18);
+
+    let syntax = parse(&source(239, three)).expect("parses");
+    let typed = analyze(&syntax).expect("analyzes");
+    let error = generate(&lower(&typed).expect("lowers")).expect_err("over the hblank at 239");
+    let CodegenError::FrameHandlersOverBudget { errors, .. } = error else {
+        panic!("expected the collected overruns, found {error:?}");
+    };
+    assert!(matches!(
+        errors[0].0,
+        raster_timing::TimingError::IrqHandlerOverHblank { budget: 9, .. }
+    ));
+
+    // 30 stores of 4+2 cycles is over the whole line.
+    let long = "ppu.scroll = 0\n".repeat(30);
+    let syntax = parse(&source(240, &long)).expect("parses");
+    let typed = analyze(&syntax).expect("analyzes");
+    let error = generate(&lower(&typed).expect("lowers")).expect_err("over line 240");
+    let CodegenError::FrameHandlersOverBudget { errors, .. } = error else {
+        panic!("expected the collected overruns, found {error:?}");
+    };
+    assert!(matches!(
+        errors[0].0,
+        raster_timing::TimingError::IrqHandlerOverHblank { budget: 122, .. }
+    ));
+}
+
+/// The window is chosen per event: in one frame, line 240 gets the undrawn line and line 120 keeps
+/// the hblank, and the edge of the window is exact.
+#[test]
+fn the_window_is_chosen_per_event_and_its_edge_is_exact() {
+    let rows = |body_240: &str| {
+        let source = format!(
+            "main {{ ppu.ctrl = $10\n ppu.mask = $18 }}\n\
+             frame bars using irq {{ at scanline 120 {{ ppu.mask = $1e }}\n\
+             at scanline 240 {{ {body_240} }} }}"
+        );
+        let syntax = parse(&source).expect("parses");
+        let typed = analyze(&syntax).expect("analyzes");
+        generate(&lower(&typed).expect("lowers"))
+    };
+    let output = rows("ppu.ctrl = $08\n ppu.mask = $1e\n ppu.scroll = 0").expect("fits");
+    assert_eq!(
+        budget_rows(&output)
+            .iter()
+            .map(|row| (row.1, row.2))
+            .collect::<Vec<_>>(),
+        [(6, 9), (18, 122)]
+    );
+    // Twenty stores of six cycles are 120: inside. Twenty-one are 126: outside.
+    assert!(rows(&"ppu.scroll = 0\n".repeat(20)).is_ok());
+    assert!(rows(&"ppu.scroll = 0\n".repeat(21)).is_err());
+}
