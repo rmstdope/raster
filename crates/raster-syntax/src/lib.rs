@@ -397,53 +397,24 @@ main {
             .nth(1)
             .unwrap();
         let program = parse(example).expect("the MVP example should parse");
-        assert_eq!(program.items.len(), 7);
+        assert_eq!(program.items.len(), 6);
 
-        let Item::Declaration(group) = &program.items[3].value else {
-            panic!("expected the raster group");
-        };
-        assert_eq!(
-            group.name.as_ref().map(|name| name.value.as_str()),
-            Some("raster")
-        );
-        let group_body = group.body.as_ref().expect("group body");
-        assert!(matches!(
-            &group_body.statements[0].value,
-            Statement::Declaration(Declaration {
-                type_annotation: Some(annotation),
-                storage: Some(storage),
-                ..
-            }) if matches!(&annotation.value, Type::Array { length, element }
-                if matches!(&length.value, Expression::Number(value) if value == "240")
-                    && matches!(&element.value, Type::Name(name) if name.value == "u8"))
-                && storage.value == "bss"
-        ));
-
-        let Item::Function(init) = &program.items[4].value else {
+        let Item::Function(init) = &program.items[3].value else {
             panic!("expected init function");
         };
         assert_eq!(init.name.value, "init");
         assert!(matches!(
-            &init.body.statements[4].value,
+            &init.body.statements[0].value,
             Statement::Expression(value)
                 if matches!(&value.value, Expression::Call { callee, arguments }
                     if matches!(&callee.value, Expression::Name(name) if name.value == "load_palette")
                         && arguments.len() == 1)
         ));
-        assert!(matches!(
-            &init.body.statements[6].value,
-            Statement::For { binding, range, body, .. }
-                if binding.value == "i"
-                    && matches!(&range.value, Expression::Range { start, end }
-                        if matches!(&start.value, Expression::Number(value) if value == "0")
-                            && matches!(&end.value, Expression::Number(value) if value == "240"))
-                    && matches!(&body.statements[0].value, Statement::Expression(_))
-        ));
 
-        let Item::Frame(frame) = &program.items[5].value else {
-            panic!("expected main frame");
+        let Item::Frame(frame) = &program.items[4].value else {
+            panic!("expected bars frame");
         };
-        assert_eq!(frame.name.value, "main");
+        assert_eq!(frame.name.value, "bars");
         assert_eq!(
             frame
                 .strategy
@@ -451,26 +422,17 @@ main {
                 .map(|strategy| strategy.value.as_str()),
             Some("irq")
         );
-        assert!(matches!(
-            &frame.events[0].value,
-            FrameEvent::Every { interval, from, to, body }
-                if matches!(&interval.value, Expression::Number(value) if value == "1")
-                    && matches!(&from.value, Expression::Number(value) if value == "0")
-                    && matches!(&to.value, Expression::Number(value) if value == "239")
-                    && matches!(&body.statements[0].value, Statement::Cycles { spec, .. }
-                        if spec.pad
-                            && matches!(&spec.bound, CycleBound::AtMost(value)
-                                if matches!(&value.value, Expression::Number(number) if number == "28")))
-        ));
+        assert_eq!(frame.events.len(), 3);
+        assert!(matches!(&frame.events[0].value, FrameEvent::At { .. }));
 
-        let Item::Main(main) = &program.items[6].value else {
+        let Item::Main(main) = &program.items[5].value else {
             panic!("expected main block");
         };
         assert!(matches!(
-            &main.statements[1].value,
-            Statement::Loop(body)
-                if matches!(&body.statements[..], [Spanned { value: Statement::Wait(_), .. }, Spanned { value: Statement::Sync(name), .. }]
-                    if name.value == "exact")
+            &main.statements[0].value,
+            Statement::Expression(value)
+                if matches!(&value.value, Expression::Call { callee, .. }
+                    if matches!(&callee.value, Expression::Name(name) if name.value == "init"))
         ));
     }
 

@@ -831,21 +831,23 @@ schedule.
 
 ## 13. Complete example — the MVP demo
 
-This is the program the MVP must compile — not one that compiles today. It parses, and
-a test in `raster-syntax` reads it out of this document and keeps it parsing;
-everything past the parser is still ahead of the compiler, including arrays in RAM,
-a call inside a handler and `using irq`. For a program that compiles now, see
-`examples/mvp/demo.raster`, the copper bar `examples/copper/copper.raster` set one
-scanline at a time, three such bars in `examples/copper-bars/copper-bars.raster`, the
-same bar drawn once and scrolled in `examples/copper-scroll/copper.raster` (and the
+This is the MVP demo: a picture imported from a PNG, tinted in three bands by scanline
+handlers. It compiles as printed with `rasterc`, beside an `art/picture.png`; a test
+reads it out of this document and builds it, so it stays buildable. It keeps to what
+`rasterc` builds today: each handler fits the 9-cycle hblank window, so none carries a
+`cycles` block. Everything the rest of this document describes that the program
+does not use is still ahead of the compiler, including arrays in RAM, a call inside a
+handler and `using irq` with a loop in `main`. A near-identical demo, with its picture, is
+`examples/mvp/demo.raster`; the copper bar `examples/copper/copper.raster` is set one
+scanline at a time, three such bars are in `examples/copper-bars/copper-bars.raster`, the
+same bar drawn once and scrolled is in `examples/copper-scroll/copper.raster` (and the
 one-colour `examples/backdrop/backdrop.raster`).
 
 ```
 target nes {
     mapper: mmc3
-    prg:    128K
-    chr:    128K
-    mirror: horizontal
+    prg:    32K
+    mirror: vertical
     region: ntsc
 }
 
@@ -857,41 +859,21 @@ asset image picture = png("art/picture.png") {
 
 chrrom bank 0 { picture.tiles }
 
-group raster {
-    var bars: [240]u8 in bss
-}
-
 fn init() {
-    ppu.ctrl = $00
-    ppu.mask = $00
-    wait vblank
-    wait vblank
-
     load_palette(picture.palette)
     load_nametable(picture.nametable, picture.attributes)
-
-    for i in 0..240 {
-        raster.bars[i] = sine_table[i] & $E0
-    }
-
-    ppu.ctrl = $88          // NMI on, BG pattern table at $0000
+    ppu.ctrl = $08          // NMI off, BG pattern table at $0000
     ppu.mask = $1E          // rendering on
 }
 
-frame main using irq {
-    every 1 scanlines from 0 to 239 {
-        cycles(<= 28) pad {
-            ppu.mask = $1E | raster.bars[line]     // emphasis bits per scanline
-        }
-    }
+frame bars using irq {
+    at scanline  60 { ppu.mask = $3E }   // red tint
+    at scanline 120 { ppu.mask = $5E }   // green tint
+    at scanline 180 { ppu.mask = $1E }   // no tint again
 }
 
 main {
     init()
-    loop {
-        wait vblank
-        sync exact
-    }
 }
 ```
 

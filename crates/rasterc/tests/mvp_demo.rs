@@ -200,3 +200,32 @@ fn the_backdrop_example_still_builds_from_its_new_path() {
 
     assert_eq!(rom, raster_link::m1_solid_backdrop_rom());
 }
+
+/// Section 13 of the specification is the language's showcase, so an author who copies it must get
+/// a ROM. The program is read out of the document and built exactly as printed, beside the picture
+/// its asset names.
+#[test]
+fn the_specifications_complete_example_builds_as_printed() {
+    let spec = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/raster-language-spec.md"
+    ));
+    let program = spec
+        .split("## 13. Complete example — the MVP demo")
+        .nth(1)
+        .expect("§13 is in the specification")
+        .split("```")
+        .nth(1)
+        .expect("§13 opens with a fenced block");
+
+    let directory = Scratch::new("spec-13");
+    fs::create_dir_all(directory.path().join("art")).unwrap();
+    fs::copy(picture_path(), directory.path().join("art/picture.png")).unwrap();
+    let source = directory.path().join("example.raster");
+    fs::write(&source, program).unwrap();
+
+    let (_summary, diagnostics, rom) = build(&source);
+
+    assert!(rom.starts_with(b"NES\x1a"), "a ROM, not a refusal");
+    assert!(diagnostics.is_empty(), "no warnings: {diagnostics}");
+}
