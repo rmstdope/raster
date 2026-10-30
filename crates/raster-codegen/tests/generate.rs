@@ -898,12 +898,13 @@ fn a_looped_run_charges_the_end_of_each_turn_to_its_last_handler() {
         r#"
             main { ppu.mask = 0 }
             frame bars using timed {
-                every 1 scanlines from 10 to 40 { ppu.mask = $1e }
+                every 1 scanlines from 10 to 40 { ppu.mask = $01 }
             }
         "#,
     );
 
-    // A 113-cycle scanline less the 19 cycles a turn spends going round, or leaving.
+    // A 113-cycle scanline less the 19 cycles a turn spends going round, or leaving. The handler
+    // leaves rendering off, so the pass is the rendering-off one this figure belongs to.
     let rows = budget_rows(&output);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].2, 113 - 19);

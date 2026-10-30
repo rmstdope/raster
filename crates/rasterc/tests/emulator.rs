@@ -538,23 +538,37 @@ fn first_red_dot(entries: &[u16]) -> usize {
 /// A timed frame over a rendered picture keeps its place: with rendering on, NTSC frames are a
 /// dot shorter every other time, and a pass that counted three rendering-off frames slid half a
 /// dot a frame along the picture. The write lands part-way along a line on purpose, so where the
-/// emphasis starts is where the handler ran, to the dot.
+/// emphasis starts is where the handler ran, to the dot. What decides it is the mask on the
+/// pre-render line, so a frame that blanks the picture after its last line and shows it again
+/// on its first must hold still as well.
 #[test]
 fn a_timed_frame_over_a_rendered_picture_does_not_drift() {
-    let source = "main {\n\
-                  \x20   ppu.addr = $3f\n\
-                  \x20   ppu.addr = $00\n\
-                  \x20   ppu.data = $0f\n\
-                  \x20   ppu.addr = $00\n\
-                  \x20   ppu.addr = $00\n\
-                  \x20   ppu.ctrl = $00\n\
-                  \x20   ppu.mask = $0a          // the background on: rendering\n\
-                  }\n\
-                  frame tint using timed {\n\
-                  \x20   at scanline 100 { ppu.mask = $2a }   // red emphasis from where this lands\n\
-                  \x20   at scanline 140 { ppu.mask = $0a }\n\
-                  }\n";
+    for blanking in [
+        "",
+        "    at scanline 0 { ppu.mask = $0a }\n    at scanline 239 { ppu.mask = $00 }\n",
+    ] {
+        assert_holds_still(&format!(
+            "main {{\n\
+             \x20   ppu.addr = $3f\n\
+             \x20   ppu.addr = $00\n\
+             \x20   ppu.data = $0f\n\
+             \x20   ppu.addr = $00\n\
+             \x20   ppu.addr = $00\n\
+             \x20   ppu.ctrl = $00\n\
+             \x20   ppu.mask = $0a          // the background on: rendering\n\
+             }}\n\
+             frame tint using timed {{\n\
+             \x20   at scanline 100 {{ ppu.mask = $2a }}   // red emphasis from where this lands\n\
+             \x20   at scanline 140 {{ ppu.mask = $0a }}\n\
+             {blanking}\
+             }}\n"
+        ));
+    }
+}
+
+fn assert_holds_still(source: &str) {
     let rom = compile_source(source).expect("the program compiles");
+    assert!(rom.warnings.is_empty(), "{:?}", rom.warnings);
     let render = |frames: u32| {
         let frame = render_after_frames(
             "rendered-timed.nes",
@@ -565,34 +579,36 @@ fn a_timed_frame_over_a_rendered_picture_does_not_drift() {
         *frame.as_indices()
     };
 
-    let even = first_red_dot(&render(10));
-    let odd = first_red_dot(&render(11));
+    // A handler starts on a whole cycle, and a frame is not one: 29780.5 cycles on average with
+    // rendering on, 29780 and two dots with it off. So the frames of a pass meet the picture a
+    // dot or two apart from one another, a pattern that repeats every two frames or every three.
+    let pass: Vec<usize> = (10..16)
+        .map(|frames| first_red_dot(&render(frames)))
+        .collect();
     assert!(
-        !even.is_multiple_of(FRAME_WIDTH),
+        !pass[0].is_multiple_of(FRAME_WIDTH),
         "the write lands part-way along a line, so a drift would show"
     );
-    // A rendered frame is 29780.5 cycles on average, so the handler of one frame of a pair runs
-    // half a cycle, a dot and a half, from where it runs in the other: that is the grain of a loop
-    // counted in cycles, and is all the two may differ by.
+    let spread = pass.iter().max().unwrap() - pass.iter().min().unwrap();
     assert!(
-        even.abs_diff(odd) <= 2,
-        "frames 10 and 11 start the emphasis {} dots apart",
-        even.abs_diff(odd)
+        spread <= 2,
+        "frames 10-15 start the emphasis {spread} dots apart, in\n{source}"
     );
-    // Whatever drifts goes on drifting, so the same frame of a pair minutes later is where it was.
+    // Whatever drifts goes on drifting, so the same frame of the pattern minutes later is where
+    // it was. Six frames apart is the same frame of either.
     for (frames, expected) in [
-        (12, even),
-        (16, even),
-        (60, even),
-        (300, even),
-        (13, odd),
-        (301, odd),
+        (16, pass[0]),
+        (22, pass[0]),
+        (64, pass[0]),
+        (304, pass[0]),
+        (17, pass[1]),
+        (305, pass[1]),
     ] {
         let at = first_red_dot(&render(frames));
         assert_eq!(
             at,
             expected,
-            "frame {frames}: the emphasis starts at ({}, {}), not ({}, {})",
+            "frame {frames}: the emphasis starts at ({}, {}), not ({}, {}), in\n{source}",
             at % FRAME_WIDTH,
             at / FRAME_WIDTH,
             expected % FRAME_WIDTH,

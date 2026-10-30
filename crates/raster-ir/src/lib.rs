@@ -492,9 +492,9 @@ pub struct Frame {
     pub strategy_span: Span,
     /// Whether the source wrote `using`. The build summary says `by default` when it did not.
     pub strategy_written: bool,
-    /// Whether the PPU renders as the frame starts, which decides how long a `timed` pass is:
-    /// `ppu.mask`'s last store before the frame, or off when rasterc cannot see it, which is
-    /// warned about.
+    /// Whether the PPU renders as the frame wraps, on the pre-render line, which decides how long a
+    /// `timed` pass is: `ppu.mask` as the program and then the handlers left it, or off when
+    /// rasterc cannot see it, which is warned about.
     pub rendering: Rendering,
 }
 
@@ -2539,43 +2539,62 @@ impl Lowerer {
     }
 
     /// Whether a `timed` frame runs over a rendered picture: with rendering on, a frame is a dot
-    /// shorter every other time, and the pass is six frames instead of three. Read from the last
-    /// store to `ppu.mask` before the frame; one rasterc cannot read is warned about, and the
-    /// pass assumes rendering off, which drifts a dot every two frames if it is on.
+    /// shorter every other time, and the pass is six frames instead of three.
+    ///
+    /// The dot is skipped or not on the pre-render line, so what decides it is `ppu.mask` as the
+    /// frame wraps: the program's last store before the frame, walked through the handlers'
+    /// stores in the order they run. Only the very first frame's pre-render line sees the mask
+    /// from before the frame instead, which is at most a dot, once. A mask rasterc cannot read is
+    /// warned about, and the pass assumes rendering off, which drifts if it is on.
     fn settle_timed_frame_rendering(&mut self) {
         if !self.errors.is_empty() || !self.recoverable_errors.is_empty() {
             return;
         }
-        if !matches!(&self.program.frame, Some(frame) if frame.strategy == FrameStrategy::Timed) {
+        let Some(frame) = &self.program.frame else {
+            return;
+        };
+        if frame.strategy != FrameStrategy::Timed {
             return;
         }
-        let mask = self.ppu_configuration().mask;
+        let span = frame.strategy_span;
+        let functions: BTreeMap<Label, &Function> = self
+            .program
+            .functions
+            .iter()
+            .map(|function| (function.label, function))
+            .collect();
+        let mut configuration = self.ppu_configuration();
+        // `raster-ir` keeps the events sorted by scanline, which is the order they run in.
+        for event in &frame.events {
+            collect_ppu_stores(
+                &event.body,
+                &functions,
+                &mut Vec::new(),
+                &mut configuration,
+                false,
+            );
+        }
+        let mask = configuration.mask;
         let rendering = match mask {
             RegisterState::Known(value) if mask_enables_rendering(value) => Rendering::On,
             RegisterState::Known(_) => Rendering::Off,
             RegisterState::Unproven | RegisterState::Conditional => {
                 let first = if mask == RegisterState::Unproven {
-                    "the last write to `ppu.mask` before the frame is not a value\n\
-                     rasterc can see, so whether it renders is unknown"
+                    "the last write to `ppu.mask` before the frame wraps is not a\n\
+                     value rasterc can see, so whether it renders is unknown"
                 } else {
                     "`ppu.mask` is written on some paths through this program and not\n\
-                     others, so whether it renders is unknown"
+                     others, so whether it renders as the frame wraps is unknown"
                 };
-                let span = self
-                    .program
-                    .frame
-                    .as_ref()
-                    .map(|frame| frame.strategy_span)
-                    .expect("a timed frame");
                 self.warnings.push(LowerWarning {
-                    message: "rasterc cannot tell whether rendering is on as this frame starts"
+                    message: "rasterc cannot tell whether rendering is on as this frame wraps"
                         .to_owned(),
                     label: TIMED_SCHEDULE_LABEL.to_owned(),
                     notes: vec![
                         first.to_owned(),
                         "rendering on, a frame is a dot shorter every other time, and the\n\
-                         schedule counts for rendering off; writing a constant to `ppu.mask`\n\
-                         before the frame lets rasterc count the frames you have"
+                         schedule counts for rendering off; a constant `ppu.mask` lets rasterc\n\
+                         use the right pass length"
                             .to_owned(),
                     ],
                     span,

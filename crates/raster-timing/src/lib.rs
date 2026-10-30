@@ -310,8 +310,9 @@ pub const SCANLINES_PER_FRAME: u32 = 262;
 /// without drifting.
 ///
 /// **With rendering disabled.** With rendering on, NTSC skips dot (339, 261) on odd frames, so
-/// frames alternate 89342 and 89341 dots and a pass of three is a dot short every other time
-/// round: that pass is [`Rendering::On`]'s six frames instead.
+/// frames alternate 89342 and 89341 dots, and three of them are one or two dots short of a pass of
+/// three in turn: half a dot a frame, which slides a schedule along the picture. That pass is
+/// [`Rendering::On`]'s six frames instead.
 pub const FRAMES_PER_PASS: u32 = 3;
 /// The cycles one pass of a timed frame loop spends, from its origin back to its origin.
 pub const PASS_CYCLES: u32 = scanline_cycles(SCANLINES_PER_FRAME * FRAMES_PER_PASS);
