@@ -1012,48 +1012,41 @@ impl Generator<'_> {
                 left,
                 operator,
                 right,
-                right_temporary,
-                ..
-            } if direct_opcodes(*operator).is_some()
-                && (simple_operand(right).is_some() || (is_pure(right) && !calls(left))) =>
-            {
-                let (prepare, immediate, zero_page) =
-                    direct_opcodes(*operator).expect("the guard found them");
-                match simple_operand(right) {
-                    // The right is read where the operation reads it, after the left, exactly
-                    // as when it went through a temporary.
-                    Some(operand) => {
-                        self.value(left)?;
-                        if let Some(prepare) = prepare {
-                            self.emit(prepare, Implied, None);
-                        }
-                        match operand {
-                            SimpleOperand::Constant(value) => {
-                                self.emit(immediate, Immediate, Some(u16::from(value)))
-                            }
-                            SimpleOperand::Place(place) => self.operand(zero_page, place)?,
-                        }
-                    }
-                    // Nothing on the left can change what a pure right reads, so the right is
-                    // worked out first and kept, and the left goes straight into the operation.
-                    None => {
-                        self.value(right)?;
-                        self.store_place(*right_temporary)?;
-                        self.value(left)?;
-                        if let Some(prepare) = prepare {
-                            self.emit(prepare, Implied, None);
-                        }
-                        self.operand(zero_page, *right_temporary)?;
-                    }
-                }
-            }
-            Value::Binary {
-                left,
-                operator,
-                right,
                 left_temporary,
                 right_temporary,
             } => {
+                if let Some((prepare, immediate, zero_page)) = direct_opcodes(*operator) {
+                    match simple_operand(right) {
+                        // The right is read where the operation reads it, after the left, exactly
+                        // as when it went through a temporary.
+                        Some(operand) => {
+                            self.value(left)?;
+                            if let Some(prepare) = prepare {
+                                self.emit(prepare, Implied, None);
+                            }
+                            match operand {
+                                SimpleOperand::Constant(value) => {
+                                    self.emit(immediate, Immediate, Some(u16::from(value)))
+                                }
+                                SimpleOperand::Place(place) => self.operand(zero_page, place)?,
+                            }
+                            return Ok(());
+                        }
+                        // Nothing on the left can change what a pure right reads, so the right is
+                        // worked out first and kept, and the left goes straight into the operation.
+                        None if is_pure(right) && !calls(left) => {
+                            self.value(right)?;
+                            self.store_place(*right_temporary)?;
+                            self.value(left)?;
+                            if let Some(prepare) = prepare {
+                                self.emit(prepare, Implied, None);
+                            }
+                            self.operand(zero_page, *right_temporary)?;
+                            return Ok(());
+                        }
+                        None => {}
+                    }
+                }
                 self.value(left)?;
                 self.store_place(*left_temporary)?;
                 self.value(right)?;
