@@ -46,3 +46,10 @@ pub fn copper_bars_demo_path() -> PathBuf {
 pub fn zombie_demo_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/zombie/zombie.raster")
 }
+
+/// The copper bar behind a picture, built from its path so that the PNG it converts is found.
+#[allow(dead_code)]
+pub fn copper_column_demo_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/copper-column/copper-column.raster")
+}
