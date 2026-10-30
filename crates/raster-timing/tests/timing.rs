@@ -884,3 +884,16 @@ fn a_delay_planned_for_islands_costs_exactly_what_was_asked_for_at_every_length(
         }
     }
 }
+
+/// Line 240 is never drawn, so the handler that interrupts into it has the whole of that line, not
+/// a visible line's hblank: the 9 cycles to dot 0, then the 341 dots of the line itself.
+#[test]
+fn an_irq_handler_on_the_undrawn_line_gets_the_whole_line() {
+    use raster_timing::{IRQ_HANDLER_BODY_CYCLES, IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES};
+
+    assert_eq!(IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES, 122);
+    assert_eq!(
+        IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES,
+        IRQ_HANDLER_BODY_CYCLES + 341 / 3
+    );
+}

@@ -14,7 +14,7 @@ use raster_syntax::Span;
 use raster_timing::{
     analyze, mmc3_latch_for_delta, mmc3_latch_for_first_event, mmc3_latch_for_next_frame,
     plan_timed_frame, DelayStep, ScheduledHandler, TimedRegion, TimingError,
-    IRQ_HANDLER_BODY_CYCLES,
+    IRQ_HANDLER_BODY_CYCLES, IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES,
 };
 
 const FIRST_ZERO_PAGE_ADDRESS: u8 = 0x10;
@@ -389,8 +389,8 @@ impl Generator<'_> {
     /// halves so A12 moves at all — are `raster-timing`'s, checked in `raster-ir` before anything
     /// reaches here.
     ///
-    /// **A handler's body is held to [`IRQ_HANDLER_BODY_CYCLES`] and refused when it does not
-    /// fit.** The interrupt lands in the hblank at the end of the scanline before the one the
+    /// **A handler's body is held to [`IRQ_HANDLER_BODY_CYCLES`] (at scanline 240, which is never
+    /// drawn, [`IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES`]) and refused when it does not fit.** The interrupt lands in the hblank at the end of the scanline before the one the
     /// author named, and a store made once that window has closed lands part-way along a visible
     /// row — which is the one thing the schedule promises does not happen. Only the body is
     /// charged: the ten cycles of prologue before it and the thirty-eight of latch, acknowledgement
@@ -442,9 +442,15 @@ impl Generator<'_> {
             // Only the accumulator is saved. The loop these interrupt holds nothing in X or Y, and
             // `RTI` restores the flags the interrupt itself pushed.
             self.emit(PHA, Implied, None);
+            // Line 240 is never drawn, so its handler has the whole line rather than an hblank.
+            let window = if event.scanline == 240 {
+                IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES
+            } else {
+                IRQ_HANDLER_BODY_CYCLES
+            };
             let region = self
                 .timed_region(
-                    &CycleConstraint::AtMost(IRQ_HANDLER_BODY_CYCLES),
+                    &CycleConstraint::AtMost(window),
                     false, // pad: a short handler spends nothing filling the window
                     true,  // interruptible: the 6502 set I on entry, so PHP/SEI/PLP would be nine
                     // cycles of a window this small, spent masking what is already masked
@@ -453,7 +459,7 @@ impl Generator<'_> {
                     Some(halt_label),
                 )
                 .map_err(|error| as_irq_window_error(error, event.span));
-            self.measured_handler(region, event, IRQ_HANDLER_BODY_CYCLES)?;
+            self.measured_handler(region, event, window)?;
             self.emit(LDA_IMMEDIATE, Immediate, Some(u16::from(latch)));
             // The order hardware requires: the latch, then the reload request, then the
             // acknowledgement — which also disables — and only then the re-arm. Enabling before

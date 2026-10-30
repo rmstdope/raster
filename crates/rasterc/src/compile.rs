@@ -537,6 +537,21 @@ with a clearer message; please report this file",
         TimingError::IrqHandlerOverHblank {
             measured_cycles,
             budget,
+        } if budget == raster_timing::IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES => at(
+            "an `irq` handler exceeds the undrawn line 240",
+            format!("handler costs {measured_cycles} cycles, the undrawn line leaves {budget}"),
+        )
+        .with_note(
+            "scanline 240 is never drawn, so a handler there has the whole line
+and no visible row to tear",
+        )
+        .with_note(
+            "shorten the handler, or move the work that need not happen on that
+line into `main`",
+        ),
+        TimingError::IrqHandlerOverHblank {
+            measured_cycles,
+            budget,
         } => at(
             "an `irq` handler exceeds its hblank",
             format!("handler costs {measured_cycles} cycles, the hblank leaves {budget}"),

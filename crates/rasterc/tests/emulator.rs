@@ -265,6 +265,47 @@ fn an_irq_event_at_scanline_240_runs_after_the_last_visible_line() {
     }
 }
 
+/// Line 240 is never drawn, so its handler may put back several registers for the next frame: two
+/// stores, twelve cycles, which a visible line's hblank would refuse.
+///
+/// The stores must land: the mask put back makes the next frame start without emphasis, and the
+/// control register put back keeps the pattern tables in opposite halves, without which the MMC3
+/// counts no rise and every band of every later frame goes missing.
+#[test]
+fn an_irq_event_at_scanline_240_may_put_back_several_registers() {
+    let source = cycles_fixture("irq-colour-bars.raster").replace(
+        "    at scanline 180 {\n        ppu.mask = $1e          // none again\n    }",
+        "    at scanline 240 {\n        ppu.ctrl = $08\n        ppu.mask = $1e\n    }",
+    );
+    assert!(source.contains("ppu.ctrl = $08\n        ppu.mask = $1e"));
+    let rom = compile_source(&source).expect("two stores fit the undrawn line");
+
+    for frames in 8..14 {
+        let frame = render_after_frames(
+            "irq-240-two-stores.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs");
+        let entries = *frame.as_indices();
+        assert_eq!(
+            bands(&entries),
+            vec![(0, 0x0f), (60, 0x4f), (120, 0x8f)],
+            "frame {frames}: green to the last line, and none again from the top of the next frame"
+        );
+        assert!(
+            row_bands(&entries).iter().all(|bands| bands.len() == 1),
+            "frame {frames}: a handler wrote part-way along a scanline"
+        );
+    }
+
+    let at_239 = source.replace("at scanline 240", "at scanline 239");
+    assert!(
+        compile_source(&at_239).is_err(),
+        "the same two stores on a visible line are over its hblank"
+    );
+}
+
 /// The window the compiler enforces is one the console honours.
 ///
 /// `IRQ_HANDLER_BODY_CYCLES` was measured rather than derived, so the number is only worth what an
