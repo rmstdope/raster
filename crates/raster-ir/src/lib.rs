@@ -9,6 +9,7 @@ use raster_syntax::{
     Wait,
 };
 pub use raster_timing::CycleConstraint;
+pub use raster_timing::Rendering;
 use raster_timing::{
     mask_enables_rendering, timed_frame_nmi, validate_mmc3_irq_frame, Mmc3IrqError, NmiAtEntry,
     PpuConfiguration, RegisterState, TimedFrameNmi, NMI_CYCLES, PPU_CTRL_BACKGROUND_PATTERN_HALF,
@@ -491,6 +492,10 @@ pub struct Frame {
     pub strategy_span: Span,
     /// Whether the source wrote `using`. The build summary says `by default` when it did not.
     pub strategy_written: bool,
+    /// Whether the PPU renders as the frame starts, which decides how long a `timed` pass is:
+    /// `ppu.mask`'s last store before the frame, or off when rasterc cannot see it, which is
+    /// warned about.
+    pub rendering: Rendering,
 }
 
 /// One scheduled handler, and the visible scanline it runs on.
@@ -1762,6 +1767,7 @@ pub fn lower_with_pictures(
     lowerer.lower_program(&typed.program);
     lowerer.check_mmc3_irq_frame();
     lowerer.check_timed_frame_nmi();
+    lowerer.settle_timed_frame_rendering();
     lowerer.check_block_nmi();
     lowerer.check_apu_frame_interrupt();
     lowerer.check_unmapped_loads();
@@ -2249,6 +2255,7 @@ impl Lowerer {
             span,
             strategy_span,
             strategy_written: frame.strategy.is_some(),
+            rendering: Rendering::Off,
         });
     }
 
@@ -2528,6 +2535,59 @@ impl Lowerer {
                 span,
                 refusal: Refusal::Rejected,
             });
+        }
+    }
+
+    /// Whether a `timed` frame runs over a rendered picture: with rendering on, a frame is a dot
+    /// shorter every other time, and the pass is six frames instead of three. Read from the last
+    /// store to `ppu.mask` before the frame; one rasterc cannot read is warned about, and the
+    /// pass assumes rendering off, which drifts a dot every two frames if it is on.
+    fn settle_timed_frame_rendering(&mut self) {
+        if !self.errors.is_empty() || !self.recoverable_errors.is_empty() {
+            return;
+        }
+        if !matches!(&self.program.frame, Some(frame) if frame.strategy == FrameStrategy::Timed) {
+            return;
+        }
+        let mask = self.ppu_configuration().mask;
+        let rendering = match mask {
+            RegisterState::Known(value) if mask_enables_rendering(value) => Rendering::On,
+            RegisterState::Known(_) => Rendering::Off,
+            RegisterState::Unproven | RegisterState::Conditional => {
+                let first = if mask == RegisterState::Unproven {
+                    "the last write to `ppu.mask` before the frame is not a value\n\
+                     rasterc can see, so whether it renders is unknown"
+                } else {
+                    "`ppu.mask` is written on some paths through this program and not\n\
+                     others, so whether it renders is unknown"
+                };
+                let span = self
+                    .program
+                    .frame
+                    .as_ref()
+                    .map(|frame| frame.strategy_span)
+                    .expect("a timed frame");
+                self.warnings.push(LowerWarning {
+                    message: "rasterc cannot tell whether rendering is on as this frame starts"
+                        .to_owned(),
+                    label: TIMED_SCHEDULE_LABEL.to_owned(),
+                    notes: vec![
+                        first.to_owned(),
+                        "rendering on, a frame is a dot shorter every other time, and the\n\
+                         schedule counts for rendering off; writing a constant to `ppu.mask`\n\
+                         before the frame lets rasterc count the frames you have"
+                            .to_owned(),
+                    ],
+                    span,
+                    assumes_budget_met: false,
+                    help: None,
+                    secondary: None,
+                });
+                Rendering::Off
+            }
+        };
+        if let Some(frame) = &mut self.program.frame {
+            frame.rendering = rendering;
         }
     }
 

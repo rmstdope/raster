@@ -526,3 +526,77 @@ fn an_irq_event_at_scanline_240_may_run_nearly_the_whole_line() {
         );
     }
 }
+
+/// Where, in dots from the top of the picture, the first pixel showing red emphasis is.
+fn first_red_dot(entries: &[u16]) -> usize {
+    entries
+        .iter()
+        .position(|&entry| entry & 0x40 != 0)
+        .expect("some pixel is emphasised")
+}
+
+/// A timed frame over a rendered picture keeps its place: with rendering on, NTSC frames are a
+/// dot shorter every other time, and a pass that counted three rendering-off frames slid half a
+/// dot a frame along the picture. The write lands part-way along a line on purpose, so where the
+/// emphasis starts is where the handler ran, to the dot.
+#[test]
+fn a_timed_frame_over_a_rendered_picture_does_not_drift() {
+    let source = "main {\n\
+                  \x20   ppu.addr = $3f\n\
+                  \x20   ppu.addr = $00\n\
+                  \x20   ppu.data = $0f\n\
+                  \x20   ppu.addr = $00\n\
+                  \x20   ppu.addr = $00\n\
+                  \x20   ppu.ctrl = $00\n\
+                  \x20   ppu.mask = $0a          // the background on: rendering\n\
+                  }\n\
+                  frame tint using timed {\n\
+                  \x20   at scanline 100 { ppu.mask = $2a }   // red emphasis from where this lands\n\
+                  \x20   at scanline 140 { ppu.mask = $0a }\n\
+                  }\n";
+    let rom = compile_source(source).expect("the program compiles");
+    let render = |frames: u32| {
+        let frame = render_after_frames(
+            "rendered-timed.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs");
+        *frame.as_indices()
+    };
+
+    let even = first_red_dot(&render(10));
+    let odd = first_red_dot(&render(11));
+    assert!(
+        !even.is_multiple_of(FRAME_WIDTH),
+        "the write lands part-way along a line, so a drift would show"
+    );
+    // A rendered frame is 29780.5 cycles on average, so the handler of one frame of a pair runs
+    // half a cycle, a dot and a half, from where it runs in the other: that is the grain of a loop
+    // counted in cycles, and is all the two may differ by.
+    assert!(
+        even.abs_diff(odd) <= 2,
+        "frames 10 and 11 start the emphasis {} dots apart",
+        even.abs_diff(odd)
+    );
+    // Whatever drifts goes on drifting, so the same frame of a pair minutes later is where it was.
+    for (frames, expected) in [
+        (12, even),
+        (16, even),
+        (60, even),
+        (300, even),
+        (13, odd),
+        (301, odd),
+    ] {
+        let at = first_red_dot(&render(frames));
+        assert_eq!(
+            at,
+            expected,
+            "frame {frames}: the emphasis starts at ({}, {}), not ({}, {})",
+            at % FRAME_WIDTH,
+            at / FRAME_WIDTH,
+            expected % FRAME_WIDTH,
+            expected / FRAME_WIDTH
+        );
+    }
+}

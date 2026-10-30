@@ -1495,7 +1495,7 @@ fn a_timed_frame_with_nmi_on_warns_and_still_builds() {
          ppu.mask = $1e\n\
          }\n\
          frame bars using timed {\n\
-         every 8 scanlines from 0 to 239 { ppu.mask = $1e }\n\
+         every 24 scanlines from 0 to 239 { ppu.mask = $1e }\n\
          }",
     )
     .expect("a warning does not fail the build");
@@ -1527,7 +1527,7 @@ fn a_program_that_enables_nmi_twice_over_warns_about_each() {
          ppu.mask = $1e\n\
          }\n\
          frame bars using timed {\n\
-         every 8 scanlines from 0 to 239 { ppu.ctrl = $88 }\n\
+         every 24 scanlines from 0 to 239 { ppu.ctrl = $88 }\n\
          }",
     )
     .expect("a warning does not fail the build");

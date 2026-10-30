@@ -673,7 +673,7 @@ fn a_timed_frame_delays_from_the_origin_to_each_handlers_scanline() {
     );
     let instructions = program_instructions(&output);
 
-    let pass = raster_timing::plan_timed_frame(&[60, 120], 3);
+    let pass = raster_timing::plan_timed_frame(&[60, 120], 3, raster_timing::Rendering::Off);
     assert!(pass.handlers.iter().all(|handler| handler.delay_cycles > 0));
     assert_eq!(
         timed_region_costs(&instructions),

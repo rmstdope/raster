@@ -452,7 +452,13 @@ holds when the frame starts and what its handlers write to it, and warns where
 bit 7 is set or where it cannot see the value. The ROM is still written.
 
 **A `timed` schedule is emitted once per frame of its pass**, three frames, because
-only three whole frames are a whole number of CPU cycles. Each handler is unrolled
+only three whole frames are a whole number of CPU cycles. Over a rendered picture
+(rendering on in the last constant `ppu.mask` store before the frame) the pass is six
+frames: NTSC skips a dot every other frame while rendering, and six such frames are
+178683 cycles exactly, where three would leave the schedule a dot short every second
+pass, sliding along the picture. One frame of each pair runs a dot and a half from
+where the other does, the grain of a loop counted in cycles. A `ppu.mask` rasterc
+cannot read before the frame is warned about, and the pass assumes rendering off. Each handler is unrolled
 there, except an `every 1 scanlines` run of seven or more scanlines, which becomes a
 loop. Three scanlines are exactly 341 cycles, so a turn is three handlers whose
 budgets repeat exactly, and the run's handlers are emitted three times a frame rather

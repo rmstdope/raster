@@ -537,7 +537,7 @@ impl Generator<'_> {
     /// still leave NMI off and start no DMC transfer.
     fn timed_frame(&mut self, frame: &Frame, halt_label: IrLabel) -> Result<(), CodegenError> {
         let scanlines: Vec<_> = frame.events.iter().map(|event| event.scanline).collect();
-        let pass = plan_timed_frame(&scanlines, JMP_ABSOLUTE_CYCLES);
+        let pass = plan_timed_frame(&scanlines, JMP_ABSOLUTE_CYCLES, frame.rendering);
         let mut frames = Vec::new();
         for handlers in pass.handlers.chunks(frame.events.len()) {
             frames.push(self.segments(&frame.events, handlers, halt_label));
