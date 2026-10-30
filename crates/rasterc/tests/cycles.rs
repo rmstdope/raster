@@ -422,6 +422,17 @@ fn direct_operands_spend_exactly_the_budget_their_region_was_held_to() {
 }
 
 #[test]
+fn adding_or_taking_one_is_a_single_increment_or_decrement() {
+    assert_prediction_is_spent("increment.raster");
+    let source = fixture("increment.raster");
+    compare(
+        "increment.raster",
+        24,
+        measured("increment.raster", &source),
+    );
+}
+
+#[test]
 fn a_delay_spends_exactly_its_planned_cycles_wherever_its_loop_lands() {
     // `value = 1` is four bytes and `ppu.mask = 0` five, so 0 to 63 of one and 0 to 3 of the other
     // ahead of the delay move its loop through every position on a page, among them the ones where

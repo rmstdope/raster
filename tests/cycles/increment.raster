@@ -1,0 +1,19 @@
+// Adding or taking one from a variable, whichever way it is written, is the
+// one read-modify-write instruction:
+//
+//   v += 1      INC v   5
+//   w -= 1      DEC w   5
+//   x = x + 1   INC x   5
+//
+// with the nine cycles of interrupt masking.
+var v: u8 = 7
+var w: u8 = 3
+var x: u8 = 0
+
+main {
+    cycles(24) {
+        v += 1
+        w -= 1
+        x = x + 1
+    }
+}

@@ -144,6 +144,7 @@ const STA_ABSOLUTE: u8 = 0x8d;
 const STA_ZERO_PAGE: u8 = 0x85;
 const JMP_INDIRECT: u8 = 0x6c;
 const DEC_ZERO_PAGE: u8 = 0xc6;
+const INC_ZERO_PAGE: u8 = 0xe6;
 /// Scanlines one turn of a timed frame's loop runs: three are exactly 341 cycles, so the 114- and
 /// 113-cycle scanline budgets repeat with that period and three handlers make a turn that is the
 /// same every time round.
@@ -846,8 +847,12 @@ impl Generator<'_> {
             Statement::Declare { .. } => {}
             Statement::Label(label) => self.emit_label(*label),
             Statement::Assign { destination, value } => {
-                self.value(value)?;
-                self.store(*destination)?;
+                if let Some((opcode, place)) = step_by_one(*destination, value) {
+                    self.operand(opcode, place)?;
+                } else {
+                    self.value(value)?;
+                    self.store(*destination)?;
+                }
             }
             Statement::Call {
                 target,
@@ -1452,6 +1457,32 @@ impl Generator<'_> {
 enum SimpleOperand {
     Constant(u8),
     Place(Place),
+}
+
+/// `INC v` for `v = v + 1` and `DEC v` for `v = v - 1`, which is how `v += 1` and `v -= 1` reach
+/// codegen: five cycles where loading, adding and storing spend ten. It leaves the accumulator and
+/// carry alone, and nothing after an assignment reads either.
+fn step_by_one(destination: Destination, value: &Value) -> Option<(u8, Place)> {
+    let Destination::Place(place) = destination else {
+        return None;
+    };
+    let Value::Binary {
+        left,
+        operator,
+        right,
+        ..
+    } = value
+    else {
+        return None;
+    };
+    if **left != Value::Place(place) || **right != Value::Constant(1) {
+        return None;
+    }
+    match operator {
+        BinaryOperator::Add => Some((INC_ZERO_PAGE, place)),
+        BinaryOperator::Subtract => Some((DEC_ZERO_PAGE, place)),
+        _ => None,
+    }
 }
 
 fn simple_operand(value: &Value) -> Option<SimpleOperand> {
