@@ -132,6 +132,19 @@ fn lines(rom: &[u8], frames: u32) -> Vec<u16> {
         .collect()
 }
 
+/// The swing step the bars have reached after `frames` frames of moving: `SPEED` is sixteenths of
+/// a step a frame.
+fn step_after(speed: u8, frames: u32) -> u8 {
+    (u32::from(speed) * frames / 16) as u8
+}
+
+/// Whether any two bars overlap at `step`.
+fn overlapping(source: &str, step: u8) -> bool {
+    let mut tops = tops(source, step);
+    tops.sort_unstable();
+    tops.windows(2).any(|pair| pair[1] - pair[0] < 9)
+}
+
 #[test]
 fn every_frame_is_the_three_bars_at_the_step_its_frame_has_reached() {
     let source = fs::read_to_string(copper_bars_demo_path()).expect("the example is readable");
@@ -139,29 +152,28 @@ fn every_frame_is_the_three_bars_at_the_step_its_frame_has_reached() {
     let rom = build();
 
     // Three consecutive frames are the three phases of the timed pass, each with its own loop; the
-    // rest are spread across the swing, so they catch the bars apart, bunched where the swing
-    // turns, and `step` wrapping.
-    let frames = [10, 11, 12, 70, 130, 200, 300];
+    // rest are spread over a long run of the swing.
+    let frames = [10, 11, 12, 70, 200, 600];
     let shown: Vec<Vec<u16>> = frames.iter().map(|&frames| lines(&rom, frames)).collect();
 
-    // Frame `n` shows step `SPEED * (n - offset)`, for the frames the ROM spent starting up. One
-    // picture can be more than one step, because the swing mirrors itself, but only one sequence of
-    // steps explains every frame.
-    let steps = |offset: u8| -> Vec<u8> {
+    // Frame `n` shows the bars after `n - offset` frames of moving, for the frames the ROM spent
+    // starting up. One picture can be more than one step, because the swing mirrors itself, but
+    // only one sequence of steps explains every frame.
+    let steps = |offset: u32| -> Vec<u8> {
         frames
             .iter()
-            .map(|&frames| speed.wrapping_mul((frames as u8).wrapping_sub(offset)))
+            .map(|&frames| step_after(speed, frames - offset))
             .collect()
     };
-    let mut explanations: Vec<Vec<u8>> = (0..=255u8)
-        .map(steps)
-        .filter(|steps| {
-            steps
+    let offsets: Vec<u32> = (0..=frames[0])
+        .filter(|&offset| {
+            steps(offset)
                 .iter()
                 .zip(&shown)
                 .all(|(&step, shown)| expected(&source, step) == *shown)
         })
         .collect();
+    let mut explanations: Vec<Vec<u8>> = offsets.iter().map(|&offset| steps(offset)).collect();
     explanations.sort();
     explanations.dedup();
     assert_eq!(
@@ -169,11 +181,24 @@ fn every_frame_is_the_three_bars_at_the_step_its_frame_has_reached() {
         1,
         "step sequences explaining every frame: {explanations:?}"
     );
+    let offset = offsets[0];
 
-    let overlapping = explanations[0].iter().any(|&step| {
-        let mut tops = tops(&source, step);
-        tops.sort_unstable();
-        tops.windows(2).any(|pair| pair[1] - pair[0] < 9)
-    });
-    assert!(overlapping, "some frame checked shows bars overlapping");
+    // The first frame with bars on it is where they start, before they have moved at all.
+    assert_eq!(
+        lines(&rom, offset),
+        expected(&source, 0),
+        "frame {offset}, the first with bars"
+    );
+
+    // Where bars overlap, a line shows the brightest of them. The first frame they do is found
+    // from the tables, so it is checked whatever SPEED and PHASE are set to — if they overlap at
+    // all in the first thousand frames.
+    if let Some(moved) = (1..1000).find(|&moved| overlapping(&source, step_after(speed, moved))) {
+        assert_eq!(
+            lines(&rom, offset + moved),
+            expected(&source, step_after(speed, moved)),
+            "frame {}, the first where bars overlap",
+            offset + moved
+        );
+    }
 }

@@ -1,5 +1,5 @@
 // Three copper bars on one swing, each PHASE steps behind the last, all
-// moving SPEED steps a frame.
+// moving SPEED sixteenths of a step a frame.
 //
 // The same trick as examples/copper: rendering stays off, so the PPU
 // shows the palette entry its address register points at (see
@@ -61,19 +61,42 @@ const SWING: [256]u8 = [
      77,  80,  82,  84,  87,  89,  91,  94,  96,  98, 101, 103, 106, 108, 111, 113,
 ]
 
-// How fast the bars swing: steps a frame. 1 is a whole swing every 256
-// frames, about four seconds, and the slowest a whole step can go.
-const SPEED: u8 = 1
+// How fast the bars swing: sixteenths of a step a frame, from 1 to 240.
+// 16 is a step a frame, a whole swing every 256 frames, about 4.3
+// seconds; 8 takes twice as long, and 1 more than a minute.
+const SPEED: u8 = 8
 
 // How far apart the bars are: steps of the swing between one and the
-// next. 256 steps are a whole swing, so 85 spreads the three evenly.
+// next. 256 steps are a whole swing, so 85 spreads the three about evenly.
 const PHASE: u8 = 20
 
-// The bars' first tops: SWING[0], SWING[PHASE] and SWING[2 * PHASE].
+// A count of sixteenths in whole steps: entry i is i / 16. Adding SPEED
+// to the sixteenths left over and looking the sum up here is how many
+// whole steps the bars move this frame, without a branch or a division.
+const WHOLE: [256]u8 = [
+     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+     1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
+     2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,
+     3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+     4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,
+     5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,
+     6,  6,  6,  6,  6,  6,  6,  6,  6,  6,  6,  6,  6,  6,  6,  6,
+     7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,
+     8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,
+     9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,
+    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+    11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+    12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+    13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13,
+    14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14,
+    15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
+]
+
 var step: u8 = 0
-var top1: u8 = 116
-var top2: u8 = 162
-var top3: u8 = 198
+var sub: u8 = 0
+var top1: u8 = 0
+var top2: u8 = 0
+var top3: u8 = 0
 var line: u8 = 1
 var shade: u8 = 0
 
@@ -102,6 +125,10 @@ main {
 
     ppu.addr = $00              // leave palette space until the first
     ppu.addr = $00              // scanline points somewhere on purpose
+
+    top1 = SWING[0]             // where the bars start
+    top2 = SWING[PHASE]
+    top3 = SWING[PHASE + PHASE]
 }
 
 frame bars using timed {
@@ -122,7 +149,9 @@ frame bars using timed {
     // black, and this handler moves the bars for the next frame. Line 0's
     // handler colours line 1, so that is where the count starts.
     at scanline 239 {
-        step += SPEED
+        sub += SPEED
+        step += WHOLE[sub]
+        sub = sub & 15
         top1 = SWING[step]
         top2 = SWING[step + PHASE]
         top3 = SWING[step + PHASE + PHASE]
