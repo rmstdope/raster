@@ -268,9 +268,9 @@ fn an_irq_event_at_scanline_240_runs_after_the_last_visible_line() {
 /// Line 240 is never drawn, so its handler may put back several registers for the next frame: two
 /// stores, twelve cycles, which a visible line's hblank would refuse.
 ///
-/// The stores must land: the mask put back makes the next frame start without emphasis, and the
-/// control register put back keeps the pattern tables in opposite halves, without which the MMC3
-/// counts no rise and every band of every later frame goes missing.
+/// The mask store must land: it makes the next frame start without emphasis. The control store
+/// runs before it, in order, and rewrites the value `main` set, so it is proven to run rather than
+/// to change anything.
 #[test]
 fn an_irq_event_at_scanline_240_may_put_back_several_registers() {
     let source = cycles_fixture("irq-colour-bars.raster").replace(
@@ -449,4 +449,35 @@ fn a_variable_stepped_by_one_holds_the_value_adding_or_taking_one_gives() {
         backdrop_entry("dec-wraps.nes", &source("$00", "v -= 1", "v - $CD")),
         0x32
     );
+}
+
+/// A body near the top of the undrawn line's window: twenty register stores, 120 cycles, which
+/// finishes on line 240 and whose epilogue runs on into vblank. The chain must still wrap and every
+/// band hold its place over frames of every phase.
+#[test]
+fn an_irq_event_at_scanline_240_may_run_nearly_the_whole_line() {
+    let stores = "        ppu.scroll = 0\n".repeat(20);
+    let source = cycles_fixture("irq-colour-bars.raster").replace(
+        "    at scanline 180 {\n        ppu.mask = $1e          // none again\n    }",
+        &format!("    at scanline 240 {{\n{stores}        ppu.mask = $1e\n    }}"),
+    );
+    let rom = compile_source(&source);
+    // Twenty scroll stores are 120 cycles and the mask store makes it 126: over the line.
+    assert!(rom.is_err(), "twenty stores and a mask store are over 122");
+
+    let source = source.replacen("        ppu.scroll = 0\n", "", 1);
+    let rom = compile_source(&source).expect("nineteen stores and a mask store fit");
+    for frames in 8..14 {
+        let frame = render_after_frames(
+            "irq-240-long.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs");
+        assert_eq!(
+            bands(frame.as_indices()),
+            vec![(0, 0x0f), (60, 0x4f), (120, 0x8f)],
+            "frame {frames}"
+        );
+    }
 }

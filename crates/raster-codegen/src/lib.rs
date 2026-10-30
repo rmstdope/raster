@@ -389,8 +389,9 @@ impl Generator<'_> {
     /// halves so A12 moves at all — are `raster-timing`'s, checked in `raster-ir` before anything
     /// reaches here.
     ///
-    /// **A handler's body is held to [`IRQ_HANDLER_BODY_CYCLES`] (at scanline 240, which is never
-    /// drawn, [`IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES`]) and refused when it does not fit.** The interrupt lands in the hblank at the end of the scanline before the one the
+    /// **A handler's body is held to [`IRQ_HANDLER_BODY_CYCLES`] and refused when it does not
+    /// fit** - at scanline 240, which is never drawn, to [`IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES`].
+    /// ** The interrupt lands in the hblank at the end of the scanline before the one the
     /// author named, and a store made once that window has closed lands part-way along a visible
     /// row — which is the one thing the schedule promises does not happen. Only the body is
     /// charged: the ten cycles of prologue before it and the thirty-eight of latch, acknowledgement
