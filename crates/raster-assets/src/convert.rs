@@ -4,8 +4,8 @@
 //! stands; this makes one it can. The picture is scaled to the screen, and four palettes of three
 //! colours are fitted to it, each 16-by-16 region drawing in the backdrop and the palette that
 //! loses it least. Every pixel then takes the nearest colour it is allowed. A picture that needs
-//! more tiles than a pattern table holds is drawn in as many as it does, each tile in the pattern
-//! that looks most like it in its own palette.
+//! more tiles than a pattern table holds is drawn in as many as a pattern table holds, each tile
+//! in the pattern that looks most like it in its own palette.
 
 use std::io::Read;
 
@@ -25,7 +25,7 @@ const FITTING_ROUNDS: usize = 32;
 /// The distinct tiles a pattern table holds, the blank one every background starts from among
 /// them.
 const PATTERN_TABLE_TILES: usize = 256;
-/// Likewise for assigning tiles to patterns and refitting the patterns.
+/// Like [`FITTING_ROUNDS`], for assigning tiles to patterns and refitting the patterns.
 const TILE_ROUNDS: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,7 +50,11 @@ pub fn convert_background(png: impl Read) -> Result<NesBackground, ConvertError>
             histograms[region][usize::from(colours.nearest(*rgb, &colours.all))] += 1;
         }
     }
-    let palettes = colours.fit(&histograms);
+    let palettes: Vec<Palette> = colours
+        .fit(&histograms)
+        .iter()
+        .map(|palette| colours.complete(palette))
+        .collect();
     let assignment: Vec<usize> = histograms
         .iter()
         .map(|histogram| colours.best_of(histogram, &palettes))
@@ -199,6 +203,10 @@ struct Colours {
     paintable: Vec<u8>,
     /// How unlike each pair of entries looks.
     distance: Vec<[u32; 64]>,
+    /// The square root of `distance`, which tile reduction sums: summing squares, a pattern
+    /// shared by tiles that disagree on a pixel would take a colour between theirs, which none
+    /// of them shows, where summing these it takes the colour most of them show.
+    difference: Vec<[u32; 64]>,
 }
 
 impl Colours {
@@ -214,7 +222,7 @@ impl Colours {
             }
         }
         let paintable = all[1..].to_vec();
-        let distance = (0..64)
+        let distance: Vec<[u32; 64]> = (0..64)
             .map(|from| {
                 let mut row = [0; 64];
                 for (to, cell) in row.iter_mut().enumerate() {
@@ -223,10 +231,15 @@ impl Colours {
                 row
             })
             .collect();
+        let difference = distance
+            .iter()
+            .map(|row: &[u32; 64]| row.map(|squared| f64::from(squared).sqrt().round() as u32))
+            .collect();
         Colours {
             all,
             paintable,
             distance,
+            difference,
         }
     }
 
@@ -430,7 +443,7 @@ impl Colours {
                                 .map(|tile| {
                                     let shown = tile.palette[usize::from(value)];
                                     u64::from(
-                                        self.distance[usize::from(tile.pixels[pixel])]
+                                        self.difference[usize::from(tile.pixels[pixel])]
                                             [usize::from(shown)],
                                     )
                                 })
@@ -451,11 +464,31 @@ impl Colours {
             .zip(pattern)
             .map(|(&colour, &value)| {
                 u64::from(
-                    self.distance[usize::from(colour)]
+                    self.difference[usize::from(colour)]
                         [usize::from(tile.palette[usize::from(value)])],
                 )
             })
             .sum()
+    }
+
+    /// `palette` with every slot left at the backdrop given a colour of its own.
+    ///
+    /// A palette fitted to a cell of fewer than three colours keeps the backdrop in the slots it
+    /// had no use for, and then three of a pattern's four values draw black: the encoder, which
+    /// works a tile's values out again from its colours, would give one pattern several tiles,
+    /// and a picture reduced to 256 could need more. A colour nobody asked for costs nothing.
+    fn complete(&self, palette: &Palette) -> Palette {
+        let mut complete = *palette;
+        for slot in 0..3 {
+            if complete[slot] == TRANSPARENT_COLOUR {
+                complete[slot] = *self
+                    .paintable
+                    .iter()
+                    .find(|colour| !complete.contains(colour))
+                    .expect("there are more colours than a palette holds");
+            }
+        }
+        complete
     }
 
     /// A palette unlike any of `palettes`: the one that draws best the cell they draw worst,

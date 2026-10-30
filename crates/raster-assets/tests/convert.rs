@@ -251,6 +251,38 @@ fn tiles_alike_share_a_pattern_and_tiles_unlike_keep_theirs() {
 }
 
 #[test]
+fn a_cell_of_fewer_than_three_colours_does_not_split_a_shared_pattern() {
+    // Noise in four colours on the left, and in black and green only on the right, whose cells
+    // need one colour besides the backdrop. A pattern shared by tiles on both sides must still be
+    // one tile.
+    let mut seed = 0x9e37_79b9u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as usize
+    };
+    let picture: Vec<u8> = (0..256 * 240)
+        .map(|index| {
+            let choice = next() % 4;
+            if index % 256 < 128 {
+                [0x0f, 0x20, 0x16, 0x01][choice]
+            } else {
+                [0x0f, 0x19][choice % 2]
+            }
+        })
+        .collect();
+
+    let background = convert_background(Cursor::new(picture_png(256, 240, &picture, 1))).unwrap();
+
+    assert!(
+        background.chr().len() / 16 <= 256,
+        "{} tiles",
+        background.chr().len() / 16
+    );
+}
+
+#[test]
 fn a_picture_scaled_down_is_the_average_of_what_each_screen_pixel_covers() {
     // Twice the screen, in 2-by-2 blocks of white and black: their average, (7C, 7C, 7C), is
     // NES grey $00, a colour the picture never draws. Three times as wide as the screen and as
