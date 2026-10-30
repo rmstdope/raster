@@ -88,7 +88,7 @@ frame copper using timed {
     every 1 scanlines from 0 to 238 {
         shade = BAR[line - top]
         line += 1
-        cycles(18) pad { }
+        cycles(42) pad { }
         ppu.addr = $3f
         ppu.addr = shade
     }

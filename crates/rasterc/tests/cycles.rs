@@ -407,3 +407,14 @@ fn a_table_read_spends_exactly_the_budget_its_region_was_held_to() {
         measured("table-read.raster", &source),
     );
 }
+
+#[test]
+fn direct_operands_spend_exactly_the_budget_their_region_was_held_to() {
+    // The budget, not `cost`: the region holds two table reads proven never to cross a page.
+    let source = fixture("direct-operands.raster");
+    compare(
+        "direct-operands.raster",
+        57,
+        measured("direct-operands.raster", &source),
+    );
+}

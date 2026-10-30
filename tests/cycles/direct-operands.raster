@@ -1,0 +1,25 @@
+// Operations whose right operand the instruction takes as it stands, and one whose right is a
+// table read worked out first:
+//
+//   v = a - b         LDA a, SEC, SBC b, STA v                                     11
+//   w = a + 1         LDA a, CLC, ADC #1, STA w                                    10
+//   x = T[i] | T[j]   LDA j, TAX, LDA T,X, STA t, LDA i, TAX, LDA T,X, ORA t, STA x  27
+//
+// with the nine cycles of interrupt masking.
+const T: [2]u8 = [1, 2]
+
+var a: u8 = 7
+var b: u8 = 3
+var i: u8 = 0
+var j: u8 = 1
+var v: u8
+var w: u8
+var x: u8
+
+main {
+    cycles(57) {
+        v = a - b
+        w = a + 1
+        x = T[i] | T[j]
+    }
+}
