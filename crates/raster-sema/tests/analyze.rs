@@ -1720,3 +1720,21 @@ fn a_constant_index_past_the_end_of_a_constant_array_is_refused() {
     let program = parse("const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T[1] }").unwrap();
     assert!(analyze(&program).is_ok(), "the last element is in range");
 }
+
+#[test]
+fn a_constant_u8_index_wraps_to_eight_bits_before_its_bounds_are_checked() {
+    // 200 + 200 is 144 in eight bits, and (200 + 200) / 2 is 72: both in range, as at runtime.
+    for index in ["P + P", "(P + P) / 2"] {
+        let source = format!(
+            "const T: [150]u8 = [{}]\nconst P: u8 = 200\nvar v: u8\nmain {{ v = T[{index}] }}",
+            vec!["0"; 150].join(", ")
+        );
+        let program = parse(&source).unwrap();
+        assert!(analyze(&program).is_ok(), "{index} is in range");
+    }
+    assert_eq!(
+        errors("const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T[300] }"),
+        ["index 300 is past the end of `T`, which holds 2 elements"],
+        "a literal that really is out of range is still refused"
+    );
+}
