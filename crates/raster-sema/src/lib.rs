@@ -18,6 +18,10 @@ pub struct SemanticError {
     pub label: Option<String>,
     /// Notes that belong to this refusal alone.
     pub notes: Vec<String>,
+    /// Whether the program is still worth lowering and costing despite this refusal, so its
+    /// later-stage refusals can be reported in the same build. The refused statement is still
+    /// well typed; only what it means for the ROM is wrong.
+    pub recoverable: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -93,20 +97,31 @@ struct TimedBlock {
 }
 
 pub fn analyze(program: &Program) -> Result<TypedProgram, Vec<SemanticError>> {
+    let (typed, errors) = analyze_recovering(program);
+    match typed {
+        Some(typed) if errors.is_empty() => Ok(typed),
+        _ => Err(errors),
+    }
+}
+
+/// [`analyze`], but a program whose every error is `recoverable` still comes back typed, beside
+/// those errors, so the stages after this one can report their own refusals in the same build.
+pub fn analyze_recovering(program: &Program) -> (Option<TypedProgram>, Vec<SemanticError>) {
     let mut analyzer = Analyzer::new();
     analyzer.collect_top_level(program);
     for item in &program.items {
         analyzer.check_item(&item.value);
     }
 
-    if analyzer.errors.is_empty() {
-        Ok(TypedProgram {
+    if analyzer.errors.iter().all(|error| error.recoverable) {
+        let typed = TypedProgram {
             program: program.clone(),
             constants: analyzer.constants,
             tables: analyzer.tables,
-        })
+        };
+        (Some(typed), analyzer.errors)
     } else {
-        Err(analyzer.errors)
+        (None, analyzer.errors)
     }
 }
 
@@ -174,6 +189,7 @@ impl Analyzer {
             refusal,
             label: None,
             notes: Vec::new(),
+            recoverable: false,
         });
     }
 
@@ -219,6 +235,7 @@ impl Analyzer {
             refusal,
             label: Some(label.into()),
             notes,
+            recoverable: false,
         });
     }
 
@@ -815,6 +832,10 @@ impl Analyzer {
                             "let the handler run to its last statement instead".to_owned(),
                         ],
                     );
+                    // The handler still lowers and costs, so its other refusals ride along.
+                    if let Some(error) = self.errors.last_mut() {
+                        error.recoverable = true;
+                    }
                     // The value makes no difference to the refusal, so it is not also judged
                     // against a return type the handler does not have; it is still read, so a
                     // misspelt name in it is still reported.

@@ -279,7 +279,13 @@ fn a_blanking_irq_handler_is_refused_once_however_often_it_runs() {
     let twice = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
                  \nframe bars using irq {\n\
                  \n    at scanline 60 {\n        ppu.mask = $00\n        ppu.mask = $06\n    }\n}\n";
-    let diagnostics = compile_source(twice).expect_err("the handler blanks the screen");
+    // Two stores cost 12 cycles, so this handler also overruns its hblank, which is now reported
+    // beside the blanking; the count here is of the blanking refusals alone.
+    let diagnostics: Vec<_> = compile_source(twice)
+        .expect_err("the handler blanks the screen")
+        .into_iter()
+        .filter(|d| d.message == "an `irq` handler cannot turn rendering off")
+        .collect();
     assert_eq!(diagnostics.len(), 1, "found {diagnostics:?}");
     assert_eq!(
         diagnostics[0].message,
@@ -1604,4 +1610,26 @@ fn the_specifications_register_table_lists_every_apu_register() {
         "§9.5 keeps no register count"
     );
     assert!(section.contains("`apu.status` ($4015) is the one sound register that reads back"));
+}
+
+/// A handler with a `return`, a store that turns rendering off and an hblank overrun earns three
+/// refusals, and the author fixing it sees all three in the one build rather than one per run.
+#[test]
+fn an_irq_handler_with_three_faults_reports_all_three_at_once() {
+    let source = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
+                  \nframe bars using irq {\n    at scanline 60 {\n\
+                  \n        ppu.mask = $00\n        ppu.mask = $5e\n        ppu.mask = $7e\n\
+                  \n        ppu.mask = $9e\n        ppu.mask = $be\n        return\n    }\n}\n";
+    let diagnostics = compile_source(source).expect_err("the handler has three faults");
+
+    let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "an `irq` handler cannot `return`",
+            "an `irq` handler cannot turn rendering off",
+            "an `irq` handler exceeds its hblank",
+        ],
+        "found {diagnostics:?}"
+    );
 }

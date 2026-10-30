@@ -666,6 +666,10 @@ pub struct SecondaryLabel {
 pub struct LowerFailure {
     pub errors: Vec<LowerError>,
     pub warnings: Vec<LowerWarning>,
+    /// The lowered program, when every error is one the later stages can still be run past (an
+    /// `irq` handler that turns rendering off), so they report their own refusals in the same
+    /// build. `None` when any error leaves nothing worth costing.
+    pub program: Option<Box<Program>>,
 }
 
 /// Bit 4 of a write to `apu.status`: enable the DMC.
@@ -1727,13 +1731,22 @@ pub fn lower_with_pictures(
     lowerer.check_block_nmi();
     lowerer.check_apu_frame_interrupt();
     lowerer.check_unmapped_loads();
-    if lowerer.errors.is_empty() {
+    if lowerer.errors.is_empty() && lowerer.recoverable_errors.is_empty() {
         lowerer.program.warnings = lowerer.warnings;
         Ok(lowerer.program)
-    } else {
+    } else if lowerer.errors.is_empty() {
         Err(LowerFailure {
-            errors: lowerer.errors,
+            errors: lowerer.recoverable_errors,
             warnings: lowerer.warnings,
+            program: Some(Box::new(lowerer.program)),
+        })
+    } else {
+        let mut errors = lowerer.errors;
+        errors.extend(lowerer.recoverable_errors);
+        Err(LowerFailure {
+            errors,
+            warnings: lowerer.warnings,
+            program: None,
         })
     }
 }
@@ -1754,6 +1767,8 @@ struct FunctionSignature {
 struct Lowerer {
     program: Program,
     errors: Vec<LowerError>,
+    /// Refusals that do not stop the stages after lowering from judging the program.
+    recoverable_errors: Vec<LowerError>,
     warnings: Vec<LowerWarning>,
     scopes: Vec<BTreeMap<String, Binding>>,
     functions: BTreeMap<String, FunctionSignature>,
@@ -1825,6 +1840,7 @@ impl Lowerer {
         Self {
             program: Program::default(),
             errors: Vec::new(),
+            recoverable_errors: Vec::new(),
             warnings: Vec::new(),
             scopes: vec![BTreeMap::new()],
             functions: BTreeMap::new(),
@@ -2282,15 +2298,20 @@ impl Lowerer {
             self.warnings.push(unreadable_handler_mask(strategy_span));
         }
         for (span, value) in blanking {
-            self.refuse_with(
-                span,
-                "an `irq` handler cannot turn rendering off",
-                format!("`ppu.mask = ${value:02X}` clears both rendering bits"),
-                vec![
+            // The handler is still costed, so its hblank overrun is reported in the same build.
+            self.recoverable_errors.push(LowerError {
+                message: "an `irq` handler cannot turn rendering off".into(),
+                label: Some(format!(
+                    "`ppu.mask = ${value:02X}` clears both rendering bits"
+                )),
+                notes: vec![
                     RENDERING_OFF_STOPS_THE_CHAIN.to_owned(),
                     BLANK_WITH_A_TIMED_FRAME.to_owned(),
                 ],
-            );
+                help: None,
+                span,
+                refusal: Refusal::Rejected,
+            });
         }
     }
 
@@ -2300,7 +2321,7 @@ impl Lowerer {
     /// gives: the configuration is read by walking calls, and a program whose recursion was just
     /// rejected has no walk that terminates.
     fn check_timed_frame_nmi(&mut self) {
-        if !self.errors.is_empty() {
+        if !self.errors.is_empty() || !self.recoverable_errors.is_empty() {
             return;
         }
         let Some(frame) = &self.program.frame else {
@@ -2356,7 +2377,7 @@ impl Lowerer {
     /// Frame handlers are never walked: an IRQ handler runs on visible scanlines and
     /// re-synchronizes, and a `timed` frame is warned about as a whole.
     fn check_block_nmi(&mut self) {
-        if !self.errors.is_empty() {
+        if !self.errors.is_empty() || !self.recoverable_errors.is_empty() {
             return;
         }
         let functions: BTreeMap<Label, &Function> = self
@@ -2425,11 +2446,6 @@ impl Lowerer {
         configuration
     }
 
-    /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
-    ///
-    /// A `return` never reaches here: `raster-sema` refuses one in a frame handler, which is what
-    /// keeps an IRQ handler's `RTI` reachable — codegen compiles a `return` into a jump to the end
-    /// of `main`, and an interrupt left that way keeps its three bytes of stack for ever.
     /// Stamp the handler `ppu.ctrl` writes collected since `from` with the scanline they run at.
     ///
     /// A handler body is lowered in source order and the events are sorted by scanline afterwards,
@@ -2441,6 +2457,12 @@ impl Lowerer {
         }
     }
 
+    /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
+    ///
+    /// `raster-sema` refuses a `return` in a frame handler, which is what keeps an IRQ handler's
+    /// `RTI` reachable. The build only gets here past that refusal so the handler's other refusals
+    /// are reported with it, and the `return` is dropped rather than lowered: codegen would compile
+    /// it into a jump, which has no cost.
     fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
         self.enter_scope();
         self.selection = BankSelection::Unknown(Unseen::FrameEntry);
@@ -2835,6 +2857,12 @@ impl Lowerer {
             }
             SyntaxStatement::Continue => {
                 self.not_in_this_release(statement.span, "`continue` is not supported yet");
+                false
+            }
+            SyntaxStatement::Return(_) if self.in_frame_handler => {
+                // Semantic analysis refuses a `return` in a frame handler, and only lets the build
+                // reach here so the handler's other refusals are reported with it. The jump it
+                // would compile to has no cost, which would add a bogus refusal of its own.
                 false
             }
             SyntaxStatement::Return(value) => {

@@ -6,12 +6,12 @@
 use crate::assets::{resolve_assets, AssetSource, NoAssets};
 use crate::chr::{layout, ChrBankSummary, ChrError};
 use raster_codegen::{generate_with_isa, CodegenError, FrameBudget};
-use raster_diag::{Diagnostic, Refusal, Span};
+use raster_diag::{Diagnostic, Refusal, Severity, Span};
 use raster_ir::{lower_with_pictures, FrameStrategy};
 use raster_link::{
     link_mmc3_program_with_chr, mmc3_reset_runtime_bytes, InterruptVectors, LinkError,
 };
-use raster_sema::analyze;
+use raster_sema::analyze_recovering;
 use raster_syntax::parse;
 use raster_timing::TimingError;
 
@@ -116,30 +116,53 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
             source,
         )
     })?;
-    let typed = analyze(&syntax).map_err(|errors| analyzed(errors, source))?;
-    let assets = resolve_assets(&typed.program, assets).map_err(|errors| {
-        spanned(
-            errors
-                .into_iter()
-                .map(|error| (error.message, error.span, Refusal::Rejected)),
-            source,
-        )
-    })?;
+    // A refusal the later stages can run past (an `irq` handler's `return`, its rendering-off
+    // store) is held back while they run, so the author sees every refusal their handler earns in
+    // one build; `deferred` is those errors, put back in stage order wherever the build ends.
+    let (typed, errors) = analyze_recovering(&syntax);
+    let mut deferred = analyzed(errors, source);
+    let Some(typed) = typed else {
+        return Err(deferred.into());
+    };
+    let assets = resolve_assets(&typed.program, assets)
+        .map_err(|errors| {
+            spanned(
+                errors
+                    .into_iter()
+                    .map(|error| (error.message, error.span, Refusal::Rejected)),
+                source,
+            )
+        })
+        .map_err(|found| with_deferred(&deferred, found.into()))?;
     // Whether the tiles fit their banks is a question about the decoded pictures, so it is asked
     // here and not in `raster-sema`; the nametables it hands lowering already point at the tiles.
-    let chr = layout(&typed.program, &assets).map_err(|errors| chr_diagnostics(errors, source))?;
-    let mut ir = lower_with_pictures(&typed, &chr.pictures).map_err(|failure| {
-        failed(
-            failure.warnings,
-            &[],
-            lowered(failure.errors, source),
-            source,
-        )
-    })?;
+    let chr = layout(&typed.program, &assets)
+        .map_err(|errors| chr_diagnostics(errors, source))
+        .map_err(|found| with_deferred(&deferred, found.into()))?;
+    let (ir, lower_warnings) = match lower_with_pictures(&typed, &chr.pictures) {
+        Ok(mut ir) => {
+            let warnings = std::mem::take(&mut ir.warnings);
+            (ir, warnings)
+        }
+        Err(failure) => {
+            let found = lowered(failure.errors, source);
+            match failure.program {
+                Some(ir) => {
+                    deferred.extend(found);
+                    (*ir, failure.warnings)
+                }
+                None => {
+                    return Err(with_deferred(
+                        &deferred,
+                        failed(failure.warnings, &[], found, source).into(),
+                    ))
+                }
+            }
+        }
+    };
     // Every failing stage after lowering reports the warnings lowering found,
     // for the reason the whole run does: the author who fixes the error is the
     // author who needed the warning, and they only get one look at it.
-    let lower_warnings = std::mem::take(&mut ir.warnings);
     let warnings = warned(lower_warnings.clone(), source);
     let output = generate_with_isa(&ir, LEGAL_ISA).map_err(|error| {
         // Every timing error refuses its region, so its span is the block refused.
@@ -165,19 +188,29 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
             if let Some(other) = stopped_by {
                 found.push(codegen_diagnostic(*other, source));
             }
-            return Failure {
-                diagnostics: failed(lower_warnings.clone(), &refused, found, source),
-                frame: budget,
-            };
+            return with_deferred(
+                &deferred,
+                Failure {
+                    diagnostics: failed(lower_warnings.clone(), &refused, found, source),
+                    frame: budget,
+                },
+            );
         }
-        failed(
-            lower_warnings.clone(),
-            &refused,
-            vec![codegen_diagnostic(error, source)],
-            source,
+        with_deferred(
+            &deferred,
+            failed(
+                lower_warnings.clone(),
+                &refused,
+                vec![codegen_diagnostic(error, source)],
+                source,
+            )
+            .into(),
         )
-        .into()
     })?;
+    if !deferred.is_empty() {
+        // Nothing is refused at a span here, so nothing is withdrawn.
+        return Err(failed(lower_warnings, &[], deferred, source).into());
+    }
     // Only `using timed` pays the three-frame pass the fixed-bank note describes; an `irq`
     // frame emits its handlers once.
     let timed_frame = ir
@@ -211,6 +244,18 @@ pub(crate) fn build(source: &str, assets: &dyn AssetSource) -> Result<Rom, Failu
         frame: output.frame,
         chr_banks: chr.banks,
     })
+}
+
+/// A failing stage's diagnostics with the errors held back from earlier stages put in front of its
+/// own errors, after the warnings that lead them.
+fn with_deferred(deferred: &[Diagnostic], mut failure: Failure) -> Failure {
+    let at = failure
+        .diagnostics
+        .iter()
+        .position(|diagnostic| diagnostic.severity == Severity::Error)
+        .unwrap_or(failure.diagnostics.len());
+    failure.diagnostics.splice(at..at, deferred.iter().cloned());
+    failure
 }
 
 /// A layout mistake is a diagnostic with a label and a help line of its own.
