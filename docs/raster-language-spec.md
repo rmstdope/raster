@@ -509,6 +509,10 @@ enforces at compile time:
   handler left (or `main`, on the first frame). A handler may switch to `$1000`,
   because its own stores land before the switch takes effect, and a handler at
   scanline 240 runs after the picture whichever half the background is in.
+- An event on scanline 0, or two events on consecutive scanlines, needs a latch of 0.
+  That works on every MMC3 revision: the older ones (Sharp MMC3A, NEC) raise no IRQ
+  when the counter reloads *itself* to 0, but every link the compiler emits reloads
+  through `$C001`, and they fire on that.
 
 **rasterc today:** built. The rendering check, the latch computation and the
 automatic acknowledge are done for you under `using irq`, and so is the A12
