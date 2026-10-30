@@ -797,8 +797,9 @@ pub struct PpuConfiguration {
 
 /// Why an MMC3 IRQ schedule cannot be built from this program.
 ///
-/// Each of these is a ROM that assembles, runs, and silently never takes an interrupt — the class
-/// of failure spec section 7.3 asks the compiler to catch instead of the author.
+/// Each of these is a ROM that assembles, runs, and silently loses its schedule — it never takes an
+/// interrupt, or, for [`Mmc3IrqError::BackgroundInUpperHalf`], takes them on the wrong scanlines —
+/// the class of failure spec section 7.3 asks the compiler to catch instead of the author.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mmc3IrqError {
     /// Rendering is off, so the PPU fetches nothing and A12 never moves.
