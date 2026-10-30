@@ -495,6 +495,11 @@ enforces at compile time:
   from scanline numbers rather than making you do it.
 - Handlers must acknowledge (`$E000` then `$E001`) before returning, which is emitted
   automatically.
+- A handler runs at the top of the scanline it names, so a write meant for the next
+  frame (a pattern table or scroll put back) cannot go at scanline 239 without landing
+  on that line's pixels. A `using irq` frame may therefore name **scanline 240**, the
+  post-render line: the IRQ is counted to the last visible line and the handler runs
+  after its last pixel. A `using timed` frame keeps to 0–239.
 
 **rasterc today:** built. The rendering check, the latch computation and the
 automatic acknowledge are done for you under `using irq`, and so is the A12

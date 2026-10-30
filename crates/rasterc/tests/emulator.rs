@@ -231,6 +231,40 @@ fn irq_frame_runs_events_at_the_requested_scanlines() {
     }
 }
 
+/// An event at scanline 240 runs after the picture: everything it changes is already in place
+/// when the next frame starts, and nothing it writes lands on a visible line.
+#[test]
+fn an_irq_event_at_scanline_240_runs_after_the_last_visible_line() {
+    let source = cycles_fixture("irq-colour-bars.raster").replace(
+        "    at scanline 180 {\n        ppu.mask = $1e          // none again\n    }",
+        "    at scanline 240 {\n        ppu.mask = $1e          // none again\n    }",
+    );
+    assert!(
+        source.contains("at scanline 240"),
+        "the fixture still reads as expected"
+    );
+    let rom = compile_source(&source).expect("the program compiles");
+
+    for frames in [8, 9, 61] {
+        let frame = render_after_frames(
+            "irq-240.nes",
+            &rom.image,
+            NonZeroU32::new(frames).expect("at least one frame"),
+        )
+        .expect("the ROM runs");
+        let entries = *frame.as_indices();
+        assert_eq!(
+            bands(&entries),
+            vec![(0, 0x0f), (60, 0x4f), (120, 0x8f)],
+            "frame {frames}: green to the last line, and none again from the top of the next frame"
+        );
+        assert!(
+            row_bands(&entries).iter().all(|bands| bands.len() == 1),
+            "frame {frames}: a handler wrote part-way along a scanline"
+        );
+    }
+}
+
 /// The window the compiler enforces is one the console honours.
 ///
 /// `IRQ_HANDLER_BODY_CYCLES` was measured rather than derived, so the number is only worth what an

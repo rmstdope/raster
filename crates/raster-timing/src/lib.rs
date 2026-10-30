@@ -625,9 +625,9 @@ pub const MAX_IRQ_DELTA_SCANLINES: u16 = 256;
 ///
 /// `scanlines` is a real distance between two events, so it is at least one and at most
 /// [`MAX_IRQ_DELTA_SCANLINES`]. Nothing in this crate enforces that — what bounds it is a crate
-/// away, in `raster-ir`: an event's scanline is refused unless it is a visible one (0 to 239), and
-/// two events on the same scanline are refused as well, so no delta a chain can ask for exceeds
-/// 241. The `debug_assert!` below is the guard for a caller that stops being true of, and the
+/// away, in `raster-ir`: an event's scanline is refused unless it is a visible one (0 to 239) or,
+/// under `using irq`, the post-render line 240 counted to the last visible line's rise, and two
+/// events on the same scanline are refused as well, so no delta a chain can ask for exceeds 241. The `debug_assert!` below is the guard for a caller that stops being true of, and the
 /// `clamp` keeps a release build from producing a latch out of thin air.
 pub fn mmc3_latch_for_delta(scanlines: u16) -> u8 {
     debug_assert!(
