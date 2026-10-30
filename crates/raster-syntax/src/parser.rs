@@ -1146,10 +1146,7 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.peek().span;
-        self.expect_punctuation(
-            Punctuation::RightBracket,
-            "expected `]` to close the array",
-        );
+        self.expect_punctuation(Punctuation::RightBracket, "expected `]` to close the array");
         Spanned::new(Expression::Array(elements), start.join(end))
     }
 

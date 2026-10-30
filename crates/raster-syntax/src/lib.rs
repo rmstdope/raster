@@ -287,9 +287,11 @@ main {
         let Expression::Array(elements) = &initializer.value else {
             panic!("not an array literal");
         };
-        assert!(elements
-            .iter()
-            .all(|element| matches!(element.value, Expression::Infix { .. })));
+        assert!(
+            elements
+                .iter()
+                .all(|element| matches!(element.value, Expression::Infix { .. }))
+        );
     }
 
     #[test]

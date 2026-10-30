@@ -3947,7 +3947,10 @@ fn a_constant_array_is_one_page_aligned_data_block_read_by_index() {
     assert_eq!(program.data.len(), 1);
     let block = &program.data[0];
     assert_eq!(block.bytes, [0x01, 0x11, 0x21]);
-    assert!(block.page_aligned, "a table is placed so its reads never cross a page");
+    assert!(
+        block.page_aligned,
+        "a table is placed so its reads never cross a page"
+    );
 
     let main = program.main.expect("main");
     let Some(Statement::Assign { value, .. }) = main.statements.last() else {

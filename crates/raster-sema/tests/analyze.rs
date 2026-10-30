@@ -1592,7 +1592,10 @@ fn a_constant_array_keeps_its_bytes_for_lowering() {
 fn a_constant_array_may_hold_256_elements_and_no_more() {
     let elements = vec!["0"; 256].join(", ");
     let program = parse(&format!("const T: [256]u8 = [{elements}]\nmain {{ }}")).unwrap();
-    assert_eq!(analyze(&program).expect("256 elements").tables["T"].len(), 256);
+    assert_eq!(
+        analyze(&program).expect("256 elements").tables["T"].len(),
+        256
+    );
 
     let elements = vec!["0"; 257].join(", ");
     let diagnostics = errors(&format!("const T: [257]u8 = [{elements}]\nmain {{ }}"));

@@ -380,7 +380,7 @@ const fn page_padding(offset: usize) -> usize {
 }
 
 const PAGE_SIZE: usize = 0x100;
-const _: () = assert!(MMC3_FIXED_BANK_START as usize % PAGE_SIZE == 0);
+const _: () = assert!((MMC3_FIXED_BANK_START as usize).is_multiple_of(PAGE_SIZE));
 
 const fn instruction_bytes(mode: AddressingMode) -> usize {
     match mode {

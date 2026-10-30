@@ -995,9 +995,16 @@ impl Analyzer {
         let mut bytes = Vec::with_capacity(elements.len());
         for element in elements {
             let element_type = self.expression_type(element);
-            self.require_integer(element.span, &element_type, "array element must be an integer");
+            self.require_integer(
+                element.span,
+                &element_type,
+                "array element must be an integer",
+            );
             match self.evaluate_constant(element) {
-                None => self.error(element.span, "array element must be a compile-time constant"),
+                None => self.error(
+                    element.span,
+                    "array element must be a compile-time constant",
+                ),
                 Some(value) => match u8::try_from(value) {
                     Ok(byte) => bytes.push(byte),
                     Err(_) => self.error(element.span, "array element overflows u8"),
@@ -1540,13 +1547,13 @@ impl Analyzer {
                 }
             }
             Expression::Index { base, .. } => {
-                if let Expression::Name(name) = &base.value {
-                    if matches!(
+                if let Expression::Name(name) = &base.value
+                    && matches!(
                         self.lookup(&name.value).map(|symbol| &symbol.kind),
                         Some(SymbolKind::Constant(_))
-                    ) {
-                        self.error(name.span, "constants are not assignable");
-                    }
+                    )
+                {
+                    self.error(name.span, "constants are not assignable");
                 }
             }
             // A member expression has already been judged: `expression_type` is
@@ -1732,7 +1739,10 @@ const MAX_TABLE_LENGTH: u32 = 256;
 /// literal.
 fn is_constant_array(declaration: &Declaration) -> bool {
     matches!(
-        declaration.type_annotation.as_ref().map(|annotation| &annotation.value),
+        declaration
+            .type_annotation
+            .as_ref()
+            .map(|annotation| &annotation.value),
         Some(Type::Array { .. })
     ) || array_literal_length(declaration).is_some()
 }

@@ -1092,22 +1092,31 @@ fn an_element_read_indexes_a_page_aligned_table() {
     else {
         unreachable!();
     };
-    assert!(matches!(
-        &items[read - 1],
-        FixedBankItem::Instruction { instruction, .. } if instruction.opcode == 0xaa
-    ), "the index reaches X through `TAX`");
+    assert!(
+        matches!(
+            &items[read - 1],
+            FixedBankItem::Instruction { instruction, .. } if instruction.opcode == 0xaa
+        ),
+        "the index reaches X through `TAX`"
+    );
 
     let table = items
         .iter()
         .position(|item| *item == FixedBankItem::Label(relocation.target))
         .expect("the table's label");
     assert_eq!(items[table - 1], FixedBankItem::PageAlign);
-    assert_eq!(items[table + 1], FixedBankItem::Data(vec![0x01, 0x11, 0x21]));
+    assert_eq!(
+        items[table + 1],
+        FixedBankItem::Data(vec![0x01, 0x11, 0x21])
+    );
 }
 
 #[test]
 fn a_full_256_byte_table_is_one_block() {
-    let elements = (0..=255).map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
+    let elements = (0..=255)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     let output = generate_source(&format!("const T: [256]u8 = [{elements}]\nmain {{ }}"));
     let expected: Vec<u8> = (0..=255).collect();
     assert!(output
