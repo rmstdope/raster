@@ -2408,8 +2408,9 @@ impl Lowerer {
     /// is a frame whose only handler is at scanline 240.
     ///
     /// The mask is held at its opening value, because handler masks are judged by
-    /// [`Self::check_irq_handler_masks`]. A `ppu.ctrl` this cannot read ends the walk unjudged here;
-    /// `check_irq_background_half` warns about it.
+    /// [`Self::check_irq_handler_masks`]. A `ppu.ctrl` this cannot read ends the walk unjudged here.
+    /// `check_irq_background_half` warns about it when a handler on the picture follows it; one
+    /// stored by a frame's only handler, at scanline 240, goes unsaid.
     fn check_irq_handler_ctrl(&mut self, background_refused: bool) {
         let Some(frame) = &self.program.frame else {
             return;
