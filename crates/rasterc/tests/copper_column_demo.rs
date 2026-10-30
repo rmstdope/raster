@@ -100,8 +100,10 @@ fn the_bar_swings_behind_the_picture_and_across_the_column() {
     .expect("the picture converts");
     let rom = build();
 
+    // Frames 70 to 75, the six of a pass, with the bar across the middle of the picture, and frame
+    // 40, when it is higher up.
     let mut tops = Vec::new();
-    for frames in [40, 41, 100] {
+    for frames in [70, 71, 72, 73, 74, 75, 40] {
         let frame = render_after_frames(
             "copper-column.nes",
             &rom,
@@ -126,20 +128,28 @@ fn the_bar_swings_behind_the_picture_and_across_the_column() {
                 );
             }
             // Right of the picture the backdrop shows: this line's bar colour until the handler
-            // writes the next one, inside the column, and that one after.
-            for x in PICTURE_WIDTH..FRAME_WIDTH {
-                assert!(
-                    at(x, y) == behind || at(x, y) == column[y],
-                    "frame {frames}, ({x}, {y}) shows ${:02X}, neither ${behind:02X} nor ${:02X}",
-                    at(x, y),
-                    column[y]
-                );
-            }
+            // writes the next one, inside the column, and that one from there to the edge.
+            let row: Vec<u16> = (PICTURE_WIDTH..FRAME_WIDTH).map(|x| at(x, y)).collect();
+            let change = row
+                .iter()
+                .position(|&entry| entry != behind)
+                .unwrap_or(row.len());
+            assert!(
+                row[change..].iter().all(|&entry| entry == column[y]),
+                "frame {frames}, line {y} right of the picture: ${behind:02X} then ${:02X}, \
+                 once, not {row:02x?}",
+                column[y]
+            );
         }
     }
+    assert!(
+        (60..170).contains(&tops[0]),
+        "at frame 70 the bar crosses the picture, not line {}",
+        tops[0]
+    );
     assert_ne!(
-        tops[0], tops[2],
-        "the bar moves: line {} at frames 40 and 100",
+        tops[0], tops[6],
+        "the bar moves: line {} at frames 70 and 40",
         tops[0]
     );
 }

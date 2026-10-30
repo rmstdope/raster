@@ -72,8 +72,9 @@ const SWING: [256]u8 = [
 ]
 
 // The low byte of the address the scroll is put back to for each line:
-// coarse Y, the line's tile row, in bits 5-7. With the first $2006 write
-// and the two $2005 writes before it, this one sets the whole address.
+// the low three bits of its tile row in bits 5-7, the rest of it having
+// come from the second $2005 write. With the writes before it, this one
+// sets the whole address.
 const LOW: [256]u8 = [
     $00, $00, $00, $00, $00, $00, $00, $00, $20, $20, $20, $20, $20, $20, $20, $20,
     $40, $40, $40, $40, $40, $40, $40, $40, $60, $60, $60, $60, $60, $60, $60, $60,
@@ -124,23 +125,25 @@ frame bar using timed {
         ppu.data = shade
         ppu.addr = $00          // the scroll for the next line: nametable 0,
         ppu.scroll = line       // that line,
-        ppu.scroll = 0          // its left edge,
+        ppu.scroll = 0          // no fine scroll across,
         ppu.addr = LOW[line]    // and the address it all makes
         ppu.mask = $0a          // rendering on again
     }
     // The bar never reaches the last line or the first, so this handler
     // blacks the backdrop for the top of the next frame, moves the bar one
-    // step along its swing, and starts the count again.
+    // step along its swing, and starts the count again. That work goes
+    // while rendering is off, so that it comes back on in the horizontal
+    // blank here too, and the last line ends in the column like the rest.
     at scanline 239 {
-        step += 1
-        top = SWING[step]
-        line = 0
         ppu.addr = $3f
         ppu.mask = $00
         ppu.addr = $00
         ppu.data = $0f
-        ppu.addr = $00
-        ppu.addr = $00
+        ppu.addr = $00          // the top-left of nametable 0, which the
+        ppu.addr = $00          // next frame starts from
+        step += 1
+        top = SWING[step]
+        line = 0
         ppu.mask = $0a
     }
 }
