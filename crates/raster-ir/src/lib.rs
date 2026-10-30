@@ -2299,18 +2299,19 @@ impl Lowerer {
         }
         for (span, value) in blanking {
             // The handler is still costed, so its hblank overrun is reported in the same build.
-            self.refuse_with(
-                span,
-                "an `irq` handler cannot turn rendering off",
-                format!("`ppu.mask = ${value:02X}` clears both rendering bits"),
-                vec![
+            self.recoverable_errors.push(LowerError {
+                message: "an `irq` handler cannot turn rendering off".into(),
+                label: Some(format!(
+                    "`ppu.mask = ${value:02X}` clears both rendering bits"
+                )),
+                notes: vec![
                     RENDERING_OFF_STOPS_THE_CHAIN.to_owned(),
                     BLANK_WITH_A_TIMED_FRAME.to_owned(),
                 ],
-            );
-            if let Some(error) = self.errors.pop() {
-                self.recoverable_errors.push(error);
-            }
+                help: None,
+                span,
+                refusal: Refusal::Rejected,
+            });
         }
     }
 
@@ -2445,11 +2446,6 @@ impl Lowerer {
         configuration
     }
 
-    /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
-    ///
-    /// A `return` never reaches here: `raster-sema` refuses one in a frame handler, which is what
-    /// keeps an IRQ handler's `RTI` reachable — codegen compiles a `return` into a jump to the end
-    /// of `main`, and an interrupt left that way keeps its three bytes of stack for ever.
     /// Stamp the handler `ppu.ctrl` writes collected since `from` with the scanline they run at.
     ///
     /// A handler body is lowered in source order and the events are sorted by scanline afterwards,
@@ -2461,6 +2457,12 @@ impl Lowerer {
         }
     }
 
+    /// A handler body, in its own scope. Its cycle budget is codegen's to impose.
+    ///
+    /// `raster-sema` refuses a `return` in a frame handler, which is what keeps an IRQ handler's
+    /// `RTI` reachable. The build only gets here past that refusal so the handler's other refusals
+    /// are reported with it, and the `return` is dropped rather than lowered: codegen would compile
+    /// it into a jump, which has no cost.
     fn lower_frame_body(&mut self, body: &Block) -> Vec<Statement> {
         self.enter_scope();
         self.selection = BankSelection::Unknown(Unseen::FrameEntry);
