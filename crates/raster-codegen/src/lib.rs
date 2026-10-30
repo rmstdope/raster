@@ -391,7 +391,8 @@ impl Generator<'_> {
     ///
     /// **A handler's body is held to [`IRQ_HANDLER_BODY_CYCLES`] and refused when it does not
     /// fit** - at scanline 240, which is never drawn, to [`IRQ_UNDRAWN_LINE_HANDLER_BODY_CYCLES`].
-    /// ** The interrupt lands in the hblank at the end of the scanline before the one the
+    /// ** With the background at `$0000`, which `raster-ir` holds every handler on the picture
+    /// to, the interrupt lands in the hblank at the end of the scanline before the one the
     /// author named, and a store made once that window has closed lands part-way along a visible
     /// row — which is the one thing the schedule promises does not happen. Only the body is
     /// charged: the ten cycles of prologue before it and the thirty-eight of latch, acknowledgement
