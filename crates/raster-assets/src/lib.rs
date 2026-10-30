@@ -179,7 +179,8 @@ fn decode_error(error: png::DecodingError) -> PngBackgroundError {
 }
 
 /// The backdrop is tried first, so every black, its own colour, maps to `$0F` and never to the
-/// `$0D` that comes before it in the palette.
+/// `$0D` that comes before it in the palette. The converter's `Colours::new` seeds its colours
+/// the same way.
 fn nearest_palette_entry(rgb: [u8; 3]) -> u8 {
     std::iter::once(TRANSPARENT_COLOUR)
         .chain(0..64)

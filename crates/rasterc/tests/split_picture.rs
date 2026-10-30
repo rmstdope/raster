@@ -24,8 +24,7 @@ impl AssetSource for Fixture {
 
 /// White noise on black, tile by tile: the upper 15 rows of tiles draw 200 noise tiles and the
 /// lower 15 rows 200 others. 400 distinct tiles are too many for one pattern table, and each
-/// half fits one. White is entry $20, and black is transparent, the backdrop $0F: the strict
-/// importer reads opaque black as $0D (raster-bt8).
+/// half fits one. White is entry $20, and black is transparent, the backdrop $0F.
 fn noise_halves() -> Vec<bool> {
     noise(200, 200)
 }
