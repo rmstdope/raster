@@ -138,8 +138,8 @@ frame bars using timed {
     // last write lands once the beam is past the right edge of the
     // picture, so the colour changes where nobody can see it. Unlike
     // examples/copper, nothing waits for the edge: the work before the
-    // write takes 85 cycles, about a dozen dots past it. A compiler
-    // that does the work faster would land it inside the picture, and
+    // write takes 80 cycles, which is enough to clear it. A compiler that
+    // does the work much faster would land it inside the picture, and
     // crates/rasterc/tests/copper_bars_demo.rs would say so.
     every 1 scanlines from 0 to 238 {
         shade = BAR[line - top1] | BAR[line - top2] | BAR[line - top3]
