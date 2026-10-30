@@ -521,11 +521,13 @@ check, in part. **stricter** — the compiler refuses what it cannot read: both
 refused because their pattern table cannot be checked, the frame must start with
 the background at `$0000` and the sprites at `$1000` (the other way round clocks the
 counter twice on the pre-render line, so the schedule drifts a scanline a frame, and
-raises the IRQ too late in hblank for a handler's store), a handler that stores
-a constant mask with rendering off is refused (a computed mask only warns), and
-a handler on the picture that runs with the background at `$1000` is refused (a
-computed handler `ppu.ctrl` only warns). Other `ppu.ctrl` values a handler stores,
-both tables in one half or 8x16 sprites, are not judged yet.
+raises the IRQ too late in hblank for a handler's store) and wrap the same way, so
+a handler that leaves the background at `$1000` standing into the next frame is
+refused, a handler that stores a constant mask with rendering off is refused (a
+computed mask only warns), a handler on the picture that runs with the background
+at `$1000` is refused (a computed handler `ppu.ctrl` only warns), and a handler that
+stores a constant `ppu.ctrl` with both tables in one half or 8x16 sprites is refused
+(the counter stops there).
 The CHR layout is not read; the reset runtime fixes it.
 
 ---
