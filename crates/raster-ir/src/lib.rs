@@ -2328,7 +2328,9 @@ impl Lowerer {
     /// The half a handler runs under is whatever the schedule left before its interrupt fired: the
     /// opening configuration on the first frame, and on every frame after it what the last handler
     /// left. The schedule is walked once from each, so both are judged. Only reached once the
-    /// opening configuration is proven, so it starts from a known value.
+    /// opening configuration is proven, so it starts from a known value — and, since
+    /// `validate_mmc3_irq_frame` refuses a frame that opens at `$1000`, what this finds is a
+    /// handler's own switch: the second walk is the one a frame that never switches back fails.
     fn check_irq_background_half(&mut self) {
         let RegisterState::Known(opening) = self.ppu_configuration().ctrl else {
             return;

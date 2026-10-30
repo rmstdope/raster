@@ -1120,19 +1120,12 @@ fn an_irq_handler_run_with_the_background_at_1000_is_refused() {
 }
 
 /// The background half a handler runs under is what the schedule leaves when its interrupt fires:
-/// `main`'s for the first frame, and what the last handler left for every frame after it. Both are
-/// judged, so a frame that opens at `$0000` and never switches back is refused at the event the
-/// second frame runs at `$1000`.
+/// `main`'s for the first frame, and what the last handler left for every frame after it. A frame
+/// whose `main` opens at `$1000` is `validate_mmc3_irq_frame`'s refusal; one that opens at `$0000`
+/// and switches without switching back runs at `$1000` from the second frame on, and is refused at
+/// each event that does.
 #[test]
 fn the_background_half_a_handler_runs_under_wraps_from_the_frame_before() {
-    let opening = "main {\n    ppu.ctrl = $10\n    ppu.mask = $1e\n}\n\
-                   \nframe bars using irq {\n    at scanline 60 { ppu.mask = $3e }\n}\n";
-    let diagnostics = compile_source(opening).expect_err("main leaves the background at $1000");
-    assert_eq!(
-        diagnostics[0].label,
-        "its stores would land about 55 pixels into scanline 60"
-    );
-
     let wrapped = "main {\n    ppu.ctrl = $08\n    ppu.mask = $1e\n}\n\
                    \nframe halves using irq {\n    at scanline 60 { ppu.mask = $3e }\n\
                    \n    at scanline 120 { ppu.ctrl = $10 }\n}\n";
