@@ -1663,3 +1663,34 @@ fn a_constant_array_element_cannot_be_assigned() {
         ["constants are not assignable"]
     );
 }
+
+#[test]
+fn a_constant_array_named_without_an_index_says_how_to_read_it() {
+    let message = "`T` is a constant array; read one element with `T[i]`";
+    for source in [
+        "const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T }",
+        "const T: [2]u8 = [1, 2]\nmain { ppu.data = T }",
+        "const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T + 1 }",
+        "const T: [2]u8 = [1, 2]\nfn f(x: u8) {}\nmain { f(T) }",
+    ] {
+        assert_eq!(errors(source), [message], "{source}");
+    }
+}
+
+#[test]
+fn assigning_a_whole_constant_array_is_one_error() {
+    assert_eq!(
+        errors("const T: [2]u8 = [1, 2]\nmain { T = 1 }"),
+        ["constants are not assignable"]
+    );
+}
+
+#[test]
+fn a_constant_index_past_the_end_of_a_constant_array_is_refused() {
+    assert_eq!(
+        errors("const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T[2] }"),
+        ["index 2 is past the end of `T`, which holds 2 elements"]
+    );
+    let program = parse("const T: [2]u8 = [1, 2]\nvar v: u8\nmain { v = T[1] }").unwrap();
+    assert!(analyze(&program).is_ok(), "the last element is in range");
+}

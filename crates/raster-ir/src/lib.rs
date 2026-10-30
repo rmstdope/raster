@@ -3800,6 +3800,7 @@ impl Lowerer {
             SyntaxExpression::Name(name) => match self.lookup(&name.value) {
                 Some(Binding::Place(place)) => Value::Place(place),
                 Some(Binding::Constant(value)) => Value::Constant(value),
+                // `raster-sema` refuses a bare table name first; this is the backstop.
                 Some(Binding::Table(_)) => {
                     self.error(
                         name.span,

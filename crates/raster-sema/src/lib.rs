@@ -1070,6 +1070,16 @@ impl Analyzer {
     fn expression_type(&mut self, expression: &Spanned<Expression>) -> ValueType {
         match &expression.value {
             Expression::Name(name) => match self.lookup(&name.value) {
+                Some(symbol) if is_constant_array_symbol(symbol) => {
+                    self.error(
+                        name.span,
+                        format!(
+                            "`{0}` is a constant array; read one element with `{0}[i]`",
+                            name.value
+                        ),
+                    );
+                    ValueType::Unknown
+                }
                 Some(symbol) => symbol.value_type.clone(),
                 None => {
                     self.error(name.span, format!("unknown name `{}`", name.value));
@@ -1117,9 +1127,33 @@ impl Analyzer {
             } => self.infix_type(left, operator, right),
             Expression::Call { callee, arguments } => self.call_type(callee, arguments),
             Expression::Index { base, index } => {
-                let base_type = self.expression_type(base);
+                // A constant array is a table to index, so naming it here is not the bare use
+                // `expression_type` refuses.
+                let table = match &base.value {
+                    Expression::Name(name) => self
+                        .lookup(&name.value)
+                        .filter(|symbol| is_constant_array_symbol(symbol))
+                        .map(|symbol| (name.value.clone(), symbol.value_type.clone())),
+                    _ => None,
+                };
+                let base_type = match &table {
+                    Some((_, value_type)) => value_type.clone(),
+                    None => self.expression_type(base),
+                };
                 let index_type = self.expression_type(index);
                 self.require_integer(index.span, &index_type, "array index must be an integer");
+                if let (Some((name, ValueType::Array(_, length))), Some(position)) =
+                    (&table, self.evaluate_constant(index))
+                    && position >= *length
+                {
+                    self.error(
+                        index.span,
+                        format!(
+                            "index {position} is past the end of `{name}`, which holds {length} \
+                             elements"
+                        ),
+                    );
+                }
                 match base_type {
                     ValueType::Array(element, _) => *element,
                     ValueType::Unknown => ValueType::Unknown,
@@ -1231,6 +1265,15 @@ impl Analyzer {
                 | Operator::StarEqual
                 | Operator::SlashEqual
         ) {
+            if let Expression::Name(name) = &left.value
+                && self
+                    .lookup(&name.value)
+                    .is_some_and(is_constant_array_symbol)
+            {
+                self.expression_type(right);
+                self.error(name.span, "constants are not assignable");
+                return ValueType::Unknown;
+            }
             let left_type = self.expression_type(left);
             let right_type = self.expression_type(right);
             self.ensure_assignable(left);
@@ -1734,6 +1777,12 @@ impl Analyzer {
 
 /// The most elements a constant array holds: as many as an 8-bit index reaches.
 const MAX_TABLE_LENGTH: u32 = 256;
+
+/// Whether a symbol names a constant array, which is only ever read one element at a time.
+fn is_constant_array_symbol(symbol: &Symbol) -> bool {
+    matches!(symbol.kind, SymbolKind::Constant(_))
+        && matches!(symbol.value_type, ValueType::Array(_, _))
+}
 
 /// Whether a declaration is a constant array: one typed as an array, or initialized with an array
 /// literal.
