@@ -911,6 +911,25 @@ fn a_looped_run_charges_the_end_of_each_turn_to_its_last_handler() {
 }
 
 #[test]
+fn a_looped_run_over_a_rendered_picture_loops_in_each_of_its_six_frames() {
+    let output = generate_source(
+        r#"
+            main { ppu.mask = $1e }
+            frame bars using timed {
+                every 1 scanlines from 10 to 40 { ppu.mask = $1e }
+            }
+        "#,
+    );
+
+    // Rendering on, the pass is six frames, whose turns all end on 114-cycle scanlines: the window
+    // is that less the 19 cycles a turn spends, where the rendering-off pass of
+    // `a_looped_run_charges_the_end_of_each_turn_to_its_last_handler` has a 113 among its three.
+    let rows = budget_rows(&output);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].2, 114 - 19);
+}
+
+#[test]
 fn a_program_without_a_frame_reports_no_budget() {
     let output = generate_source("main { ppu.mask = 0 }");
     assert_eq!(output.frame, None);

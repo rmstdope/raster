@@ -543,9 +543,14 @@ fn first_red_dot(entries: &[u16]) -> usize {
 /// on its first must hold still as well.
 #[test]
 fn a_timed_frame_over_a_rendered_picture_does_not_drift() {
-    for blanking in [
-        "",
-        "    at scanline 0 { ppu.mask = $0a }\n    at scanline 239 { ppu.mask = $00 }\n",
+    for (before, blanking) in [
+        ("$0a", ""),
+        (
+            "$0a",
+            "    at scanline 0 { ppu.mask = $0a }\n    at scanline 239 { ppu.mask = $00 }\n",
+        ),
+        // Off before the frame, and turned on by it: on, from the second frame on.
+        ("$00", "    at scanline 0 { ppu.mask = $0a }\n"),
     ] {
         assert_holds_still(&format!(
             "main {{\n\
@@ -555,7 +560,7 @@ fn a_timed_frame_over_a_rendered_picture_does_not_drift() {
              \x20   ppu.addr = $00\n\
              \x20   ppu.addr = $00\n\
              \x20   ppu.ctrl = $00\n\
-             \x20   ppu.mask = $0a          // the background on: rendering\n\
+             \x20   ppu.mask = {before}\n\
              }}\n\
              frame tint using timed {{\n\
              \x20   at scanline 100 {{ ppu.mask = $2a }}   // red emphasis from where this lands\n\
