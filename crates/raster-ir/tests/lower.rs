@@ -493,6 +493,49 @@ fn rejects_frame_events_outside_the_visible_scanline_range() {
 }
 
 #[test]
+fn an_irq_frame_may_have_an_event_on_the_line_after_the_picture() {
+    // Scanline 240 is the post-render line: an IRQ counted to line 239 runs there, after the last
+    // pixel, which is where a frame puts back what the next frame starts from.
+    let program = lower_source(
+        r#"
+            main {
+                ppu.ctrl = $08
+                ppu.mask = $1e
+            }
+            frame bars using irq {
+                at scanline 120 { ppu.mask = $3e }
+                at scanline 240 { ppu.mask = $1e }
+            }
+        "#,
+    );
+    let scanlines: Vec<u32> = program
+        .frame
+        .expect("the frame lowers")
+        .events
+        .iter()
+        .map(|event| event.scanline)
+        .collect();
+    assert_eq!(scanlines, [120, 240]);
+
+    let errors = lower_errors(
+        r#"
+            main {
+                ppu.ctrl = $08
+                ppu.mask = $1e
+            }
+            frame bars using irq {
+                at scanline 241 { ppu.mask = $1e }
+            }
+        "#,
+    );
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        "a `using irq` frame event must fall on scanline 0 to 240: the picture, or the line after it"
+    );
+}
+
+#[test]
 fn rejects_frame_forms_the_timed_lowering_does_not_cover() {
     for (source, expected) in [
         (
