@@ -6,8 +6,9 @@
 //! here is testable from bytes held in memory.
 
 use raster_assets::{
-    convert_background, decode_background, encode_background, BackgroundEncodeError, ConvertError,
-    NesBackground, PngBackgroundError,
+    convert_background, convert_background_split, decode_background, encode_background,
+    encode_background_split, BackgroundEncodeError, ConvertError, NesBackground,
+    PngBackgroundError,
 };
 use raster_syntax::{Asset, AssetValue, Item, Program, Span};
 
@@ -98,8 +99,14 @@ fn resolve_one(asset: &Asset, source: &dyn AssetSource) -> Result<NesBackground,
     if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         return Err(format!("`{path}` is a JPEG, not a PNG; save it as a PNG"));
     }
+    let split = splits(asset);
     if converts(asset) {
-        return convert_background(bytes.as_slice()).map_err(|error| match error {
+        let converted = if split {
+            convert_background_split(bytes.as_slice())
+        } else {
+            convert_background(bytes.as_slice())
+        };
+        return converted.map_err(|error| match error {
             ConvertError::Decode { message } => {
                 format!("`{path}` is not a readable PNG: {message}")
             }
@@ -107,7 +114,21 @@ fn resolve_one(asset: &Asset, source: &dyn AssetSource) -> Result<NesBackground,
     }
     let indexed =
         decode_background(bytes.as_slice()).map_err(|error| decode_message(path, error))?;
-    encode_background(&indexed).map_err(|error| encode_message(path, error))
+    let encoded = if split {
+        encode_background_split(&indexed)
+    } else {
+        encode_background(&indexed)
+    };
+    encoded.map_err(|error| encode_message(path, error))
+}
+
+/// Whether the asset says `tiles: 512`: split across both pattern tables, the upper half of
+/// the screen in the first and the lower half in the second.
+fn splits(asset: &Asset) -> bool {
+    asset.fields.iter().any(|field| {
+        field.name.value == "tiles"
+            && matches!(&field.value.value, AssetValue::Number(number) if number == "512")
+    })
 }
 
 /// Whether the asset says `convert: true`: made into a picture the NES can show, rather than

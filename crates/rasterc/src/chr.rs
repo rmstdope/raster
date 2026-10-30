@@ -100,8 +100,11 @@ pub(crate) fn layout(program: &Program, assets: &Assets) -> Result<ChrLayout, Ve
             };
             let chr = image.chr();
             let tiles = chr.len() / TILE_BYTES;
-            if tiles_so_far / PATTERN_TABLE_TILES
-                != (tiles_so_far + tiles - 1) / PATTERN_TABLE_TILES
+            // A picture split across both pattern tables crosses by design, and at 512 tiles
+            // it fills its bank, so anything beside it is reported as the bank being full.
+            if image.pattern_tables() == 1
+                && tiles_so_far / PATTERN_TABLE_TILES
+                    != (tiles_so_far + tiles - 1) / PATTERN_TABLE_TILES
             {
                 crossings.push(ChrError {
                     message: format!("`{name}.tiles` crosses into the second pattern table"),
@@ -168,7 +171,9 @@ pub(crate) fn layout(program: &Program, assets: &Assets) -> Result<ChrLayout, Ve
                         .collect();
                     // The reset map shows bank 0's first pattern table; anything else shows
                     // only if the program selects or maps it, which lowering judges.
-                    if bank == 0 && first < PATTERN_TABLE_TILES {
+                    // A split picture's lower half is in the second pattern table, so it
+                    // too needs the program to select it.
+                    if bank == 0 && first < PATTERN_TABLE_TILES && image.pattern_tables() == 1 {
                         Nametable::Shown(shifted)
                     } else {
                         Nametable::Unmapped {
@@ -231,7 +236,7 @@ fn bank_number(bank: &ChrRomBank) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raster_assets::{decode_background, encode_background};
+    use raster_assets::{decode_background, encode_background, encode_background_split};
     use raster_syntax::parse;
 
     /// A picture that encodes to exactly `tiles` CHR tiles: the reserved blank
@@ -268,14 +273,91 @@ mod tests {
     }
 
     fn run(source: &str, sizes: &[(&str, usize)]) -> Result<ChrLayout, Vec<ChrError>> {
-        let program = parse(source).expect("the source parses");
-        let assets = Assets {
-            images: sizes
+        run_with(
+            source,
+            sizes
                 .iter()
                 .map(|(name, tiles)| ((*name).to_owned(), picture(*tiles)))
                 .collect(),
-        };
-        layout(&program, &assets)
+        )
+    }
+
+    fn run_with(
+        source: &str,
+        images: Vec<(String, NesBackground)>,
+    ) -> Result<ChrLayout, Vec<ChrError>> {
+        let program = parse(source).expect("the source parses");
+        layout(&program, &Assets { images })
+    }
+
+    /// A one-tile picture encoded across both pattern tables: 512 tiles of CHR, two blank halves.
+    fn split_picture() -> NesBackground {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, 8, 8);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[0; 8 * 8 * 4]).unwrap();
+        drop(writer);
+        let indexed = decode_background(std::io::Cursor::new(bytes)).expect("decodes");
+        let image = encode_background_split(&indexed).expect("encodes");
+        assert_eq!(image.chr().len(), 512 * TILE_BYTES);
+        image
+    }
+
+    #[test]
+    fn a_split_picture_fills_bank_zero_and_shows_only_once_pattern_table_1_is_selected() {
+        let layout = run_with(
+            "chrrom bank 0 { zombie.tiles }",
+            vec![("zombie".into(), split_picture())],
+        )
+        .unwrap();
+
+        assert_eq!(layout.banks[0].tiles, 512);
+        // Its upper rows count from tile 0 and its lower rows from tile 256, so it is not shifted.
+        assert_eq!(
+            layout.pictures.by_name["zombie"].nametable,
+            Nametable::Unmapped {
+                bank: 0,
+                first: 0,
+                last: 511,
+                nametable: split_picture().nametable().to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_split_picture_must_start_its_bank() {
+        let source = "chrrom bank 0 { a.tiles, zombie.tiles }";
+        let errors = run_with(
+            source,
+            vec![("a".into(), picture(5)), ("zombie".into(), split_picture())],
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(
+            errors[0].message,
+            "`chrrom bank 0` is full: 517 tiles, and a bank holds 512"
+        );
+
+        let source = "chrrom bank 1 { zombie.tiles }\nchrrom bank 0 { a.tiles }\nchrrom bank 2 { b.tiles, zombie2.tiles }";
+        let errors = run_with(
+            source,
+            vec![
+                ("a".into(), picture(5)),
+                ("b".into(), picture(1)),
+                ("zombie".into(), split_picture()),
+                ("zombie2".into(), split_picture()),
+            ],
+        )
+        .err()
+        .unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(
+            errors[0].message,
+            "`chrrom bank 2` is full: 513 tiles, and a bank holds 512"
+        );
     }
 
     fn text<'a>(source: &'a str, error: &ChrError) -> &'a str {

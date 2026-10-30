@@ -516,6 +516,7 @@ asset image logo = png("art/logo.png") {
     palette: auto(4)           // derive up to 4 sub-palettes from the image
     dedup:   true              // merge identical tiles
     convert: false             // true: make any PNG into one the NES can show
+    tiles:   256               // 512: split across both pattern tables
     compress: none             // none | rle | lz
 }
 ```
@@ -545,6 +546,25 @@ attribute cell drawing in the palette that loses it least, and every pixel takes
 nearest colour its cell allows. A converted picture that needs more than the 256
 distinct tiles a pattern table holds is drawn in at most 256: the blank tile, and patterns
 fitted so that each tile is drawn in the one that looks most like it in its own palette.
+
+`tiles: 512` splits the picture across both pattern tables, for a picture of more
+tiles than one holds: tile rows 0–14, lines 0–119, are drawn from tiles 0–255, and
+rows 15–29 from tiles 256–511, each half deduplicated on its own (and, converted,
+drawn in at most 256). `logo.tiles` is then both pattern tables whole, 8 KiB, and must
+start its `chrrom` bank. Showing the lower half is the program's: it selects pattern
+table 1 for the background from line 120 and puts table 0 back for the next frame,
+which a `using irq` frame does at scanlines 120 and 240 with `ppu.ctrl` values that
+keep the sprites in the other half, as §7.3 requires:
+
+```
+frame halves using irq {
+    at scanline 120 { ppu.ctrl = $10 }   // background tiles 256–511, sprites 0–255
+    at scanline 240 { ppu.ctrl = $08 }   // background tiles 0–255, sprites 256–511
+}
+```
+
+The write at line 120 can land as the PPU fetches that line's first tiles, so the first
+three tiles of row 15 are kept in both pattern tables, at the same index in each.
 
 An explicit palette can be supplied instead of `auto`:
 

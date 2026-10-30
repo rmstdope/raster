@@ -9,7 +9,7 @@
 
 use std::io::Read;
 
-use crate::nes::{assemble, BACKGROUND_SUBPALETTE_COUNT};
+use crate::nes::{assemble, BACKGROUND_SUBPALETTE_COUNT, SPLIT_SHARED_TILES, SPLIT_TILE_ROW};
 use crate::{
     IndexedBackground, NesBackground, FCEUX_2C02_PALETTE, MAX_TILES_HIGH, MAX_TILES_WIDE,
     TRANSPARENT_COLOUR,
@@ -39,6 +39,17 @@ type Palette = [u8; 3];
 type Histogram = [u32; 64];
 
 pub fn convert_background(png: impl Read) -> Result<NesBackground, ConvertError> {
+    convert(png, false)
+}
+
+/// [`convert_background`] across two pattern tables, as
+/// [`encode_background_split`](crate::encode_background_split) lays them out: each half of the
+/// screen is drawn in up to 256 tiles of its own.
+pub fn convert_background_split(png: impl Read) -> Result<NesBackground, ConvertError> {
+    convert(png, true)
+}
+
+fn convert(png: impl Read, split: bool) -> Result<NesBackground, ConvertError> {
     let (width, height, rgba) = decode_rgba(png)?;
     let screen = scale(width, height, &rgba);
     let colours = Colours::new();
@@ -81,7 +92,23 @@ pub fn convert_background(png: impl Read) -> Result<NesBackground, ConvertError>
             Tile { pixels, palette }
         })
         .collect();
-    let patterns = colours.reduce(&tiles, PATTERN_TABLE_TILES);
+    // Split, each half of the screen is its own pattern table, so is reduced on its own.
+    let halves = if split {
+        SPLIT_TILE_ROW * MAX_TILES_WIDE as usize
+    } else {
+        tiles.len()
+    };
+    let (upper, lower) = tiles.split_at(halves);
+    // The first pattern table also holds the lower half's first tiles (`SPLIT_SHARED_TILES`).
+    let upper_limit = if split {
+        PATTERN_TABLE_TILES - SPLIT_SHARED_TILES
+    } else {
+        PATTERN_TABLE_TILES
+    };
+    let mut patterns = colours.reduce(upper, upper_limit);
+    if !lower.is_empty() {
+        patterns.extend(colours.reduce(lower, PATTERN_TABLE_TILES));
+    }
 
     let mut pixels = vec![TRANSPARENT_COLOUR; WIDTH * HEIGHT];
     for (index, (tile, pattern)) in tiles.iter().zip(&patterns).enumerate() {
@@ -105,7 +132,7 @@ pub fn convert_background(png: impl Read) -> Result<NesBackground, ConvertError>
     for (region, palette) in assignment.iter().enumerate() {
         region_palette_ids[region / REGIONS_WIDE][region % REGIONS_WIDE] = *palette as u8;
     }
-    Ok(assemble(&background, &records, &region_palette_ids)
+    Ok(assemble(&background, &records, &region_palette_ids, split)
         .expect("every pixel is in its region's palette, in at most a pattern table of tiles"))
 }
 

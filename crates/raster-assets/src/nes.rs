@@ -8,6 +8,19 @@ pub const BACKGROUND_SUBPALETTE_COUNT: usize = 4;
 pub const BACKGROUND_SUBPALETTE_BYTES: usize = 4;
 pub const BACKGROUND_PALETTE_BYTES: usize =
     BACKGROUND_SUBPALETTE_COUNT * BACKGROUND_SUBPALETTE_BYTES;
+/// The first tile row a picture split across two pattern tables draws from the second: the top
+/// half of the screen, lines 0–119, is tiles 0–255, and the bottom half tiles 256–511.
+pub const SPLIT_TILE_ROW: usize = NAMETABLE_HEIGHT_TILES / 2;
+/// The tiles one pattern table holds, the blank one every background starts from among them.
+const PATTERN_TABLE_TILES: usize = 256;
+/// The tiles at the start of [`SPLIT_TILE_ROW`] a split picture keeps in both pattern tables, at
+/// the same index in each.
+///
+/// The PPU fetches a line's first two tiles at the end of the line before, and an MMC3 IRQ
+/// counted to that line runs its handler from about dot 260: the write switching pattern tables
+/// lands as those fetches happen, and as late as the third tile's when the CPU was in a long
+/// instruction. Kept in both, they look the same whichever table they are fetched from.
+pub const SPLIT_SHARED_TILES: usize = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NesBackground {
@@ -15,9 +28,16 @@ pub struct NesBackground {
     nametable: [u8; NAMETABLE_BYTES],
     attributes: [u8; ATTRIBUTE_TABLE_BYTES],
     palettes: [u8; BACKGROUND_PALETTE_BYTES],
+    pattern_tables: usize,
 }
 
 impl NesBackground {
+    /// 1, or 2 for a picture split at [`SPLIT_TILE_ROW`], whose `chr` is then both pattern
+    /// tables whole and whose nametable counts the lower rows' tiles from the second.
+    pub fn pattern_tables(&self) -> usize {
+        self.pattern_tables
+    }
+
     pub fn chr(&self) -> &[u8] {
         &self.chr
     }
@@ -45,6 +65,21 @@ pub enum BackgroundEncodeError {
 pub fn encode_background(
     background: &IndexedBackground,
 ) -> Result<NesBackground, BackgroundEncodeError> {
+    encode(background, false)
+}
+
+/// [`encode_background`] across two pattern tables: the rows above [`SPLIT_TILE_ROW`] in the
+/// first and the rows below it in the second, each holding up to 256 tiles of its own.
+pub fn encode_background_split(
+    background: &IndexedBackground,
+) -> Result<NesBackground, BackgroundEncodeError> {
+    encode(background, true)
+}
+
+fn encode(
+    background: &IndexedBackground,
+    split: bool,
+) -> Result<NesBackground, BackgroundEncodeError> {
     let mut palette_records = Vec::new();
     let mut region_palette_ids = [[0; 16]; 16];
     for (region_y, palette_ids) in region_palette_ids.iter_mut().enumerate() {
@@ -69,19 +104,22 @@ pub fn encode_background(
     if palette_records.is_empty() {
         palette_records.push([TRANSPARENT_COLOUR; BACKGROUND_SUBPALETTE_BYTES]);
     }
-    assemble(background, &palette_records, &region_palette_ids)
+    assemble(background, &palette_records, &region_palette_ids, split)
 }
 
 /// The background `background` draws with `palette_records`, region by region as
 /// `region_palette_ids` says: its attributes, its tiles deduplicated in row-major order, and its
-/// palettes. Every pixel's colour must be in its region's palette.
+/// palettes. Every pixel's colour must be in its region's palette. Split, the rows from
+/// [`SPLIT_TILE_ROW`] down are deduplicated on their own, into the second pattern table, and the
+/// first [`SPLIT_SHARED_TILES`] of that row start both tables.
 ///
-/// A picture needing more than 256 tiles is refused with how many it needs, all of them, so an
-/// author knows how far over it is.
+/// A picture needing more than 256 tiles in a pattern table is refused with how many it needs,
+/// all of them, so an author knows how far over it is.
 pub(crate) fn assemble(
     background: &IndexedBackground,
     palette_records: &[[u8; BACKGROUND_SUBPALETTE_BYTES]],
     region_palette_ids: &[[u8; 16]; 16],
+    split: bool,
 ) -> Result<NesBackground, BackgroundEncodeError> {
     let mut attributes = [0; ATTRIBUTE_TABLE_BYTES];
     for (region_y, palette_ids) in region_palette_ids.iter().enumerate() {
@@ -93,8 +131,21 @@ pub(crate) fn assemble(
     }
 
     let mut nametable = [0; NAMETABLE_BYTES];
-    let mut chr_tiles = vec![[0; 16]];
+    let mut start = vec![[0; 16]];
+    // A picture too short to reach the split has no lower half to share.
+    if split && background.height_tiles() as usize > SPLIT_TILE_ROW {
+        for tile_x in 0..SPLIT_SHARED_TILES.min(background.width_tiles() as usize) {
+            let palette =
+                palette_records[region_palette_ids[SPLIT_TILE_ROW / 2][tile_x / 2] as usize];
+            let tile = encode_tile(background, tile_x, SPLIT_TILE_ROW, &palette);
+            if !start.contains(&tile) {
+                start.push(tile);
+            }
+        }
+    }
+    let mut tables = vec![start; if split { 2 } else { 1 }];
     for tile_y in 0..background.height_tiles() as usize {
+        let chr_tiles = &mut tables[usize::from(split && tile_y >= SPLIT_TILE_ROW)];
         for tile_x in 0..background.width_tiles() as usize {
             let palette = palette_records[region_palette_ids[tile_y / 2][tile_x / 2] as usize];
             let tile = encode_tile(background, tile_x, tile_y, &palette);
@@ -107,10 +158,18 @@ pub(crate) fn assemble(
             nametable[tile_y * NAMETABLE_WIDTH_TILES + tile_x] = index as u8;
         }
     }
-    if chr_tiles.len() > 256 {
-        return Err(BackgroundEncodeError::TooManyTiles {
-            tile_count: chr_tiles.len(),
-        });
+    if let Some(tile_count) = tables
+        .iter()
+        .map(Vec::len)
+        .filter(|count| *count > PATTERN_TABLE_TILES)
+        .max()
+    {
+        return Err(BackgroundEncodeError::TooManyTiles { tile_count });
+    }
+    // Split, the first pattern table is filled out so that the second starts at tile 256.
+    if split {
+        tables[0].resize(PATTERN_TABLE_TILES, [0; 16]);
+        tables[1].resize(PATTERN_TABLE_TILES, [0; 16]);
     }
 
     let mut palettes = [TRANSPARENT_COLOUR; BACKGROUND_PALETTE_BYTES];
@@ -120,10 +179,11 @@ pub(crate) fn assemble(
     }
 
     Ok(NesBackground {
-        chr: chr_tiles.into_iter().flatten().collect(),
+        chr: tables.into_iter().flatten().flatten().collect(),
         nametable,
         attributes,
         palettes,
+        pattern_tables: if split { 2 } else { 1 },
     })
 }
 
